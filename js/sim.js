@@ -117,12 +117,34 @@ class Sim {
 
   // groundDist[i] = -1, если структурная клетка вообще не связана цепочкой
   // с полом/якорем (полностью оторвана — падает целиком, см. ниже), иначе
-  // расстояние в клетках (по 4-связности) до ближайшей опоры. Пересчитывается
-  // целиком каждый кадр от свежего состояния поля.
+  // "вес" в клетках до ближайшей опоры — но не простое расстояние по
+  // 4-связности, а именно вылет консолью: подъём НА клетку, которая прямо
+  // над опорной (стоит на том, что ниже — обычная вертикальная опора,
+  // башню так можно строить сколь угодно высокой), ничего не стоит; а вот
+  // шаг вбок или вниз (нависание без опоры снизу) добавляет 1. Иначе
+  // говоря, лимит держит именно горизонтальный навес, а не высоту башни.
+  // 0-1 BFS: сначала бесплатно расширяем текущий уровень вверх, потом уже
+  // платно (вбок/вниз) переходим на следующий уровень.
   computeGrounded() {
     const w = this.w, h = this.h, n = w * h;
     const dist = this.groundDist;
     dist.fill(-1);
+
+    const expandUp = (level, d) => {
+      const stack = level.slice();
+      while (stack.length) {
+        const i = stack.pop();
+        const x = i % w, y = (i / w) | 0;
+        if (y - 1 < 0) continue;
+        const ni = this.idx(x, y - 1);
+        if (isStructural(this.type[ni]) && dist[ni] === -1) {
+          dist[ni] = d;
+          level.push(ni);
+          stack.push(ni);
+        }
+      }
+    };
+
     let frontier = [];
     for (let x = 0; x < w; x++) {
       const i = this.idx(x, h - 1);
@@ -138,6 +160,8 @@ class Sim {
         if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = 0; frontier.push(ni); }
       }
     }
+    expandUp(frontier, 0);
+
     let d = 0;
     while (frontier.length) {
       const next = [];
@@ -145,13 +169,16 @@ class Sim {
       for (let fi = 0; fi < frontier.length; fi++) {
         const i = frontier[fi];
         const x = i % w, y = (i / w) | 0;
-        for (let k = 0; k < 4; k++) {
-          const nx = x + DX4[k], ny = y + DY4[k];
-          if (!this.inBounds(nx, ny)) continue;
-          const ni = this.idx(nx, ny);
+        // платно: влево, вправо, вниз. Вверх уже обработан бесплатно выше.
+        const nRight = this.inBounds(x + 1, y) ? this.idx(x + 1, y) : -1;
+        const nLeft = this.inBounds(x - 1, y) ? this.idx(x - 1, y) : -1;
+        const nDown = this.inBounds(x, y + 1) ? this.idx(x, y + 1) : -1;
+        for (const ni of [nRight, nLeft, nDown]) {
+          if (ni === -1) continue;
           if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = d; next.push(ni); }
         }
       }
+      expandUp(next, d);
       frontier = next;
     }
   }
