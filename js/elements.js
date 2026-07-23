@@ -65,3 +65,15 @@ const ELEMENT_ORDER = [
 function isMovable(cat) {
   return cat === CAT.POWDER || cat === CAT.LIQUID || cat === CAT.GAS;
 }
+
+// "Твёрдые тела" в смысле структурной устойчивости: падают без опоры,
+// но держатся друг за друга (можно строить навесы), в отличие от
+// сыпучих порошков, которые и так уже падают по одной частице.
+function isStructural(id) {
+  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE;
+}
+
+// Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
+function isAnchor(id) {
+  return id === EL.WALL || id === EL.VOID || id === EL.CLONE;
+}

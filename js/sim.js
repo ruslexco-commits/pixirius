@@ -32,6 +32,9 @@ class Sim {
     this.extra = new Uint8Array(n);
     this.shade = new Int8Array(n);
     this.moved = new Uint8Array(n);
+    this.grounded = new Uint8Array(n);
+    this.structVisited = new Uint8Array(n);
+    this.structTag = new Int32Array(n);
     this.paused = false;
     this.frame = 0;
   }
@@ -80,6 +83,7 @@ class Sim {
     if (this.paused) return;
     this.frame++;
     this.moved.fill(0);
+    this.updateStructures();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -106,6 +110,105 @@ class Sim {
     else if (el2.cat === CAT.LIQUID) this.updateLiquid(x, y, i, el2);
     else if (el2.cat === CAT.GAS) this.updateGas(x, y, i, el2);
     else if (id2 === EL.FIRE) this.updateFireMovement(x, y, i);
+  }
+
+  // ---- структурная устойчивость твёрдых тел ----
+
+  // Заземлённая клетка — это структурная клетка (камень/дерево/металл/
+  // стекло/лёд), которая касается пола, якоря (стена/пустота/клонер) или
+  // другой заземлённой структурной клетки. Пересчитывается целиком каждый
+  // кадр от свежего состояния поля — этого достаточно для отклика в реальном
+  // времени и не требует отдельного отслеживания "что изменилось".
+  computeGrounded() {
+    const w = this.w, h = this.h, n = w * h;
+    const grounded = this.grounded;
+    grounded.fill(0);
+    const stack = [];
+    for (let x = 0; x < w; x++) {
+      const i = this.idx(x, h - 1);
+      if (isStructural(this.type[i])) { grounded[i] = 1; stack.push(i); }
+    }
+    for (let i = 0; i < n; i++) {
+      if (!isAnchor(this.type[i])) continue;
+      const x = i % w, y = (i / w) | 0;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (!this.inBounds(nx, ny)) continue;
+        const ni = this.idx(nx, ny);
+        if (isStructural(this.type[ni]) && !grounded[ni]) { grounded[ni] = 1; stack.push(ni); }
+      }
+    }
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % w, y = (i / w) | 0;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (!this.inBounds(nx, ny)) continue;
+        const ni = this.idx(nx, ny);
+        if (isStructural(this.type[ni]) && !grounded[ni]) { grounded[ni] = 1; stack.push(ni); }
+      }
+    }
+  }
+
+  // Незаземлённые куски твёрдого тела падают целиком, как одна жёсткая
+  // структура (сохраняя форму), пока не упрутся во что-то — тогда снова
+  // замирают и на следующем кадре могут быть переоценены как заземлённые.
+  updateStructures() {
+    this.computeGrounded();
+    const w = this.w, h = this.h, n = w * h;
+    const visited = this.structVisited;
+    const compTag = this.structTag;
+    const grounded = this.grounded;
+    visited.fill(0);
+    let tag = 0;
+    const comp = [];
+    for (let i = 0; i < n; i++) {
+      if (visited[i]) continue;
+      if (!isStructural(this.type[i]) || grounded[i]) { visited[i] = 1; continue; }
+      tag++;
+      comp.length = 0;
+      comp.push(i);
+      visited[i] = 1;
+      compTag[i] = tag;
+      let head = 0;
+      while (head < comp.length) {
+        const ci = comp[head++];
+        const cx = ci % w, cy = (ci / w) | 0;
+        for (let k = 0; k < 4; k++) {
+          const nx = cx + DX4[k], ny = cy + DY4[k];
+          if (!this.inBounds(nx, ny)) continue;
+          const ni = this.idx(nx, ny);
+          if (visited[ni]) continue;
+          visited[ni] = 1;
+          if (isStructural(this.type[ni]) && !grounded[ni]) {
+            compTag[ni] = tag;
+            comp.push(ni);
+          }
+        }
+      }
+      let canFall = true;
+      for (let k2 = 0; k2 < comp.length; k2++) {
+        const ci = comp[k2];
+        const cx = ci % w, cy = (ci / w) | 0;
+        if (cy + 1 >= h) { canFall = false; break; }
+        const below = this.idx(cx, cy + 1);
+        if (compTag[below] === tag) continue;
+        const bt = this.type[below];
+        if (bt !== EL.EMPTY) {
+          const bEl = ELEMENTS[bt];
+          if (!bEl || bEl.cat !== CAT.GAS) { canFall = false; break; }
+        }
+      }
+      if (canFall) {
+        comp.sort((a, b) => ((b / w) | 0) - ((a / w) | 0));
+        for (let k2 = 0; k2 < comp.length; k2++) {
+          const ci = comp[k2];
+          const cx = ci % w, cy = (ci / w) | 0;
+          const below = this.idx(cx, cy + 1);
+          this.swap(ci, below);
+        }
+      }
+    }
   }
 
   // ---- реакции ----
