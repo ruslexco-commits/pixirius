@@ -1,7 +1,7 @@
 'use strict';
 
-const GRID_W = 384;
-const GRID_H = 216;
+const GRID_W = 576;
+const GRID_H = 324;
 const ZOOM = 3;
 
 const sim = new Sim(GRID_W, GRID_H);
@@ -10,6 +10,7 @@ let selectedElement = EL.SAND;
 const canvas = document.getElementById('view');
 canvas.width = GRID_W * ZOOM;
 canvas.height = GRID_H * ZOOM;
+canvas.style.aspectRatio = `${GRID_W} / ${GRID_H}`;
 
 const renderer = new Renderer(sim, canvas, ZOOM);
 const input = new InputController(sim, renderer, canvas, () => selectedElement);
@@ -90,6 +91,7 @@ fileLoad.addEventListener('change', () => {
 // ---- палитра элементов ----
 
 const palette = document.getElementById('palette');
+const statusLabel = document.getElementById('statusLabel');
 
 function rgbCss(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
 
@@ -97,16 +99,16 @@ function addPaletteButton(id, isEraser) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'el-btn' + (isEraser ? ' el-eraser' : '');
+  const name = isEraser ? 'Ластик' : ELEMENTS[id].name;
   if (!isEraser) {
     btn.style.background = rgbCss(ELEMENTS[id].color);
-    btn.title = ELEMENTS[id].name;
-  } else {
-    btn.title = 'Ластик';
   }
+  btn.title = name;
   btn.addEventListener('click', () => {
     selectedElement = id;
     for (const b of palette.children) b.classList.remove('selected');
     btn.classList.add('selected');
+    statusLabel.textContent = name;
   });
   palette.appendChild(btn);
   return btn;
@@ -115,11 +117,13 @@ function addPaletteButton(id, isEraser) {
 addPaletteButton(EL.EMPTY, true);
 for (const id of ELEMENT_ORDER) addPaletteButton(id, false);
 palette.children[1].classList.add('selected');
+statusLabel.textContent = ELEMENTS[EL.SAND].name;
 
 // ---- игровой цикл ----
 
 function loop() {
   sim.step();
+  input.tickHold();
   renderer.render(input.getCursorState());
   requestAnimationFrame(loop);
 }

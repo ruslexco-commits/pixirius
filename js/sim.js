@@ -445,14 +445,17 @@ class Sim {
 
   // ---- рисование ----
 
-  setCell(x, y, elementId) {
+  setCell(x, y, elementId, onlyEmpty) {
     if (!this.inBounds(x, y)) return;
     const i = this.idx(x, y);
+    if (onlyEmpty && this.type[i] !== EL.EMPTY) return;
     if (elementId === EL.EMPTY) this.clearCell(i);
     else this.spawn(i, elementId);
   }
 
-  stampBrush(cx, cy, shape, rx, ry, elementId) {
+  // onlyEmpty: не трогать уже занятые клетки (обычная кисть не должна
+  // заменять то, что уже стоит на поле — только заливка делает замену осознанно).
+  stampBrush(cx, cy, shape, rx, ry, elementId, onlyEmpty) {
     const x0 = Math.max(0, Math.floor(cx - rx)), x1 = Math.min(this.w - 1, Math.ceil(cx + rx));
     const y0 = Math.max(0, Math.floor(cy - ry)), y1 = Math.min(this.h - 1, Math.ceil(cy + ry));
     const rx2 = Math.max(rx, 0.5), ry2 = Math.max(ry, 0.5);
@@ -462,12 +465,12 @@ class Sim {
           const dx = (x - cx) / rx2, dy = (y - cy) / ry2;
           if (dx * dx + dy * dy > 1) continue;
         }
-        this.setCell(x, y, elementId);
+        this.setCell(x, y, elementId, onlyEmpty);
       }
     }
   }
 
-  stampLine(x0, y0, x1, y1, shape, rx, ry, elementId) {
+  stampLine(x0, y0, x1, y1, shape, rx, ry, elementId, onlyEmpty) {
     let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
     const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
@@ -475,7 +478,7 @@ class Sim {
     let guard = 0;
     const guardMax = (this.w + this.h) * 4 + 16;
     while (guard++ < guardMax) {
-      this.stampBrush(x, y, shape, rx, ry, elementId);
+      this.stampBrush(x, y, shape, rx, ry, elementId, onlyEmpty);
       if (x === x1 && y === y1) break;
       const e2 = 2 * err;
       if (e2 >= dy) { err += dy; x += sx; }
@@ -503,6 +506,25 @@ class Sim {
       if (y > 0) { const ni = i - w; if (!visited[ni]) { visited[ni] = 1; if (this.type[ni] === target) stack.push(ni); } }
       if (y < h - 1) { const ni = i + w; if (!visited[ni]) { visited[ni] = 1; if (this.type[ni] === target) stack.push(ni); } }
     }
+  }
+
+  // ---- отмена (Ctrl+Z) ----
+
+  snapshot() {
+    return {
+      type: this.type.slice(),
+      life: this.life.slice(),
+      extra: this.extra.slice(),
+      shade: this.shade.slice(),
+    };
+  }
+
+  restore(snap) {
+    this.type.set(snap.type);
+    this.life.set(snap.life);
+    this.extra.set(snap.extra);
+    this.shade.set(snap.shade);
+    this.moved.fill(0);
   }
 
   // ---- сохранение ----

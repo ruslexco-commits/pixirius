@@ -56,20 +56,48 @@ class Renderer {
   }
 
   drawBrushOutline(gx, gy, shape, rx, ry) {
-    const ctx = this.ctx, z = this.zoom;
+    const ctx = this.ctx;
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 1;
-    const cx = (gx + 0.5) * z, cy = (gy + 0.5) * z;
-    if (shape === 'circle') {
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, (rx + 0.5) * z, (ry + 0.5) * z, 0, 0, Math.PI * 2);
-      ctx.stroke();
-    } else {
-      const w = (rx * 2 + 1) * z, h = (ry * 2 + 1) * z;
-      ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
-    }
+    this.traceShapeOutline(gx, gy, shape, rx, ry);
     ctx.restore();
+  }
+
+  // Контур кисти строго повторяет реально закрашиваемые клетки: для квадрата
+  // это просто прямоугольник, а для круга — точная лестничная граница по той
+  // же формуле включения, что использует stampBrush (а не гладкий эллипс,
+  // который на глаз казался мельче настоящей закрашиваемой области).
+  traceShapeOutline(gx, gy, shape, rx, ry) {
+    const ctx = this.ctx, z = this.zoom;
+    if (shape !== 'circle') {
+      const w = (rx * 2 + 1) * z, h = (ry * 2 + 1) * z;
+      const cx = (gx + 0.5) * z, cy = (gy + 0.5) * z;
+      ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+      return;
+    }
+    const rx2 = Math.max(rx, 0.5), ry2 = Math.max(ry, 0.5);
+    const x0 = Math.floor(gx - rx), x1 = Math.ceil(gx + rx);
+    const y0 = Math.floor(gy - ry), y1 = Math.ceil(gy + ry);
+    const left = [], right = [];
+    for (let y = y0; y <= y1; y++) {
+      let xl = null, xr = null;
+      for (let x = x0; x <= x1; x++) {
+        const dx = (x - gx) / rx2, dy = (y - gy) / ry2;
+        if (dx * dx + dy * dy <= 1) { if (xl === null) xl = x; xr = x; }
+      }
+      if (xl !== null) {
+        left.push([xl * z, y * z], [xl * z, (y + 1) * z]);
+        right.push([(xr + 1) * z, y * z], [(xr + 1) * z, (y + 1) * z]);
+      }
+    }
+    if (!left.length) return;
+    ctx.beginPath();
+    ctx.moveTo(left[0][0], left[0][1]);
+    for (const p of left) ctx.lineTo(p[0], p[1]);
+    for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+    ctx.closePath();
+    ctx.stroke();
   }
 
   drawLinePreview(gx0, gy0, gx1, gy1) {
@@ -100,7 +128,18 @@ class Renderer {
     return !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y);
   }
 
-  drawZoomLens(gx, gy, capRX, capRY) {
+  drawZoomSourceHighlight(gx, gy, capRX, capRY) {
+    const ctx = this.ctx, z = this.zoom;
+    const x = (gx - capRX) * z, y = (gy - capRY) * z;
+    const w = (capRX * 2 + 1) * z, h = (capRY * 2 + 1) * z;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 200, 40, 0.9)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
+  }
+
+  drawZoomLens(gx, gy, capRX, capRY, pinned) {
     const z = this.zoom;
     const srcRect = {
       x: (gx - capRX) * z, y: (gy - capRY) * z,
@@ -145,7 +184,7 @@ class Renderer {
       }
     }
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeStyle = pinned ? 'rgba(255, 200, 40, 0.95)' : 'rgba(255,255,255,0.9)';
     ctx.lineWidth = 2;
     ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
     ctx.strokeStyle = 'rgba(255,60,60,0.95)';
@@ -163,8 +202,11 @@ class Renderer {
     } else if (cursor.showBrush) {
       this.drawBrushOutline(cursor.gx, cursor.gy, cursor.brushShape, cursor.brushRX, cursor.brushRY);
     }
-    if (cursor.zoomActive) {
-      this.drawZoomLens(cursor.gx, cursor.gy, cursor.zoomRX, cursor.zoomRY);
+    if (cursor.zoomActive || cursor.zoomPinned) {
+      const zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
+      const zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
+      this.drawZoomSourceHighlight(zx, zy, cursor.zoomRX, cursor.zoomRY);
+      this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned);
     }
   }
 }

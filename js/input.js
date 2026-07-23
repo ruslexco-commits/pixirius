@@ -28,6 +28,12 @@ class InputController {
     this.zoomRX = 8;
     this.zoomRY = 8;
     this.maxZoomR = 30;
+    this.zoomPinned = false;
+    this.zoomPinnedGX = 0;
+    this.zoomPinnedGY = 0;
+
+    this.undoStack = [];
+    this.maxUndoSteps = 20;
 
     this.gx = 0;
     this.gy = 0;
@@ -35,6 +41,27 @@ class InputController {
     this.drag = null;
 
     this._bind();
+  }
+
+  pushUndo() {
+    this.undoStack.push(this.sim.snapshot());
+    if (this.undoStack.length > this.maxUndoSteps) this.undoStack.shift();
+  }
+
+  undo() {
+    const snap = this.undoStack.pop();
+    if (snap) this.sim.restore(snap);
+  }
+
+  // Элемент, который реально запишется на клетку (стирание всегда пишет "пусто").
+  paintElementFor(mode, elementId) {
+    return mode === 'erase' ? EL.EMPTY : elementId;
+  }
+
+  // Обычная кисть не должна затирать уже занятые клетки — только когда мы
+  // реально что-то ставим (не стираем и не выбран ластик).
+  onlyEmptyFor(mode, elementId) {
+    return mode === 'paint' && elementId !== EL.EMPTY;
   }
 
   toGrid(clientX, clientY) {
@@ -65,7 +92,12 @@ class InputController {
       if (!e.repeat) this.brushShape = this.brushShape === 'circle' ? 'square' : 'circle';
       e.preventDefault();
     } else if (e.code === 'KeyZ') {
-      this.zoomKeyDown = true;
+      if (e.ctrlKey) {
+        if (!e.repeat) this.undo();
+        e.preventDefault();
+      } else {
+        this.zoomKeyDown = true;
+      }
     }
   }
 
@@ -98,9 +130,21 @@ class InputController {
     if (e.button !== 0 && e.button !== 2) return;
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
     this.gx = gx; this.gy = gy;
-    const elementId = this.getSelectedElement();
     const shift = e.shiftKey, ctrl = e.ctrlKey;
 
+    // ЛКМ с зажатой Z — не рисование, а фиксация/снятие окна лупы на месте
+    if (this.zoomKeyDown && e.button === 0 && !shift && !ctrl) {
+      if (this.zoomPinned) {
+        this.zoomPinned = false;
+      } else {
+        this.zoomPinned = true;
+        this.zoomPinnedGX = gx;
+        this.zoomPinnedGY = gy;
+      }
+      return;
+    }
+
+    const elementId = this.getSelectedElement();
     let mode;
     if (shift && ctrl && e.button === 0) mode = 'lineSnap';
     else if (ctrl && !shift) mode = (e.button === 0) ? 'fill' : 'fillErase';
@@ -108,9 +152,10 @@ class InputController {
     else mode = (e.button === 0) ? 'paint' : 'erase';
 
     this.drag = { mode, startX: gx, startY: gy, lastX: gx, lastY: gy, elementId };
+    this.pushUndo();
 
     if (mode === 'paint' || mode === 'erase') {
-      this.sim.stampBrush(gx, gy, this.brushShape, this.brushRX, this.brushRY, mode === 'erase' ? EL.EMPTY : elementId);
+      this.sim.stampBrush(gx, gy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(mode, elementId), this.onlyEmptyFor(mode, elementId));
     } else if (mode === 'fill') {
       this.sim.floodFill(gx, gy, elementId, false);
     } else if (mode === 'fillErase') {
@@ -123,7 +168,7 @@ class InputController {
     if (this.drag) {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
-        this.sim.stampLine(d.lastX, d.lastY, gx, gy, this.brushShape, this.brushRX, this.brushRY, d.mode === 'erase' ? EL.EMPTY : d.elementId);
+        this.sim.stampLine(d.lastX, d.lastY, gx, gy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
         d.lastX = gx; d.lastY = gy;
       } else if (d.mode === 'line' || d.mode === 'lineSnap') {
         d.lastX = gx; d.lastY = gy;
@@ -138,9 +183,20 @@ class InputController {
     if (d.mode === 'line' || d.mode === 'lineSnap') {
       let ex = d.lastX, ey = d.lastY;
       if (d.mode === 'lineSnap') [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
-      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, this.brushRX, this.brushRY, d.elementId);
+      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, this.brushRX, this.brushRY, d.elementId, this.onlyEmptyFor('paint', d.elementId));
     }
     this.drag = null;
+  }
+
+  // Вызывается каждый кадр из игрового цикла: если кисть зажата и стоит на
+  // месте, она всё равно должна продолжать действовать (например, стирать
+  // всё, что упало под неё под гравитацией), а не только при движении мыши.
+  tickHold() {
+    if (!this.drag) return;
+    const d = this.drag;
+    if (d.mode === 'paint' || d.mode === 'erase') {
+      this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
+    }
   }
 
   getCursorState() {
@@ -159,6 +215,8 @@ class InputController {
       linePreview,
       zoomActive: this.zoomKeyDown && this.inCanvas,
       zoomRX: this.zoomRX, zoomRY: this.zoomRY,
+      zoomPinned: this.zoomPinned,
+      zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
     };
   }
 }
