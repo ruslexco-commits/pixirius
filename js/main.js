@@ -8,9 +8,21 @@ const sim = new Sim(GRID_W, GRID_H);
 let selectedElement = EL.SAND;
 
 const canvas = document.getElementById('view');
+const stage = document.getElementById('stage');
 canvas.width = GRID_W * ZOOM;
 canvas.height = GRID_H * ZOOM;
-canvas.style.aspectRatio = `${GRID_W} / ${GRID_H}`;
+
+// Полагаться на CSS object-fit для канваса ненадёжно (в некоторых движках
+// внутренний буфер не масштабируется как надо, только обрезается) —
+// поэтому размер отображения считаем сами и выставляем в px явно.
+function fitCanvas() {
+  const r = stage.getBoundingClientRect();
+  const scale = Math.max(0.01, Math.min(r.width / canvas.width, r.height / canvas.height));
+  canvas.style.width = Math.floor(canvas.width * scale) + 'px';
+  canvas.style.height = Math.floor(canvas.height * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
 
 const renderer = new Renderer(sim, canvas, ZOOM);
 const input = new InputController(sim, renderer, canvas, () => selectedElement);
