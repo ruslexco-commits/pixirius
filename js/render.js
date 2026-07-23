@@ -17,7 +17,8 @@ class Renderer {
     this.imageData = this.offCtx.createImageData(sim.w, sim.h);
 
     this.zoomBoxCorner = 'br';
-    this.zoomBoxSize = 220;
+    // Окно лупы — квадрат площадью в четверть площади канваса.
+    this.zoomBoxSize = Math.sqrt((canvas.width * canvas.height) / 4);
     this.zoomBoxMargin = 10;
   }
 

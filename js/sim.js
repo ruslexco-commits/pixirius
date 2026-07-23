@@ -249,7 +249,10 @@ class Sim {
         const bt = this.type[below];
         if (bt !== EL.EMPTY) {
           const bEl = ELEMENTS[bt];
-          if (!bEl || bEl.cat !== CAT.GAS) { canFall = false; break; }
+          // газ/жидкость/песок не держат твёрдое тело — оно тонет сквозь них,
+          // вытесняя их в стороны (см. displaceFluid ниже); держит только
+          // другое твёрдое/стена/якорь или дно поля.
+          if (!bEl || (bEl.cat !== CAT.GAS && bEl.cat !== CAT.LIQUID && bEl.cat !== CAT.POWDER)) { canFall = false; break; }
         }
       }
       if (canFall) {
@@ -258,10 +261,32 @@ class Sim {
           const ci = comp[k2];
           const cx = ci % w, cy = (ci / w) | 0;
           const below = this.idx(cx, cy + 1);
+          if (compTag[below] !== tag) {
+            const bt = this.type[below];
+            if (bt !== EL.EMPTY) {
+              const bEl = ELEMENTS[bt];
+              if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) this.displaceFluid(cx, cy + 1);
+            }
+          }
           this.swap(ci, below);
           moved[below] = 1;
         }
       }
+    }
+  }
+
+  // Твёрдое тело, тонущее в жидкости/песке, выталкивает их в сторону —
+  // ищем ближайшую свободную клетку в том же ряду слева/справа (у краёв
+  // тонущего объекта) и переносим жидкость/песок туда. Если рядом совсем
+  // некуда — не страшно, обычный swap() в вызывающем коде всё равно
+  // вытолкнет её вверх, на место, откуда пришло твёрдое тело.
+  displaceFluid(x, y) {
+    const w = this.w;
+    const radius = 40;
+    for (let step = 1; step <= radius; step++) {
+      const xr = x + step, xl = x - step;
+      if (xr < w) { const ni = this.idx(xr, y); if (this.type[ni] === EL.EMPTY) { this.swap(this.idx(x, y), ni); return; } }
+      if (xl >= 0) { const ni = this.idx(xl, y); if (this.type[ni] === EL.EMPTY) { this.swap(this.idx(x, y), ni); return; } }
     }
   }
 

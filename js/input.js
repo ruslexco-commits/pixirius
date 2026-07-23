@@ -27,7 +27,7 @@ class InputController {
     this.zoomKeyDown = false;
     this.zoomRX = 8;
     this.zoomRY = 8;
-    this.maxZoomR = 30;
+    this.maxZoomR = 100;
     this.zoomPinned = false;
     this.zoomPinnedGX = 0;
     this.zoomPinnedGY = 0;
@@ -130,7 +130,7 @@ class InputController {
     if (e.button !== 0 && e.button !== 2) return;
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
     this.gx = gx; this.gy = gy;
-    const shift = e.shiftKey, ctrl = e.ctrlKey;
+    const shift = e.shiftKey, ctrl = e.ctrlKey, alt = e.altKey;
 
     // ЛКМ с зажатой Z — не рисование, а фиксация/снятие окна лупы на месте
     if (this.zoomKeyDown && e.button === 0 && !shift && !ctrl) {
@@ -146,7 +146,8 @@ class InputController {
 
     const elementId = this.getSelectedElement();
     let mode;
-    if (shift && ctrl && e.button === 0) mode = 'lineSnap';
+    // Shift+Ctrl+ЛКМ и Shift+Alt+ЛКМ — оба дают линию с привязкой к 45°
+    if (shift && (ctrl || alt) && e.button === 0) mode = 'lineSnap';
     else if (ctrl && !shift) mode = (e.button === 0) ? 'fill' : 'fillErase';
     else if (shift && e.button === 0) mode = 'line';
     else mode = (e.button === 0) ? 'paint' : 'erase';
