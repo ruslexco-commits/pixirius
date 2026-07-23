@@ -32,9 +32,10 @@ class Sim {
     this.extra = new Uint8Array(n);
     this.shade = new Int8Array(n);
     this.moved = new Uint8Array(n);
-    this.grounded = new Uint8Array(n);
+    this.groundDist = new Int16Array(n);
     this.structVisited = new Uint8Array(n);
     this.structTag = new Int32Array(n);
+    this.maxSupportDist = 10;
     this.paused = false;
     this.frame = 0;
   }
@@ -114,19 +115,18 @@ class Sim {
 
   // ---- структурная устойчивость твёрдых тел ----
 
-  // Заземлённая клетка — это структурная клетка (камень/дерево/металл/
-  // стекло/лёд), которая касается пола, якоря (стена/пустота/клонер) или
-  // другой заземлённой структурной клетки. Пересчитывается целиком каждый
-  // кадр от свежего состояния поля — этого достаточно для отклика в реальном
-  // времени и не требует отдельного отслеживания "что изменилось".
+  // groundDist[i] = -1, если структурная клетка вообще не связана цепочкой
+  // с полом/якорем (полностью оторвана — падает целиком, см. ниже), иначе
+  // расстояние в клетках (по 4-связности) до ближайшей опоры. Пересчитывается
+  // целиком каждый кадр от свежего состояния поля.
   computeGrounded() {
     const w = this.w, h = this.h, n = w * h;
-    const grounded = this.grounded;
-    grounded.fill(0);
-    const stack = [];
+    const dist = this.groundDist;
+    dist.fill(-1);
+    let frontier = [];
     for (let x = 0; x < w; x++) {
       const i = this.idx(x, h - 1);
-      if (isStructural(this.type[i])) { grounded[i] = 1; stack.push(i); }
+      if (isStructural(this.type[i])) { dist[i] = 0; frontier.push(i); }
     }
     for (let i = 0; i < n; i++) {
       if (!isAnchor(this.type[i])) continue;
@@ -135,36 +135,62 @@ class Sim {
         const nx = x + DX4[k], ny = y + DY4[k];
         if (!this.inBounds(nx, ny)) continue;
         const ni = this.idx(nx, ny);
-        if (isStructural(this.type[ni]) && !grounded[ni]) { grounded[ni] = 1; stack.push(ni); }
+        if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = 0; frontier.push(ni); }
       }
     }
-    while (stack.length) {
-      const i = stack.pop();
-      const x = i % w, y = (i / w) | 0;
-      for (let k = 0; k < 4; k++) {
-        const nx = x + DX4[k], ny = y + DY4[k];
-        if (!this.inBounds(nx, ny)) continue;
-        const ni = this.idx(nx, ny);
-        if (isStructural(this.type[ni]) && !grounded[ni]) { grounded[ni] = 1; stack.push(ni); }
+    let d = 0;
+    while (frontier.length) {
+      const next = [];
+      d++;
+      for (let fi = 0; fi < frontier.length; fi++) {
+        const i = frontier[fi];
+        const x = i % w, y = (i / w) | 0;
+        for (let k = 0; k < 4; k++) {
+          const nx = x + DX4[k], ny = y + DY4[k];
+          if (!this.inBounds(nx, ny)) continue;
+          const ni = this.idx(nx, ny);
+          if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = d; next.push(ni); }
+        }
       }
+      frontier = next;
     }
   }
 
-  // Незаземлённые куски твёрдого тела падают целиком, как одна жёсткая
-  // структура (сохраняя форму), пока не упрутся во что-то — тогда снова
-  // замирают и на следующем кадре могут быть переоценены как заземлённые.
+  // Три категории структурных клеток каждый кадр:
+  //  1) на безопасном расстоянии от опоры (dist 0..maxSupportDist) — стоят;
+  //  2) формально ещё связаны цепочкой, но она длиннее maxSupportDist —
+  //     осыпаются под собственным весом отдельными частицами (как порошок),
+  //     а не единым жёстким куском (иначе можно бы строить бесконечный навес);
+  //  3) полностью оторваны от опоры (dist===-1) — падают целиком одной
+  //     жёсткой структурой, сохраняя форму, пока не упрутся — тогда снова
+  //     замирают и на следующем кадре могут быть переоценены как заземлённые.
   updateStructures() {
     this.computeGrounded();
     const w = this.w, h = this.h, n = w * h;
+    const dist = this.groundDist;
     const visited = this.structVisited;
     const compTag = this.structTag;
-    const grounded = this.grounded;
+    const moved = this.moved;
     visited.fill(0);
+
+    // Осыпание использует только moved[] для защиты от повторной обработки
+    // в этом же проходе — НЕ трогает visited[], который ниже целиком
+    // принадлежит поиску жёстких компонент. Иначе клетка, которую здесь
+    // сознательно НЕ раскрошили (например, потому что dist===-1 — она уже
+    // полностью оторвана и должна падать жёстким куском, а не крошиться),
+    // осталась бы помечена как "просмотрено" и ниже её бы ошибочно пропустили.
+    for (let i = 0; i < n; i++) {
+      if (moved[i]) continue;
+      const id = this.type[i];
+      if (!isStructural(id) || dist[i] <= this.maxSupportDist) continue;
+      this.updatePowder(i % w, (i / w) | 0, i, ELEMENTS[id]);
+    }
+
     let tag = 0;
     const comp = [];
     for (let i = 0; i < n; i++) {
-      if (visited[i]) continue;
-      if (!isStructural(this.type[i]) || grounded[i]) { visited[i] = 1; continue; }
+      if (visited[i] || moved[i]) { visited[i] = 1; continue; }
+      if (!isStructural(this.type[i]) || dist[i] !== -1) { visited[i] = 1; continue; }
       tag++;
       comp.length = 0;
       comp.push(i);
@@ -178,9 +204,9 @@ class Sim {
           const nx = cx + DX4[k], ny = cy + DY4[k];
           if (!this.inBounds(nx, ny)) continue;
           const ni = this.idx(nx, ny);
-          if (visited[ni]) continue;
+          if (visited[ni] || moved[ni]) continue;
           visited[ni] = 1;
-          if (isStructural(this.type[ni]) && !grounded[ni]) {
+          if (isStructural(this.type[ni]) && dist[ni] === -1) {
             compTag[ni] = tag;
             comp.push(ni);
           }
@@ -206,6 +232,7 @@ class Sim {
           const cx = ci % w, cy = (ci / w) | 0;
           const below = this.idx(cx, cy + 1);
           this.swap(ci, below);
+          moved[below] = 1;
         }
       }
     }
