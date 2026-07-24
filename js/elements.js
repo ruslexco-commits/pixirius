@@ -23,6 +23,7 @@ const EL = {
   VOID: 18,
   CLONE: 19,
   OILFILM: 20,
+  FAN: 21,
 };
 
 const CAT = {
@@ -55,6 +56,10 @@ const ELEMENTS = {
   [EL.VOID]:  { id: EL.VOID,  name: 'Пустота', cat: CAT.SOLID,  color: [18, 14, 24],    density: 40, flammable: false },
   [EL.CLONE]: { id: EL.CLONE, name: 'Клонер',  cat: CAT.SOLID,  color: [224, 64, 196],  density: 40, flammable: false },
   [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
+  // Неподвижное устройство (не якорь и не структурный материал — просто
+  // всегда стоит на месте), непрерывно нагнетающее ветер вправо в
+  // сетку потоков воздуха. См. Sim.updateWind() в sim.js.
+  [EL.FAN]: { id: EL.FAN, name: 'Вентилятор', cat: CAT.SOLID, color: [90, 150, 220], density: 40, flammable: false },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -62,7 +67,7 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.STEAM, EL.FAN,
 ];
 
 function isMovable(cat) {

@@ -48,12 +48,29 @@ class Sim {
     this.moved = new Uint8Array(n);
     this.stability = new Int16Array(n);
     this.sideCounter = new Int16Array(n);
+
+    // Сетка потоков воздуха — грубее основной (по airCell клеток симуляции на
+    // одну клетку ветра), иначе пересчёт диффузии/затухания на полном
+    // разрешении был бы заметно дороже, а визуально течения и так плавные,
+    // крупномасштабные — точность на уровне одной клетки симуляции тут не нужна.
+    this.airCell = 4;
+    this.airW = Math.ceil(w / this.airCell);
+    this.airH = Math.ceil(h / this.airCell);
+    this.windVX = new Float32Array(this.airW * this.airH);
+    this.windVY = new Float32Array(this.airW * this.airH);
+
     this.paused = false;
     this.frame = 0;
   }
 
   idx(x, y) { return y * this.w + x; }
   inBounds(x, y) { return x >= 0 && x < this.w && y >= 0 && y < this.h; }
+
+  airIdx(x, y) {
+    const ax = Math.min(this.airW - 1, (x / this.airCell) | 0);
+    const ay = Math.min(this.airH - 1, (y / this.airCell) | 0);
+    return ay * this.airW + ax;
+  }
 
   clearCell(i) {
     this.type[i] = EL.EMPTY;
@@ -81,6 +98,8 @@ class Sim {
     this.extra.fill(0);
     this.shade.fill(0);
     this.moved.fill(0);
+    this.windVX.fill(0);
+    this.windVY.fill(0);
   }
 
   swap(i, j) {
@@ -88,6 +107,24 @@ class Sim {
     t = this.life[i]; this.life[i] = this.life[j]; this.life[j] = t;
     t = this.extra[i]; this.extra[i] = this.extra[j]; this.extra[j] = t;
     t = this.shade[i]; this.shade[i] = this.shade[j]; this.shade[j] = t;
+    this.disturbWind(i, j);
+  }
+
+  // Любое реальное перемещение частицы (через swap — единая точка входа для
+  // ВСЕГО движения в симуляции) слегка возмущает воздух в направлении этого
+  // движения. Течения тем самым естественно возникают из самой обычной
+  // физики — падающего песка, текущей воды, поднимающегося пара — а не
+  // только от явных источников вроде вентилятора.
+  disturbWind(i, j) {
+    const w = this.w;
+    const xi = i % w, yi = (i / w) | 0;
+    const xj = j % w, yj = (j / w) | 0;
+    const dx = xj - xi, dy = yj - yi;
+    if (dx === 0 && dy === 0) return;
+    const ai = this.airIdx(xi, yi);
+    const DISTURB = 0.03;
+    this.windVX[ai] += dx * DISTURB;
+    this.windVY[ai] += dy * DISTURB;
   }
 
   // ---- игровой цикл ----
@@ -97,6 +134,7 @@ class Sim {
     this.frame++;
     this.moved.fill(0);
     this.computeStability();
+    this.updateWind();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -242,6 +280,59 @@ class Sim {
     return false;
   }
 
+  // ---- потоки воздуха ----
+
+  // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
+  // диффузия (смешивание с соседними клетками сетки ветра, чтобы резкое
+  // возмущение в одном месте плавно расползалось, а не оставалось иглой).
+  // Сама сетка ветра пополняется отдельно — постоянными источниками
+  // (вентилятор, см. reactFan) и разовыми возмущениями от любого реального
+  // движения частиц (см. disturbWind, вызывается из swap()).
+  updateWind() {
+    const aw = this.airW, ah = this.airH, an = aw * ah;
+    const vx = this.windVX, vy = this.windVY;
+    const DECAY = 0.995;
+    const DIFFUSE = 0.15;
+    if (!this._windVX2 || this._windVX2.length !== an) {
+      this._windVX2 = new Float32Array(an);
+      this._windVY2 = new Float32Array(an);
+    }
+    const vx2 = this._windVX2, vy2 = this._windVY2;
+    for (let ay = 0; ay < ah; ay++) {
+      for (let ax = 0; ax < aw; ax++) {
+        const ai = ay * aw + ax;
+        let sumX = vx[ai], sumY = vy[ai], cnt = 1;
+        if (ax > 0) { const ni = ai - 1; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
+        if (ax < aw - 1) { const ni = ai + 1; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
+        if (ay > 0) { const ni = ai - aw; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
+        if (ay < ah - 1) { const ni = ai + aw; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
+        const avgX = sumX / cnt, avgY = sumY / cnt;
+        let nx = (vx[ai] + (avgX - vx[ai]) * DIFFUSE) * DECAY;
+        let ny = (vy[ai] + (avgY - vy[ai]) * DIFFUSE) * DECAY;
+        // Совсем крошечные значения обнуляем, чтобы не гонять вечный
+        // фоновый шум там, где ветра по сути уже нет.
+        if (Math.abs(nx) < 0.001) nx = 0;
+        if (Math.abs(ny) < 0.001) ny = 0;
+        vx2[ai] = nx; vy2[ai] = ny;
+      }
+    }
+    this.windVX = vx2; this._windVX2 = vx;
+    this.windVY = vy2; this._windVY2 = vy;
+  }
+
+  getWindVX(x, y) { return this.windVX[this.airIdx(x, y)]; }
+  getWindVY(x, y) { return this.windVY[this.airIdx(x, y)]; }
+
+  // Направление ±1 по X, статистически смещённое локальным ветром — не
+  // жёстко диктует направление (иначе газ/жидкость в потоке выглядели бы
+  // механически), а лишь делает движение "по ветру" вероятнее. scale задаёт
+  // силу влияния: у газа заметно сильнее, чем у более тяжёлой жидкости.
+  windDir(x, y, scale) {
+    const wind = this.getWindVX(x, y);
+    const pRight = Math.max(0.05, Math.min(0.95, 0.5 + wind * scale));
+    return Math.random() < pRight ? 1 : -1;
+  }
+
   // ---- реакции ----
 
   react(x, y, i, id) {
@@ -261,7 +352,17 @@ class Sim {
       case EL.WATER: this.reactWater(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
+      case EL.FAN: this.reactFan(x, y, i); break;
     }
+  }
+
+  // Неподвижное устройство: каждый кадр нагнетает ветер вправо в свою клетку
+  // сетки воздуха (см. updateWind) — постоянный, управляемый источник
+  // течения, в отличие от разовых возмущений от обычного движения частиц.
+  reactFan(x, y, i) {
+    const ai = this.airIdx(x, y);
+    const FAN_PUSH = 0.6, FAN_MAX = 6;
+    this.windVX[ai] = Math.min(FAN_MAX, this.windVX[ai] + FAN_PUSH);
   }
 
   reactFlammable(x, y, i, id) {
@@ -564,7 +665,7 @@ class Sim {
       const ai = this.idx(x, y - 1);
       if (this.attemptBuoyantRise(i, ai, el)) return;
     }
-    const dir = Math.random() < 0.5 ? 1 : -1;
+    const dir = this.windDir(x, y, 0.05);
     if (y + 1 < h) {
       for (const dx of [dir, -dir]) {
         const nx = x + dx;
@@ -591,11 +692,30 @@ class Sim {
 
   updateGas(x, y, i, el) {
     const w = this.w;
+    // Сильный ветер может "перебить" обычное всплытие вверх — иначе газ в
+    // открытом воздухе почти всегда сначала успешно поднимался бы на клетку
+    // вверх и функция возвращалась бы раньше, чем вообще доходила до
+    // ветро-зависимого выбора направления ниже: ветер оставался бы заметен
+    // только там, где путь вверх и так уже перекрыт, а не в open air —
+    // самом обычном случае для дыма/пара.
+    const wind = this.getWindVX(x, y);
+    const windPush = Math.min(0.6, Math.abs(wind) * 0.2);
+    if (Math.random() < windPush) {
+      const wdir = wind > 0 ? 1 : -1;
+      const nx = x + wdir;
+      if (nx >= 0 && nx < w) {
+        const ni = this.idx(nx, y);
+        if (this.attemptSwapOrMove(i, ni, el, true)) return;
+      }
+    }
     if (y - 1 >= 0) {
       const ai = this.idx(x, y - 1);
       if (this.attemptSwapOrMove(i, ai, el, true)) return;
     }
-    const dir = Math.random() < 0.5 ? 1 : -1;
+    // Газ — самый лёгкий, поэтому заметнее всего сносится ветром (у жидкости
+    // тот же механизм действует с гораздо меньшим scale, у сыпучего — не
+    // используется вовсе).
+    const dir = this.windDir(x, y, 0.15);
     if (y - 1 >= 0) {
       for (const dx of [dir, -dir]) {
         const nx = x + dx;
