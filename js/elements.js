@@ -22,6 +22,7 @@ const EL = {
   ASH: 17,
   VOID: 18,
   CLONE: 19,
+  OILFILM: 20,
 };
 
 const CAT = {
@@ -53,6 +54,7 @@ const ELEMENTS = {
   [EL.ASH]:   { id: EL.ASH,   name: 'Зола',    cat: CAT.POWDER, color: [64, 62, 60],    density: 5,  flammable: false },
   [EL.VOID]:  { id: EL.VOID,  name: 'Пустота', cat: CAT.SOLID,  color: [18, 14, 24],    density: 40, flammable: false },
   [EL.CLONE]: { id: EL.CLONE, name: 'Клонер',  cat: CAT.SOLID,  color: [224, 64, 196],  density: 40, flammable: false },
+  [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
 };
 
 const ELEMENT_ORDER = [
@@ -69,8 +71,13 @@ function isMovable(cat) {
 // "Твёрдые тела" в смысле структурной устойчивости: падают без опоры,
 // но держатся друг за друга (можно строить навесы), в отличие от
 // сыпучих порошков, которые и так уже падают по одной частице.
+// OILFILM (застывшее масло) тоже входит — двигается/падает вместе со
+// своим объектом, но в computeStability обрабатывается особо (см. sim.js):
+// получает устойчивость только от своей ЕДИНСТВЕННОЙ запомненной связи
+// и никогда не передаёт её дальше — не может служить мостом между
+// двумя разными объектами.
 function isStructural(id) {
-  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE;
+  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM;
 }
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.

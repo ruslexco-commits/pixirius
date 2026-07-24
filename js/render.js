@@ -161,6 +161,11 @@ class Renderer {
       this.zoomBoxCorner = best;
       box = this.computeZoomBoxRect();
     }
+    // Запоминаем итоговый прямоугольник и параметры съёмки — по ним input.js
+    // определяет наведение мыши прямо на окно лупы и пересчитывает обратно
+    // в мировые координаты, чтобы можно было "листать" показываемую область.
+    this.lastZoomBoxRect = box;
+    this.lastZoomCapture = { gx, gy, capRX, capRY };
 
     const ctx = this.ctx;
     const capW = capRX * 2 + 1, capH = capRY * 2 + 1;
@@ -204,10 +209,18 @@ class Renderer {
       this.drawBrushOutline(cursor.gx, cursor.gy, cursor.brushShape, cursor.brushRX, cursor.brushRY);
     }
     if (cursor.zoomActive || cursor.zoomPinned) {
-      const zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
-      const zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
+      let zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
+      let zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
+      // Наведение мышью прямо на окно лупы "листает" показываемую область —
+      // курсор внутри окна важнее и live-, и зафиксированной позиции.
+      if (cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined) {
+        zx = cursor.zoomHoverGX;
+        zy = cursor.zoomHoverGY;
+      }
       this.drawZoomSourceHighlight(zx, zy, cursor.zoomRX, cursor.zoomRY);
       this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned);
+    } else {
+      this.lastZoomBoxRect = null;
     }
   }
 }

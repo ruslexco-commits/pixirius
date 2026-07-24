@@ -31,6 +31,8 @@ class InputController {
     this.zoomPinned = false;
     this.zoomPinnedGX = 0;
     this.zoomPinnedGY = 0;
+    this.zoomHoverGX = null;
+    this.zoomHoverGY = null;
 
     this.undoStack = [];
     this.maxUndoSteps = 20;
@@ -65,12 +67,38 @@ class InputController {
   }
 
   toGrid(clientX, clientY) {
+    const [cx, cy] = this.toCanvasPixels(clientX, clientY);
+    return [Math.floor(cx / this.renderer.zoom), Math.floor(cy / this.renderer.zoom)];
+  }
+
+  // Экранные -> "внутренние" пиксели канваса (без деления на zoom) — та же
+  // система координат, в которой рисуется окно лупы.
+  toCanvasPixels(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
     const scaleX = this.canvas.width / rect.width;
     const scaleY = this.canvas.height / rect.height;
-    const cx = (clientX - rect.left) * scaleX;
-    const cy = (clientY - rect.top) * scaleY;
-    return [Math.floor(cx / this.renderer.zoom), Math.floor(cy / this.renderer.zoom)];
+    return [(clientX - rect.left) * scaleX, (clientY - rect.top) * scaleY];
+  }
+
+  // Если курсор сейчас над самим окном лупы — пересчитываем его позицию
+  // ВНУТРИ этого окна обратно в мировые координаты, чтобы можно было
+  // "листать" показываемую область, наводясь прямо на проекцию лупы.
+  updateLensHover(clientX, clientY) {
+    const box = this.renderer.lastZoomBoxRect;
+    const cap = this.renderer.lastZoomCapture;
+    if (!box || !cap) { this.zoomHoverGX = null; this.zoomHoverGY = null; return; }
+    const [px, py] = this.toCanvasPixels(clientX, clientY);
+    if (px < box.x || px > box.x + box.w || py < box.y || py > box.y + box.h) {
+      this.zoomHoverGX = null; this.zoomHoverGY = null; return;
+    }
+    const capW = cap.capRX * 2 + 1, capH = cap.capRY * 2 + 1;
+    const scale = Math.min(box.w / capW, box.h / capH);
+    const drawW = capW * scale, drawH = capH * scale;
+    const ox = box.x + (box.w - drawW) / 2, oy = box.y + (box.h - drawH) / 2;
+    const dx = Math.floor((px - ox) / scale) - cap.capRX;
+    const dy = Math.floor((py - oy) / scale) - cap.capRY;
+    this.zoomHoverGX = cap.gx + dx;
+    this.zoomHoverGY = cap.gy + dy;
   }
 
   _bind() {
@@ -96,6 +124,10 @@ class InputController {
         if (!e.repeat) this.undo();
         e.preventDefault();
       } else {
+        // Само нажатие Z снимает фиксацию, если лупа уже зафиксирована —
+        // не нужно снова кликать. Держать Z дальше — обычный live-режим,
+        // клик по полю зафиксирует её заново на новом месте.
+        if (!e.repeat && this.zoomPinned) this.zoomPinned = false;
         this.zoomKeyDown = true;
       }
     }
@@ -166,6 +198,7 @@ class InputController {
 
   onMouseMove(e) {
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
+    this.updateLensHover(e.clientX, e.clientY);
     if (this.drag) {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
@@ -218,6 +251,7 @@ class InputController {
       zoomRX: this.zoomRX, zoomRY: this.zoomRY,
       zoomPinned: this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
+      zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
     };
   }
 }

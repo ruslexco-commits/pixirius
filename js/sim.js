@@ -5,6 +5,16 @@ const DY4 = [0, 0, 1, -1];
 const DX8 = [1, -1, 0, 0, 1, 1, -1, -1];
 const DY8 = [0, 0, 1, -1, 1, -1, 1, -1];
 
+// Коды направлений для "единственной связи" OILFILM (см. reactOil/computeStability):
+// 0=вверх, 1=вправо, 2=вниз, 3=влево.
+const OILDIR_DX = [0, 1, 0, -1];
+const OILDIR_DY = [-1, 0, 1, 0];
+function oilDirCode(dx, dy) {
+  for (let k = 0; k < 4; k++) if (OILDIR_DX[k] === dx && OILDIR_DY[k] === dy) return k;
+  return -1;
+}
+function oilOppositeDir(code) { return (code + 2) % 4; }
+
 function bufToB64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -164,12 +174,17 @@ class Sim {
         const i = bucket[bi];
         if (stab[i] !== level) continue; // устарело — клетку с тех пор улучшили
         const x = i % w, y = (i / w) | 0;
+        // Застывшее масло — тупик: получает устойчивость от своей единственной
+        // связи (проверка ниже, при рассмотрении его как соседа), но само
+        // никому её не передаёт — иначе стало бы мостом между двумя объектами.
+        if (this.type[i] === EL.OILFILM) continue;
         for (const [dx, dy, isUp] of steps) {
           const nx = x + dx, ny = y + dy;
           if (!this.inBounds(nx, ny)) continue;
           const ni = this.idx(nx, ny);
           const nid = this.type[ni];
           if (!isStructural(nid)) continue;
+          if (nid === EL.OILFILM && this.extra[ni] !== oilOppositeDir(oilDirCode(dx, dy))) continue;
           const X = ELEMENTS[nid].toughness || 1;
           let newStab, newSideC, newUpC;
           if (isUp) {
@@ -251,6 +266,10 @@ class Sim {
           }
         }
       }
+      // Заодно с проверкой canFall сразу пробуем вытеснить жидкость/песок под
+      // ногами — если совсем некуда (ни рядом, ни где-то в общей массе),
+      // считаем клетку заблокированной, и вся структура просто не падает в
+      // этот кадр (остаётся на текущем месте, "фиксируется").
       let canFall = true;
       for (let k2 = 0; k2 < comp.length; k2++) {
         const ci = comp[k2];
@@ -259,13 +278,13 @@ class Sim {
         const below = this.idx(cx, cy + 1);
         if (compTag[below] === tag) continue;
         const bt = this.type[below];
-        if (bt !== EL.EMPTY) {
-          const bEl = ELEMENTS[bt];
-          // газ/жидкость/песок не держат твёрдое тело — оно тонет сквозь них,
-          // вытесняя их в стороны (см. displaceFluid ниже); держит только
-          // другое твёрдое/стена/якорь или дно поля.
-          if (!bEl || (bEl.cat !== CAT.GAS && bEl.cat !== CAT.LIQUID && bEl.cat !== CAT.POWDER)) { canFall = false; break; }
+        if (bt === EL.EMPTY) continue;
+        const bEl = ELEMENTS[bt];
+        if (bEl && bEl.cat === CAT.GAS) continue; // газ не держит, вытеснять не нужно
+        if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) {
+          if (this.displaceFluid(cx, cy + 1) || this.displaceFluidWide(cx, cy + 1)) continue;
         }
+        canFall = false; break;
       }
       if (canFall) {
         comp.sort((a, b) => ((b / w) | 0) - ((a / w) | 0));
@@ -273,13 +292,6 @@ class Sim {
           const ci = comp[k2];
           const cx = ci % w, cy = (ci / w) | 0;
           const below = this.idx(cx, cy + 1);
-          if (compTag[below] !== tag) {
-            const bt = this.type[below];
-            if (bt !== EL.EMPTY) {
-              const bEl = ELEMENTS[bt];
-              if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) this.displaceFluid(cx, cy + 1);
-            }
-          }
           this.swap(ci, below);
           moved[below] = 1;
         }
@@ -288,15 +300,16 @@ class Sim {
   }
 
   // Твёрдое тело, тонущее в жидкости/песке, выталкивает их в сторону — ищем
-  // ближайшую свободную клетку в том же ряду. Идём "стенкой" в каждую
-  // сторону и останавливаемся на первом же твёрдом препятствии — сквозь
-  // него нельзя телепортироваться на другую (противоположную) сторону
-  // тонущего тела, можно вытесниться только в ближайший реальный просвет
-  // у своего края. Через другую жидкость/газ по пути — можно (сливается
-  // с соседним водоёмом). Из двух сторон выбираем ту, что ближе.
+  // ближайшую свободную клетку в том же ряду, не дальше 5 клеток. Идём
+  // "стенкой" в каждую сторону и останавливаемся на первом же твёрдом
+  // препятствии — сквозь него нельзя телепортироваться на другую
+  // (противоположную) сторону тонущего тела, можно вытесниться только в
+  // ближайший реальный просвет у своего края. Через другую жидкость/газ по
+  // пути — можно (сливается с соседним водоёмом). Из двух сторон выбираем
+  // ту, что ближе. Возвращает true при успехе.
   displaceFluid(x, y) {
     const w = this.w;
-    const radius = 40;
+    const radius = 5;
     const scan = (dir) => {
       for (let step = 1; step <= radius; step++) {
         const nx = x + dir * step;
@@ -309,11 +322,43 @@ class Sim {
       return -1;
     };
     const rDist = scan(1), lDist = scan(-1);
-    if (rDist === -1 && lDist === -1) return;
+    if (rDist === -1 && lDist === -1) return false;
     const useRight = rDist !== -1 && (lDist === -1 || rDist <= lDist);
     const dist = useRight ? rDist : lDist;
     const nx = x + (useRight ? 1 : -1) * dist;
     this.swap(this.idx(x, y), this.idx(nx, y));
+    return true;
+  }
+
+  // Если у самой точки контакта вытеснить некуда (в пределах 5 клеток по
+  // displaceFluid) — пробуем вытеснить какой-нибудь ДРУГОЙ случайный кусочек
+  // той же массы жидкости/песка: случайное блуждание по связным клеткам
+  // того же типа (дёшево, без полного заливочного поиска всей области), и
+  // если у найденной случайной клетки самой находится просвет — переносим
+  // ИСХОДНУЮ клетку на её место (сама она уже вытеснилась в этот просвет).
+  displaceFluidWide(x, y) {
+    const t = this.type[this.idx(x, y)];
+    const attempts = 6;
+    for (let a = 0; a < attempts; a++) {
+      let cx = x, cy = y;
+      const walkSteps = 8 + (Math.random() * 24 | 0);
+      for (let s = 0; s < walkSteps; s++) {
+        const order = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
+        let stepped = false;
+        for (const k of order) {
+          const nx = cx + DX4[k], ny = cy + DY4[k];
+          if (!this.inBounds(nx, ny)) continue;
+          if (this.type[this.idx(nx, ny)] === t) { cx = nx; cy = ny; stepped = true; break; }
+        }
+        if (!stepped) break;
+      }
+      if (cx === x && cy === y) continue;
+      if (this.displaceFluid(cx, cy)) {
+        this.swap(this.idx(x, y), this.idx(cx, cy));
+        return true;
+      }
+    }
+    return false;
   }
 
   // ---- реакции ----
@@ -321,7 +366,8 @@ class Sim {
   react(x, y, i, id) {
     switch (id) {
       case EL.WOOD: this.reactFlammable(x, y, i, id); break;
-      case EL.OIL: this.reactFlammable(x, y, i, id); break;
+      case EL.OIL: this.reactOil(x, y, i); break;
+      case EL.OILFILM: this.reactFlammable(x, y, i, id); break;
       case EL.GUNP: this.reactFlammable(x, y, i, id); break;
       case EL.FIRE: this.reactFire(x, y, i); break;
       case EL.LAVA: this.reactLava(x, y, i); break;
@@ -355,6 +401,37 @@ class Sim {
         }
         return;
       }
+    }
+  }
+
+  // Масло застывает при касании твёрдого тела или якоря (не при касании
+  // другого масла — иначе слой мог бы бесконтрольно нарастать) — становится
+  // OILFILM с запомненным направлением ЕДИНСТВЕННОЙ связи (см. computeStability:
+  // застывшее масло держится только за эту связь и никогда не передаёт
+  // устойчивость дальше, поэтому не может склеить два разных объекта).
+  // Горение по-прежнему в приоритете: если рядом ещё и огонь/лава — масло
+  // просто вспыхивает, а не застывает.
+  reactOil(x, y, i) {
+    const el = ELEMENTS[EL.OIL];
+    let solidifyDir = -1;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const nt = this.type[this.idx(nx, ny)];
+      if (nt === EL.FIRE || nt === EL.LAVA) {
+        if (Math.random() < el.burnChance) {
+          this.spawn(i, EL.FIRE);
+          this.life[i] = el.burnLife + (Math.random() * 10 | 0);
+        }
+        return;
+      }
+      if (solidifyDir === -1 && (isStructural(nt) || isAnchor(nt))) {
+        solidifyDir = oilDirCode(DX4[k], DY4[k]);
+      }
+    }
+    if (solidifyDir !== -1) {
+      this.spawn(i, EL.OILFILM);
+      this.extra[i] = solidifyDir;
     }
   }
 
