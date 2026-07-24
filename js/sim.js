@@ -251,6 +251,19 @@ class Sim {
       visited[i] = 1;
       compTag[i] = tag;
       let compMinX = i % w, compMaxX = i % w;
+      // Компонента объединяет только ОДИН материал (плюс маслянную плёнку,
+      // которая просто обмазывает свой объект и не считается отдельным
+      // материалом). Без этого ограничения соседняя, вообще не связанная
+      // структура из другого материала (например, отдельно стоящий
+      // каменный столб башни, у которого просто не хватило СВОЕГО бюджета
+      // на такую высоту) затягивалась в ту же самую "падающую" группу через
+      // случайное касание бортом — и если ГДЕ-ТО в этой чужой структуре
+      // дальше по цепочке находилась настоящая опора (пол под тем самым
+      // столбом), вся объединённая масса, включая исходно ни при чём не
+      // повинную короткую консоль, намертво зависала, упираясь в эту чужую
+      // опору. Материал не должен наследовать судьбу соседа только потому,
+      // что тот тоже "недодержал" собственный бюджет.
+      let hostType = (this.type[i] !== EL.OILFILM) ? this.type[i] : null;
       let head = 0;
       while (head < comp.length) {
         const ci = comp[head++];
@@ -261,9 +274,12 @@ class Sim {
           const ni = this.idx(nx, ny);
           if (visited[ni] || moved[ni]) continue;
           visited[ni] = 1;
-          if (isStructural(this.type[ni]) && stab[ni] === 0 && !restsOnStable(ni)) {
+          const nid = this.type[ni];
+          const typeOk = nid === EL.OILFILM || hostType === null || nid === hostType;
+          if (isStructural(nid) && stab[ni] === 0 && !restsOnStable(ni) && typeOk) {
             compTag[ni] = tag;
             comp.push(ni);
+            if (hostType === null && nid !== EL.OILFILM) hostType = nid;
             if (nx < compMinX) compMinX = nx; else if (nx > compMaxX) compMaxX = nx;
           }
         }

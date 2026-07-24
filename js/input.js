@@ -83,7 +83,15 @@ class InputController {
   // Если курсор сейчас над самим окном лупы — пересчитываем его позицию
   // ВНУТРИ этого окна обратно в мировые координаты, чтобы можно было
   // "листать" показываемую область, наводясь прямо на проекцию лупы.
+  // Работает только для ЗАФИКСИРОВАННОЙ лупы: смещение dx,dy обязательно
+  // считается от стабильного якоря zoomPinnedGX/GY, а НЕ от того, что лупа
+  // показывала в предыдущем кадре (renderer.lastZoomCapture) — та точка сама
+  // перезаписывается результатом предыдущего наведения, и складывать
+  // смещение поверх неё каждый кадр давало разгоняющуюся обратную связь:
+  // при неподвижной мыши над лупой её проекция улетала на dx,dy КАЖДЫЙ
+  // кадр, а не считалась заново от одной и той же базовой точки.
   updateLensHover(clientX, clientY) {
+    if (!this.zoomPinned) { this.zoomHoverGX = null; this.zoomHoverGY = null; return; }
     const box = this.renderer.lastZoomBoxRect;
     const cap = this.renderer.lastZoomCapture;
     if (!box || !cap) { this.zoomHoverGX = null; this.zoomHoverGY = null; return; }
@@ -97,8 +105,8 @@ class InputController {
     const ox = box.x + (box.w - drawW) / 2, oy = box.y + (box.h - drawH) / 2;
     const dx = Math.floor((px - ox) / scale) - cap.capRX;
     const dy = Math.floor((py - oy) / scale) - cap.capRY;
-    this.zoomHoverGX = cap.gx + dx;
-    this.zoomHoverGY = cap.gy + dy;
+    this.zoomHoverGX = this.zoomPinnedGX + dx;
+    this.zoomHoverGY = this.zoomPinnedGY + dy;
   }
 
   _bind() {
