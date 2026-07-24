@@ -42,6 +42,8 @@ class InputController {
     this.inCanvas = false;
     this.drag = null;
 
+    this.debugStability = false;
+
     this._bind();
   }
 
@@ -127,6 +129,8 @@ class InputController {
     if (e.code === 'Tab') {
       if (!e.repeat) this.brushShape = this.brushShape === 'circle' ? 'square' : 'circle';
       e.preventDefault();
+    } else if (e.code === 'KeyB') {
+      if (!e.repeat) this.debugStability = !this.debugStability;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -271,6 +275,7 @@ class InputController {
       zoomPinned: this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
+      debugStability: this.debugStability,
     };
   }
 }

@@ -20,6 +20,8 @@ class Renderer {
     // Окно лупы — квадрат площадью в четверть площади канваса.
     this.zoomBoxSize = Math.sqrt((canvas.width * canvas.height) / 4);
     this.zoomBoxMargin = 10;
+
+    this.debugStability = false;
   }
 
   cellColor(i) {
@@ -27,6 +29,7 @@ class Renderer {
     const id = sim.type[i];
     if (id === EL.EMPTY) return [14, 14, 18];
     const el = ELEMENTS[id];
+    if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
     const s = sim.shade[i];
     let r = clamp8(el.color[0] + s), g = clamp8(el.color[1] + s), b = clamp8(el.color[2] + s);
     if (id === EL.FIRE) {
@@ -35,6 +38,21 @@ class Renderer {
       g = clamp8(g + (flick >> 1));
     }
     return [r, g, b];
+  }
+
+  // Заземлённость клетки как доля от maxStability её материала: 0 (вот-вот
+  // осыплется) - красный, 1 (максимум, у самой опоры) - зелёный, посередине
+  // - жёлтый. Доля берётся от maxStability, а не от абсолютного значения,
+  // чтобы материалы с разным бюджетом (дерево 5, металл 20) сравнивались
+  // по одной и той же шкале "насколько близко к пределу", а не по сырым
+  // числам.
+  stabilityColor(id, stab) {
+    const maxS = ELEMENTS[id].maxStability || 1;
+    const ratio = Math.max(0, Math.min(1, stab / maxS));
+    let r, g;
+    if (ratio < 0.5) { r = 255; g = Math.round(255 * (ratio / 0.5)); }
+    else { r = Math.round(255 * (1 - (ratio - 0.5) / 0.5)); g = 255; }
+    return [r, g, 40];
   }
 
   buildImage() {
@@ -217,6 +235,7 @@ class Renderer {
   }
 
   render(cursor) {
+    this.debugStability = !!cursor.debugStability;
     this.drawFrame();
     if (cursor.linePreview) {
       const lp = cursor.linePreview;
@@ -252,5 +271,45 @@ class Renderer {
     } else {
       this.lastZoomBoxRect = null;
     }
+
+    if (this.debugStability) {
+      const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
+      if (hovering) this.drawStabilityInfo(cursor.zoomHoverGX, cursor.zoomHoverGY);
+      else if (cursor.showBrush) this.drawStabilityInfo(cursor.gx, cursor.gy);
+    }
+  }
+
+  // Значение заземлённости клетки под курсором - в верхнем левом углу канваса.
+  drawStabilityInfo(gx, gy) {
+    const sim = this.sim;
+    if (!sim.inBounds(gx, gy)) return;
+    const i = sim.idx(gx, gy);
+    const id = sim.type[i];
+    let text;
+    if (id === EL.EMPTY) {
+      text = 'Пусто';
+    } else if (!isStructural(id)) {
+      text = ELEMENTS[id].name;
+    } else {
+      const maxS = ELEMENTS[id].maxStability || 0;
+      text = `${ELEMENTS[id].name}: заземлённость ${sim.stability[i]}/${maxS}`;
+    }
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.font = '14px monospace';
+    const padX = 8, padY = 6, lineH = 18;
+    const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
+    const h = lineH + padY * 2;
+    const x = 8, y = 8;
+    ctx.fillStyle = 'rgba(10,10,13,0.85)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.fillStyle = '#e8e8ee';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + padX, y + h / 2);
+    ctx.restore();
   }
 }
