@@ -160,7 +160,15 @@ class InputController {
 
   onMouseDown(e) {
     if (e.button !== 0 && e.button !== 2) return;
+    // gx,gy — реальная клетка под курсором (для отображения/слежения лупы);
+    // egx,egy — "рабочая" клетка действия: та же самая, кроме случая, когда
+    // курсор наведён на проекцию лупы — тогда действие идёт в ту точку мира,
+    // которую лупа в этом месте показывает.
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
+    this.updateLensHover(e.clientX, e.clientY);
+    const hovering = this.zoomHoverGX !== null && this.zoomHoverGX !== undefined;
+    const egx = hovering ? this.zoomHoverGX : gx;
+    const egy = hovering ? this.zoomHoverGY : gy;
     this.gx = gx; this.gy = gy;
     const shift = e.shiftKey, ctrl = e.ctrlKey, alt = e.altKey;
 
@@ -170,8 +178,8 @@ class InputController {
         this.zoomPinned = false;
       } else {
         this.zoomPinned = true;
-        this.zoomPinnedGX = gx;
-        this.zoomPinnedGY = gy;
+        this.zoomPinnedGX = egx;
+        this.zoomPinnedGY = egy;
       }
       return;
     }
@@ -184,28 +192,31 @@ class InputController {
     else if (shift && e.button === 0) mode = 'line';
     else mode = (e.button === 0) ? 'paint' : 'erase';
 
-    this.drag = { mode, startX: gx, startY: gy, lastX: gx, lastY: gy, elementId };
+    this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
     this.pushUndo();
 
     if (mode === 'paint' || mode === 'erase') {
-      this.sim.stampBrush(gx, gy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(mode, elementId), this.onlyEmptyFor(mode, elementId));
+      this.sim.stampBrush(egx, egy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(mode, elementId), this.onlyEmptyFor(mode, elementId));
     } else if (mode === 'fill') {
-      this.sim.floodFill(gx, gy, elementId, false);
+      this.sim.floodFill(egx, egy, elementId, false);
     } else if (mode === 'fillErase') {
-      this.sim.floodFill(gx, gy, elementId, true);
+      this.sim.floodFill(egx, egy, elementId, true);
     }
   }
 
   onMouseMove(e) {
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
     this.updateLensHover(e.clientX, e.clientY);
+    const hovering = this.zoomHoverGX !== null && this.zoomHoverGX !== undefined;
+    const egx = hovering ? this.zoomHoverGX : gx;
+    const egy = hovering ? this.zoomHoverGY : gy;
     if (this.drag) {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
-        this.sim.stampLine(d.lastX, d.lastY, gx, gy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
-        d.lastX = gx; d.lastY = gy;
+        this.sim.stampLine(d.lastX, d.lastY, egx, egy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
+        d.lastX = egx; d.lastY = egy;
       } else if (d.mode === 'line' || d.mode === 'lineSnap') {
-        d.lastX = gx; d.lastY = gy;
+        d.lastX = egx; d.lastY = egy;
       }
     }
     this.gx = gx; this.gy = gy;

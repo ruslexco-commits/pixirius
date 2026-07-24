@@ -250,6 +250,7 @@ class Sim {
       comp.push(i);
       visited[i] = 1;
       compTag[i] = tag;
+      let compMinX = i % w, compMaxX = i % w;
       let head = 0;
       while (head < comp.length) {
         const ci = comp[head++];
@@ -263,9 +264,20 @@ class Sim {
           if (isStructural(this.type[ni]) && stab[ni] === 0 && !restsOnStable(ni)) {
             compTag[ni] = tag;
             comp.push(ni);
+            if (nx < compMinX) compMinX = nx; else if (nx > compMaxX) compMaxX = nx;
           }
         }
       }
+      // Вытеснение ограничено шириной ВСЕЙ структуры (плюс небольшой запас),
+      // а не радиусом от точки контакта каждой отдельной колонки — иначе у
+      // тела с неровным дном разные колонки контактируют на разной глубине,
+      // и жидкость, вытесняемая КАЖДОЙ из них независимо в своём локальном
+      // радиусе, суммарно всё равно могла бы уйти за пределы объекта целиком
+      // (переходя из-под одной колонки под соседнюю и так далее), даже если
+      // ни один отдельный вызов вытеснения формально не превышал свой лимит.
+      const margin = 5;
+      const loBound = compMinX - margin, hiBound = compMaxX + margin;
+
       // Заодно с проверкой canFall сразу пробуем вытеснить жидкость/песок под
       // ногами — если совсем некуда (ни рядом, ни где-то в общей массе),
       // считаем клетку заблокированной, и вся структура просто не падает в
@@ -282,7 +294,7 @@ class Sim {
         const bEl = ELEMENTS[bt];
         if (bEl && bEl.cat === CAT.GAS) continue; // газ не держит, вытеснять не нужно
         if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) {
-          if (this.displaceFluid(cx, cy + 1) || this.displaceFluidWide(cx, cy + 1)) continue;
+          if (this.displaceFluid(cx, cy + 1, loBound, hiBound) || this.displaceFluidWide(cx, cy + 1, loBound, hiBound)) continue;
         }
         canFall = false; break;
       }
@@ -307,13 +319,16 @@ class Sim {
   // ближайший реальный просвет у своего края. Через другую жидкость/газ по
   // пути — можно (сливается с соседним водоёмом). Из двух сторон выбираем
   // ту, что ближе. Возвращает true при успехе.
-  displaceFluid(x, y) {
+  // loBound/hiBound (по X) — жёсткая граница всей падающей структуры целиком
+  // (её minX/maxX с запасом), не только этой отдельной колонки. См. вызов из
+  // updateStructures().
+  displaceFluid(x, y, loBound = -Infinity, hiBound = Infinity) {
     const w = this.w;
     const radius = 5;
     const scan = (dir) => {
       for (let step = 1; step <= radius; step++) {
         const nx = x + dir * step;
-        if (nx < 0 || nx >= w) return -1;
+        if (nx < 0 || nx >= w || nx < loBound || nx > hiBound) return -1;
         const t = this.type[this.idx(nx, y)];
         if (t === EL.EMPTY) return step;
         const el = ELEMENTS[t];
@@ -336,15 +351,21 @@ class Sim {
   // того же типа (дёшево, без полного заливочного поиска всей области), и
   // если у найденной случайной клетки самой находится просвет — переносим
   // ИСХОДНУЮ клетку на её место (сама она уже вытеснилась в этот просвет).
-  displaceFluidWide(x, y) {
+  // loBound/hiBound — см. displaceFluid: та же общая граница по X для ВСЕЙ
+  // структуры целиком, не только точки контакта (x,y) этого конкретного
+  // вызова. Раньше блуждание ограничивалось только maxReach ОТ СВОЕЙ ЖЕ
+  // точки контакта — а у тела с неровным дном разные колонки контактируют
+  // на разной глубине и каждая тянула жидкость в своём локальном радиусе;
+  // суммарно (через цепочку соседних колонок) жидкость всё равно могла уйти
+  // за пределы объекта, хотя ни один отдельный вызов не превышал свой лимит.
+  // Общая граница на уровне всей структуры закрывает эту дыру.
+  displaceFluidWide(x, y, loBound = -Infinity, hiBound = Infinity) {
     const t = this.type[this.idx(x, y)];
     const attempts = 6;
-    // Блуждание не должно уходить дальше maxReach клеток от исходной точки ни
-    // по одной оси — иначе по связному пути (например, в обход большого
-    // тонущего тела понизу) могло бы вынырнуть на его ПРОТИВОПОЛОЖНОЙ
-    // стороне, куда физически попасть не должно вне зависимости от размера
-    // объекта.
-    const maxReach = 12;
+    // По вертикали по-прежнему ограничиваем блуждание относительно точки
+    // контакта — глубина колодца сама по себе не создаёт риск "телепорта на
+    // другую сторону объекта", в отличие от смещения по X.
+    const maxVReach = 12;
     for (let a = 0; a < attempts; a++) {
       let cx = x, cy = y;
       const walkSteps = 8 + (Math.random() * 24 | 0);
@@ -354,13 +375,13 @@ class Sim {
         for (const k of order) {
           const nx = cx + DX4[k], ny = cy + DY4[k];
           if (!this.inBounds(nx, ny)) continue;
-          if (Math.abs(nx - x) > maxReach || Math.abs(ny - y) > maxReach) continue;
+          if (nx < loBound || nx > hiBound || Math.abs(ny - y) > maxVReach) continue;
           if (this.type[this.idx(nx, ny)] === t) { cx = nx; cy = ny; stepped = true; break; }
         }
         if (!stepped) break;
       }
       if (cx === x && cy === y) continue;
-      if (this.displaceFluid(cx, cy)) {
+      if (this.displaceFluid(cx, cy, loBound, hiBound)) {
         this.swap(this.idx(x, y), this.idx(cx, cy));
         return true;
       }

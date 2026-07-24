@@ -57,11 +57,18 @@ class Renderer {
   }
 
   drawBrushOutline(gx, gy, shape, rx, ry) {
+    this.drawBrushOutlineAt(gx, gy, shape, rx, ry, 0, 0, this.zoom);
+  }
+
+  // То же самое, но в произвольной системе координат (смещение ox,oy и свой
+  // масштаб scale вместо this.zoom) — используется для отрисовки наведения
+  // кисти внутри окна лупы, в её собственном увеличении.
+  drawBrushOutlineAt(gx, gy, shape, rx, ry, ox, oy, scale) {
     const ctx = this.ctx;
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.lineWidth = 1;
-    this.traceShapeOutline(gx, gy, shape, rx, ry);
+    this.traceShapeOutline(gx, gy, shape, rx, ry, ox, oy, scale);
     ctx.restore();
   }
 
@@ -69,11 +76,11 @@ class Renderer {
   // это просто прямоугольник, а для круга — точная лестничная граница по той
   // же формуле включения, что использует stampBrush (а не гладкий эллипс,
   // который на глаз казался мельче настоящей закрашиваемой области).
-  traceShapeOutline(gx, gy, shape, rx, ry) {
-    const ctx = this.ctx, z = this.zoom;
+  traceShapeOutline(gx, gy, shape, rx, ry, ox = 0, oy = 0, scale = this.zoom) {
+    const ctx = this.ctx;
     if (shape !== 'circle') {
-      const w = (rx * 2 + 1) * z, h = (ry * 2 + 1) * z;
-      const cx = (gx + 0.5) * z, cy = (gy + 0.5) * z;
+      const w = (rx * 2 + 1) * scale, h = (ry * 2 + 1) * scale;
+      const cx = ox + (gx + 0.5) * scale, cy = oy + (gy + 0.5) * scale;
       ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
       return;
     }
@@ -88,8 +95,8 @@ class Renderer {
         if (dx * dx + dy * dy <= 1) { if (xl === null) xl = x; xr = x; }
       }
       if (xl !== null) {
-        left.push([xl * z, y * z], [xl * z, (y + 1) * z]);
-        right.push([(xr + 1) * z, y * z], [(xr + 1) * z, (y + 1) * z]);
+        left.push([ox + xl * scale, oy + y * scale], [ox + xl * scale, oy + (y + 1) * scale]);
+        right.push([ox + (xr + 1) * scale, oy + y * scale], [ox + (xr + 1) * scale, oy + (y + 1) * scale]);
       }
     }
     if (!left.length) return;
@@ -140,7 +147,7 @@ class Renderer {
     ctx.restore();
   }
 
-  drawZoomLens(gx, gy, capRX, capRY, pinned) {
+  drawZoomLens(gx, gy, capRX, capRY, pinned, brush) {
     const z = this.zoom;
     const srcRect = {
       x: (gx - capRX) * z, y: (gy - capRY) * z,
@@ -196,6 +203,16 @@ class Renderer {
     ctx.strokeStyle = 'rgba(255,60,60,0.95)';
     ctx.lineWidth = 1;
     ctx.strokeRect(ox + capRX * scale, oy + capRY * scale, Math.ceil(scale), Math.ceil(scale));
+
+    // Наведение кисти внутри самой лупы — тем же точным контуром, что и на
+    // основном канвасе, но в координатах и увеличении окна лупы, и только
+    // если рабочая точка вообще попадает в показываемую лупой область.
+    if (brush) {
+      const lgx = brush.gx - gx + capRX, lgy = brush.gy - gy + capRY;
+      if (Math.abs(brush.gx - gx) <= capRX + brush.rx && Math.abs(brush.gy - gy) <= capRY + brush.ry) {
+        this.drawBrushOutlineAt(lgx, lgy, brush.shape, brush.rx, brush.ry, ox, oy, scale);
+      }
+    }
     ctx.restore();
   }
 
@@ -209,16 +226,29 @@ class Renderer {
       this.drawBrushOutline(cursor.gx, cursor.gy, cursor.brushShape, cursor.brushRX, cursor.brushRY);
     }
     if (cursor.zoomActive || cursor.zoomPinned) {
+      const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
       let zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
       let zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
       // Наведение мышью прямо на окно лупы "листает" показываемую область —
       // курсор внутри окна важнее и live-, и зафиксированной позиции.
-      if (cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined) {
+      if (hovering) {
         zx = cursor.zoomHoverGX;
         zy = cursor.zoomHoverGY;
       }
       this.drawZoomSourceHighlight(zx, zy, cursor.zoomRX, cursor.zoomRY);
-      this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned);
+      // Рабочая точка кисти для отрисовки внутри лупы: при наведении на саму
+      // лупу — та точка, что она сейчас показывает под курсором; иначе, во
+      // время протяжки линии — текущий конец линии; иначе — обычная позиция
+      // курсора на основном канвасе (для live-лупы она и так совпадает с zx,zy).
+      let brush = null;
+      if (cursor.showBrush) {
+        let bgx, bgy;
+        if (hovering) { bgx = cursor.zoomHoverGX; bgy = cursor.zoomHoverGY; }
+        else if (cursor.linePreview) { bgx = cursor.linePreview.x1; bgy = cursor.linePreview.y1; }
+        else { bgx = cursor.gx; bgy = cursor.gy; }
+        brush = { gx: bgx, gy: bgy, shape: cursor.brushShape, rx: cursor.brushRX, ry: cursor.brushRY };
+      }
+      this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned, brush);
     } else {
       this.lastZoomBoxRect = null;
     }
