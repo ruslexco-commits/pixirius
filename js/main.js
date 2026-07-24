@@ -5,7 +5,7 @@ const GRID_H = 324;
 const ZOOM = 3;
 
 const sim = new Sim(GRID_W, GRID_H);
-let selectedElement = EL.SAND;
+let selectedElement = ELEMENT_ORDER[0];
 
 const canvas = document.getElementById('view');
 const stage = document.getElementById('stage');
@@ -178,7 +178,7 @@ function addPaletteButton(id, isEraser) {
 addPaletteButton(EL.EMPTY, true);
 for (const id of ELEMENT_ORDER) addPaletteButton(id, false);
 palette.children[1].classList.add('selected');
-statusLabel.textContent = ELEMENTS[EL.SAND].name;
+statusLabel.textContent = ELEMENTS[ELEMENT_ORDER[0]].name;
 
 // ---- игровой цикл ----
 

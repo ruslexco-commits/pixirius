@@ -246,14 +246,17 @@ class Renderer {
     }
     if (cursor.zoomActive || cursor.zoomPinned) {
       const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
-      let zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
-      let zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
-      // Наведение мышью прямо на окно лупы "листает" показываемую область —
-      // курсор внутри окна важнее и live-, и зафиксированной позиции.
-      if (hovering) {
-        zx = cursor.zoomHoverGX;
-        zy = cursor.zoomHoverGY;
-      }
+      // Что именно показывает лупа (центр захвата и подсветка источника на
+      // основном канвасе) — это ТОЛЬКО live-слежение за курсором или
+      // зафиксированная точка, и НИКОГДА наведение на саму проекцию лупы.
+      // Раньше наведение на уже зафиксированную лупу подменяло эту точку на
+      // zoomHoverGX/GY, из-за чего показываемая область визуально "ехала"
+      // за мышкой прямо внутри собственного окна — притом что "зафиксировано"
+      // как раз и должно означать "не двигается". Наведение по-прежнему
+      // определяет, КУДА рисовать (см. brush ниже) — просто больше не влияет
+      // на то, что лупа показывает.
+      const zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
+      const zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
       this.drawZoomSourceHighlight(zx, zy, cursor.zoomRX, cursor.zoomRY);
       // Рабочая точка кисти для отрисовки внутри лупы: при наведении на саму
       // лупу — та точка, что она сейчас показывает под курсором; иначе, во

@@ -57,11 +57,12 @@ const ELEMENTS = {
   [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
 };
 
+// Пока что в палитре временно оставлены только эти пять элементов — по
+// просьбе пользователя. Остальные определения (ELEMENTS/EL) и вся связанная
+// с ними логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы
+// вернуть элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.SAND, EL.WATER, EL.STONE, EL.WOOD, EL.OIL,
-  EL.LAVA, EL.ACID, EL.ICE, EL.STEAM, EL.SMOKE,
-  EL.FIRE, EL.GUNP, EL.METAL, EL.GLASS, EL.WALL,
-  EL.SALT, EL.ASH, EL.VOID, EL.CLONE,
+  EL.WATER, EL.WOOD, EL.OIL, EL.ACID, EL.METAL,
 ];
 
 function isMovable(cat) {
