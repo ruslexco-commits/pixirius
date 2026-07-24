@@ -339,6 +339,12 @@ class Sim {
   displaceFluidWide(x, y) {
     const t = this.type[this.idx(x, y)];
     const attempts = 6;
+    // Блуждание не должно уходить дальше maxReach клеток от исходной точки ни
+    // по одной оси — иначе по связному пути (например, в обход большого
+    // тонущего тела понизу) могло бы вынырнуть на его ПРОТИВОПОЛОЖНОЙ
+    // стороне, куда физически попасть не должно вне зависимости от размера
+    // объекта.
+    const maxReach = 12;
     for (let a = 0; a < attempts; a++) {
       let cx = x, cy = y;
       const walkSteps = 8 + (Math.random() * 24 | 0);
@@ -348,6 +354,7 @@ class Sim {
         for (const k of order) {
           const nx = cx + DX4[k], ny = cy + DY4[k];
           if (!this.inBounds(nx, ny)) continue;
+          if (Math.abs(nx - x) > maxReach || Math.abs(ny - y) > maxReach) continue;
           if (this.type[this.idx(nx, ny)] === t) { cx = nx; cy = ny; stepped = true; break; }
         }
         if (!stepped) break;
@@ -425,7 +432,11 @@ class Sim {
         }
         return;
       }
-      if (solidifyDir === -1 && (isStructural(nt) || isAnchor(nt))) {
+      // OILFILM намеренно исключено: иначе слой мог бы бесконтрольно расти,
+      // застывая каждый раз заново от уже застывшего масла рядом (OILFILM
+      // входит в isStructural() ради физики падения/устойчивости, но это
+      // отдельный вопрос от того, что именно триггерит застывание).
+      if (solidifyDir === -1 && nt !== EL.OILFILM && (isStructural(nt) || isAnchor(nt))) {
         solidifyDir = oilDirCode(DX4[k], DY4[k]);
       }
     }
