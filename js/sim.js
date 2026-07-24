@@ -279,19 +279,33 @@ class Sim {
     }
   }
 
-  // Твёрдое тело, тонущее в жидкости/песке, выталкивает их в сторону —
-  // ищем ближайшую свободную клетку в том же ряду слева/справа (у краёв
-  // тонущего объекта) и переносим жидкость/песок туда. Если рядом совсем
-  // некуда — не страшно, обычный swap() в вызывающем коде всё равно
-  // вытолкнет её вверх, на место, откуда пришло твёрдое тело.
+  // Твёрдое тело, тонущее в жидкости/песке, выталкивает их в сторону — ищем
+  // ближайшую свободную клетку в том же ряду. Идём "стенкой" в каждую
+  // сторону и останавливаемся на первом же твёрдом препятствии — сквозь
+  // него нельзя телепортироваться на другую (противоположную) сторону
+  // тонущего тела, можно вытесниться только в ближайший реальный просвет
+  // у своего края. Через другую жидкость/газ по пути — можно (сливается
+  // с соседним водоёмом). Из двух сторон выбираем ту, что ближе.
   displaceFluid(x, y) {
     const w = this.w;
     const radius = 40;
-    for (let step = 1; step <= radius; step++) {
-      const xr = x + step, xl = x - step;
-      if (xr < w) { const ni = this.idx(xr, y); if (this.type[ni] === EL.EMPTY) { this.swap(this.idx(x, y), ni); return; } }
-      if (xl >= 0) { const ni = this.idx(xl, y); if (this.type[ni] === EL.EMPTY) { this.swap(this.idx(x, y), ni); return; } }
-    }
+    const scan = (dir) => {
+      for (let step = 1; step <= radius; step++) {
+        const nx = x + dir * step;
+        if (nx < 0 || nx >= w) return -1;
+        const t = this.type[this.idx(nx, y)];
+        if (t === EL.EMPTY) return step;
+        const el = ELEMENTS[t];
+        if (!el || (el.cat !== CAT.LIQUID && el.cat !== CAT.GAS)) return -1; // упёрлись в твёрдое
+      }
+      return -1;
+    };
+    const rDist = scan(1), lDist = scan(-1);
+    if (rDist === -1 && lDist === -1) return;
+    const useRight = rDist !== -1 && (lDist === -1 || rDist <= lDist);
+    const dist = useRight ? rDist : lDist;
+    const nx = x + (useRight ? 1 : -1) * dist;
+    this.swap(this.idx(x, y), this.idx(nx, y));
   }
 
   // ---- реакции ----
