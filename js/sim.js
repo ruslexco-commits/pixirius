@@ -5,6 +5,10 @@ const DY4 = [0, 0, 1, -1];
 const DX8 = [1, -1, 0, 0, 1, 1, -1, -1];
 const DY8 = [0, 0, 1, -1, 1, -1, 1, -1];
 
+// Масштаб бокового счётчика в computeStability(): позволяет угловым клеткам
+// стоить вдвое дешевле обычного шага, оставаясь при этом целыми числами.
+const STEP_UNIT = 2;
+
 // Коды направлений для "единственной связи" OILFILM (см. reactOil/computeStability):
 // 0=вверх, 1=вправо, 2=вниз, 3=влево.
 const OILDIR_DX = [0, 1, 0, -1];
@@ -142,6 +146,10 @@ class Sim {
   // просто переносится как есть, так что боковой вылет, начатый с любой
   // высоты столба, получает полный горизонтальный бюджет с нуля.
   // X берётся из материала ПРИНИМАЮЩЕЙ клетки (не источника).
+  // Угловые/стыковые клетки (подпёртые сразу с двух сторон, не только
+  // оттуда, откуда идёт распространение) держатся крепче прямого участка —
+  // боковой шаг туда стоит вдвое дешевле (см. hasOtherStableNeighbor и
+  // STEP_UNIT).
   computeStability() {
     const w = this.w, h = this.h, n = w * h;
     const stab = this.stability;
@@ -196,8 +204,17 @@ class Sim {
             newSideC = sideC[i];
           } else {
             const X = ELEMENTS[nid].toughness || 1;
-            newSideC = sideC[i] + 1;
-            if (newSideC >= X) { newStab = stab[i] - 1; newSideC = 0; } else newStab = stab[i];
+            // Угол/стык (клетка того же материала, подпёртая ещё и с ДРУГОЙ
+            // стороны, не только оттуда, откуда пришло это распространение)
+            // держится крепче прямого участка — вдвое дешевле по счётчику.
+            // Реализовано через масштаб x2: обычный шаг стоит 2 "юнита",
+            // угловой — 1, а порог смещён на X*2, так что на прямом участке
+            // счёт идёт ровно так же, как и раньше (X шагов на -1), а
+            // угловые шаги считаются за половину.
+            const corner = this.hasOtherStableNeighbor(nx, ny, dx, dy, nid);
+            newSideC = sideC[i] + (corner ? 1 : STEP_UNIT);
+            const threshold = X * STEP_UNIT;
+            if (newSideC >= threshold) { newStab = stab[i] - 1; newSideC = 0; } else newStab = stab[i];
           }
           if (newStab > stab[ni]) {
             stab[ni] = newStab; sideC[ni] = newSideC;
@@ -206,6 +223,23 @@ class Sim {
         }
       }
     }
+  }
+
+  // Есть ли у клетки (x,y) ещё один уже устойчивый (stability>0) сосед того
+  // же материала, помимо того, откуда пришло текущее распространение
+  // (fromDx,fromDy — направление ИЗ источника В эту клетку)? Если да — это
+  // геометрический угол/стык (подпёрта сразу с двух сторон), а не середина
+  // прямого участка.
+  hasOtherStableNeighbor(x, y, fromDx, fromDy, matchType) {
+    for (let k = 0; k < 4; k++) {
+      const ddx = DX4[k], ddy = DY4[k];
+      if (ddx === -fromDx && ddy === -fromDy) continue; // это как раз тот сосед, откуда мы пришли
+      const nx = x + ddx, ny = y + ddy;
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      if (this.type[ni] === matchType && this.stability[ni] > 0) return true;
+    }
+    return false;
   }
 
   // ---- реакции ----
