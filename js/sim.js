@@ -32,10 +32,11 @@ class Sim {
     this.extra = new Uint8Array(n);
     this.shade = new Int8Array(n);
     this.moved = new Uint8Array(n);
-    this.groundDist = new Int16Array(n);
+    this.stability = new Int16Array(n);
+    this.sideCounter = new Int16Array(n);
+    this.upCounter = new Int16Array(n);
     this.structVisited = new Uint8Array(n);
     this.structTag = new Int32Array(n);
-    this.maxSupportDist = 10;
     this.paused = false;
     this.frame = 0;
   }
@@ -115,40 +116,35 @@ class Sim {
 
   // ---- структурная устойчивость твёрдых тел ----
 
-  // groundDist[i] = -1, если структурная клетка вообще не связана цепочкой
-  // с полом/якорем (полностью оторвана — падает целиком, см. ниже), иначе
-  // "вес" в клетках до ближайшей опоры — но не простое расстояние по
-  // 4-связности, а именно вылет консолью: подъём НА клетку, которая прямо
-  // над опорной (стоит на том, что ниже — обычная вертикальная опора,
-  // башню так можно строить сколь угодно высокой), ничего не стоит; а вот
-  // шаг вбок или вниз (нависание без опоры снизу) добавляет 1. Иначе
-  // говоря, лимит держит именно горизонтальный навес, а не высоту башни.
-  // 0-1 BFS: сначала бесплатно расширяем текущий уровень вверх, потом уже
-  // платно (вбок/вниз) переходим на следующий уровень.
-  computeGrounded() {
+  // У каждого структурного материала своя maxStability (значение, которое
+  // получает клетка, касающаяся низа поля или якоря — стена/пустота/клонер)
+  // и toughness = X (через сколько клеток пути стабильность падает на 1).
+  // Стабильность распространяется соседям, но подъём вверх и шаг вбок/вниз
+  // считаются двумя НЕЗАВИСИМЫМИ счётчиками пути: свернув наверх, не успев
+  // пройти X клеток вбок, боковой счётчик просто замирает (сохраняется) —
+  // и так можно откладывать его сколько угодно раз, переключаясь между
+  // направлениями, лишь бы каждый отдельный счётчик не набрал свои X.
+  // X берётся из материала ПРИНИМАЮЩЕЙ клетки (не источника).
+  computeStability() {
     const w = this.w, h = this.h, n = w * h;
-    const dist = this.groundDist;
-    dist.fill(-1);
+    const stab = this.stability;
+    const sideC = this.sideCounter;
+    const upC = this.upCounter;
+    stab.fill(0);
+    sideC.fill(0);
+    upC.fill(0);
 
-    const expandUp = (level, d) => {
-      const stack = level.slice();
-      while (stack.length) {
-        const i = stack.pop();
-        const x = i % w, y = (i / w) | 0;
-        if (y - 1 < 0) continue;
-        const ni = this.idx(x, y - 1);
-        if (isStructural(this.type[ni]) && dist[ni] === -1) {
-          dist[ni] = d;
-          level.push(ni);
-          stack.push(ni);
-        }
-      }
+    const maxLevel = 64;
+    const buckets = this._stabBuckets || (this._stabBuckets = Array.from({ length: maxLevel + 1 }, () => []));
+    for (let lvl = 0; lvl <= maxLevel; lvl++) buckets[lvl].length = 0;
+
+    const seed = (i, id) => {
+      const s = Math.min(ELEMENTS[id].maxStability || 0, maxLevel);
+      if (s > stab[i]) { stab[i] = s; sideC[i] = 0; upC[i] = 0; buckets[s].push(i); }
     };
-
-    let frontier = [];
     for (let x = 0; x < w; x++) {
       const i = this.idx(x, h - 1);
-      if (isStructural(this.type[i])) { dist[i] = 0; frontier.push(i); }
+      if (isStructural(this.type[i])) seed(i, this.type[i]);
     }
     for (let i = 0; i < n; i++) {
       if (!isAnchor(this.type[i])) continue;
@@ -157,67 +153,62 @@ class Sim {
         const nx = x + DX4[k], ny = y + DY4[k];
         if (!this.inBounds(nx, ny)) continue;
         const ni = this.idx(nx, ny);
-        if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = 0; frontier.push(ni); }
+        if (isStructural(this.type[ni])) seed(ni, this.type[ni]);
       }
     }
-    expandUp(frontier, 0);
 
-    let d = 0;
-    while (frontier.length) {
-      const next = [];
-      d++;
-      for (let fi = 0; fi < frontier.length; fi++) {
-        const i = frontier[fi];
+    const steps = [[0, -1, true], [1, 0, false], [-1, 0, false], [0, 1, false]];
+    for (let level = maxLevel; level >= 1; level--) {
+      const bucket = buckets[level];
+      for (let bi = 0; bi < bucket.length; bi++) {
+        const i = bucket[bi];
+        if (stab[i] !== level) continue; // устарело — клетку с тех пор улучшили
         const x = i % w, y = (i / w) | 0;
-        // платно: влево, вправо, вниз. Вверх уже обработан бесплатно выше.
-        const nRight = this.inBounds(x + 1, y) ? this.idx(x + 1, y) : -1;
-        const nLeft = this.inBounds(x - 1, y) ? this.idx(x - 1, y) : -1;
-        const nDown = this.inBounds(x, y + 1) ? this.idx(x, y + 1) : -1;
-        for (const ni of [nRight, nLeft, nDown]) {
-          if (ni === -1) continue;
-          if (isStructural(this.type[ni]) && dist[ni] === -1) { dist[ni] = d; next.push(ni); }
+        for (const [dx, dy, isUp] of steps) {
+          const nx = x + dx, ny = y + dy;
+          if (!this.inBounds(nx, ny)) continue;
+          const ni = this.idx(nx, ny);
+          const nid = this.type[ni];
+          if (!isStructural(nid)) continue;
+          const X = ELEMENTS[nid].toughness || 1;
+          let newStab, newSideC, newUpC;
+          if (isUp) {
+            newSideC = sideC[i];
+            newUpC = upC[i] + 1;
+            if (newUpC >= X) { newStab = stab[i] - 1; newUpC = 0; } else newStab = stab[i];
+          } else {
+            newUpC = upC[i];
+            newSideC = sideC[i] + 1;
+            if (newSideC >= X) { newStab = stab[i] - 1; newSideC = 0; } else newStab = stab[i];
+          }
+          if (newStab > stab[ni]) {
+            stab[ni] = newStab; sideC[ni] = newSideC; upC[ni] = newUpC;
+            if (newStab >= 1) buckets[Math.min(newStab, maxLevel)].push(ni);
+          }
         }
       }
-      expandUp(next, d);
-      frontier = next;
     }
   }
 
-  // Три категории структурных клеток каждый кадр:
-  //  1) на безопасном расстоянии от опоры (dist 0..maxSupportDist) — стоят;
-  //  2) формально ещё связаны цепочкой, но она длиннее maxSupportDist —
-  //     осыпаются под собственным весом отдельными частицами (как порошок),
-  //     а не единым жёстким куском (иначе можно бы строить бесконечный навес);
-  //  3) полностью оторваны от опоры (dist===-1) — падают целиком одной
-  //     жёсткой структурой, сохраняя форму, пока не упрутся — тогда снова
-  //     замирают и на следующем кадре могут быть переоценены как заземлённые.
+  // Структурная клетка со stability===0 (никогда не достигнута распространением
+  // либо стабильность истощилась до нуля по пути) не держится — такие клетки,
+  // связанные друг с другом, падают целиком одной жёсткой структурой, сохраняя
+  // форму, пока не упрутся — тогда снова замирают и на следующем кадре
+  // переоцениваются заново (уже как часть новой опоры, если легли на неё).
   updateStructures() {
-    this.computeGrounded();
+    this.computeStability();
     const w = this.w, h = this.h, n = w * h;
-    const dist = this.groundDist;
+    const stab = this.stability;
     const visited = this.structVisited;
     const compTag = this.structTag;
     const moved = this.moved;
     visited.fill(0);
 
-    // Осыпание использует только moved[] для защиты от повторной обработки
-    // в этом же проходе — НЕ трогает visited[], который ниже целиком
-    // принадлежит поиску жёстких компонент. Иначе клетка, которую здесь
-    // сознательно НЕ раскрошили (например, потому что dist===-1 — она уже
-    // полностью оторвана и должна падать жёстким куском, а не крошиться),
-    // осталась бы помечена как "просмотрено" и ниже её бы ошибочно пропустили.
-    for (let i = 0; i < n; i++) {
-      if (moved[i]) continue;
-      const id = this.type[i];
-      if (!isStructural(id) || dist[i] <= this.maxSupportDist) continue;
-      this.updatePowder(i % w, (i / w) | 0, i, ELEMENTS[id]);
-    }
-
     let tag = 0;
     const comp = [];
     for (let i = 0; i < n; i++) {
       if (visited[i] || moved[i]) { visited[i] = 1; continue; }
-      if (!isStructural(this.type[i]) || dist[i] !== -1) { visited[i] = 1; continue; }
+      if (!isStructural(this.type[i]) || stab[i] !== 0) { visited[i] = 1; continue; }
       tag++;
       comp.length = 0;
       comp.push(i);
@@ -233,7 +224,7 @@ class Sim {
           const ni = this.idx(nx, ny);
           if (visited[ni] || moved[ni]) continue;
           visited[ni] = 1;
-          if (isStructural(this.type[ni]) && dist[ni] === -1) {
+          if (isStructural(this.type[ni]) && stab[ni] === 0) {
             compTag[ni] = tag;
             comp.push(ni);
           }

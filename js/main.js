@@ -68,8 +68,16 @@ btnClear.innerHTML = pixelSvg(ICONS.clear, ICON_COLOR);
 btnSave.innerHTML = pixelSvg(ICONS.save, ICON_COLOR);
 btnLoad.innerHTML = pixelSvg(ICONS.load, ICON_COLOR);
 
-btnPause.addEventListener('click', () => { sim.paused = !sim.paused; refreshPauseIcon(); });
+function togglePause() { sim.paused = !sim.paused; refreshPauseIcon(); }
+btnPause.addEventListener('click', togglePause);
 btnClear.addEventListener('click', () => { sim.clear(); });
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat) {
+    e.preventDefault();
+    togglePause();
+  }
+});
 
 btnSave.addEventListener('click', () => {
   const data = JSON.stringify(sim.serialize());
@@ -104,8 +112,44 @@ fileLoad.addEventListener('change', () => {
 
 const palette = document.getElementById('palette');
 const statusLabel = document.getElementById('statusLabel');
+const materialInfo = document.getElementById('materialInfo');
 
 function rgbCss(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
+
+function buildMaterialInfoHTML(id, isEraser, name) {
+  if (isEraser) return `<div class="mi-title">${name}</div>`;
+  const el = ELEMENTS[id];
+  let rows = '';
+  if (isStructural(id)) {
+    rows += `<div class="mi-row"><span>Макс. стабильность</span><span>${el.maxStability}</span></div>`;
+    rows += `<div class="mi-row"><span>Стойкость</span><span>${el.toughness} кл./-1</span></div>`;
+  }
+  if (typeof el.density === 'number') {
+    rows += `<div class="mi-row"><span>Плотность</span><span>${el.density}</span></div>`;
+  }
+  if (el.flammable) {
+    rows += `<div class="mi-row"><span>Горючесть</span><span>${Math.round(el.burnChance * 100)}%</span></div>`;
+  }
+  if (!rows) rows = `<div class="mi-row"><span>Особых характеристик нет</span></div>`;
+  return `<div class="mi-title">${el.name}</div>${rows}`;
+}
+
+function showMaterialInfo(clientX, clientY, id, isEraser, name) {
+  materialInfo.innerHTML = buildMaterialInfoHTML(id, isEraser, name);
+  materialInfo.classList.add('visible');
+  const pad = 12;
+  const rect = materialInfo.getBoundingClientRect();
+  let left = clientX + pad, top = clientY + pad;
+  if (left + rect.width > window.innerWidth) left = clientX - rect.width - pad;
+  if (top + rect.height > window.innerHeight) top = clientY - rect.height - pad;
+  materialInfo.style.left = Math.max(4, left) + 'px';
+  materialInfo.style.top = Math.max(4, top) + 'px';
+}
+
+function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
+
+document.addEventListener('click', hideMaterialInfo);
+document.addEventListener('scroll', hideMaterialInfo, true);
 
 function addPaletteButton(id, isEraser) {
   const btn = document.createElement('button');
@@ -122,6 +166,11 @@ function addPaletteButton(id, isEraser) {
     btn.classList.add('selected');
     statusLabel.textContent = name;
   });
+  btn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showMaterialInfo(e.clientX, e.clientY, id, isEraser, name);
+  });
+  btn.addEventListener('mouseleave', hideMaterialInfo);
   palette.appendChild(btn);
   return btn;
 }

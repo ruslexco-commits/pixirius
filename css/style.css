@@ -108,6 +108,38 @@ html, body {
   flex: 0 0 auto;
 }
 
+#materialInfo {
+  position: fixed;
+  z-index: 10;
+  display: none;
+  min-width: 160px;
+  border: 1px solid #4a4a54;
+  background: #1a1a20;
+  border-radius: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+#materialInfo.visible { display: block; }
+
+#materialInfo .mi-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+#materialInfo .mi-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: #b8b8c0;
+}
+
+#materialInfo .mi-row span:last-child { color: #e8e8ec; }
+
 @media (max-width: 860px) {
   #app { flex-direction: column; align-items: stretch; height: auto; min-height: 100vh; overflow: auto; }
   #stage { flex: 0 0 auto; }
