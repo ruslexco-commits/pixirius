@@ -45,8 +45,6 @@ class Sim {
     this.stability = new Int16Array(n);
     this.sideCounter = new Int16Array(n);
     this.upCounter = new Int16Array(n);
-    this.structVisited = new Uint8Array(n);
-    this.structTag = new Int32Array(n);
     this.paused = false;
     this.frame = 0;
   }
@@ -95,7 +93,7 @@ class Sim {
     if (this.paused) return;
     this.frame++;
     this.moved.fill(0);
-    this.updateStructures();
+    this.computeStability();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -122,6 +120,12 @@ class Sim {
     else if (el2.cat === CAT.LIQUID) this.updateLiquid(x, y, i, el2);
     else if (el2.cat === CAT.GAS) this.updateGas(x, y, i, el2);
     else if (id2 === EL.FIRE) this.updateFireMovement(x, y, i);
+    // Структурная клетка, вышедшая за бюджет устойчивости (stability===0),
+    // больше не держится за соседей — она в буквальном смысле рассыпалась,
+    // и дальше падает точно так же, как сыпучий материал (вниз, а если
+    // прямо под ней занято — по диагонали в сторону): та же updatePowder,
+    // с той же плотностью материала для сравнения при вытеснении жидкостей.
+    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2);
   }
 
   // ---- структурная устойчивость твёрдых тел ----
@@ -203,224 +207,6 @@ class Sim {
         }
       }
     }
-  }
-
-  // Структурная клетка со stability===0 (никогда не достигнута распространением
-  // либо стабильность истощилась до нуля по пути) не держится — такие клетки,
-  // связанные друг с другом, падают целиком одной жёсткой структурой, сохраняя
-  // форму, пока не упрутся — тогда снова замирают и на следующем кадре
-  // переоцениваются заново (уже как часть новой опоры, если легли на неё).
-  updateStructures() {
-    this.computeStability();
-    const w = this.w, h = this.h, n = w * h;
-    const stab = this.stability;
-    const visited = this.structVisited;
-    const compTag = this.structTag;
-    const moved = this.moved;
-    visited.fill(0);
-    // compTag ДОЛЖЕН сбрасываться каждый кадр, как и visited — иначе клетка,
-    // отвергнутая при построении текущей компоненты (например restsOnStable),
-    // может хранить УСТАРЕВШИЙ tag с прошлого кадра, который случайно совпадёт
-    // с tag текущей компоненты (tag каждый кадр заново нумеруется с 1) — тогда
-    // compTag[below]===tag ложно сочтёт её "своей" и пропустит проверку
-    // блокировки. Именно это вызывало непредсказуемое, будто случайное падение
-    // на клетку вниз то там, то тут — старые данные то совпадали, то нет.
-    compTag.fill(0);
-
-    // Клетка со stability===0 физически не сдвинется с места, если прямо под
-    // ней — непроходимое препятствие: либо чужая (уже стабильная, либо
-    // просто ДРУГОГО материала) структура, либо край мира. Но если внизу
-    // ТОТ ЖЕ материал и он ТОЖЕ вышел за бюджет — это не препятствие, а
-    // продолжение той же самой обвисшей массы, и её надо включить в общую
-    // падающую группу, а не считать точкой опоры.
-    //
-    // Раньше здесь проверялось только "стоит ли клетка на уже стабильной
-    // СВОЕЙ структуре" (restsOnStable) — этого хватало, чтобы верхушка
-    // башни не зависала в противоречивом состоянии "должна падать, но
-    // падать некуда", но НЕ хватало для соседних построек: если консоль
-    // упиралась в чужой, вообще не связанный объект (например, лежала
-    // краем на отдельно стоящем каменном столбе), блокировался весь ряд
-    // целиком — вплоть до его дальнего, ничем не подпёртого конца. Теперь
-    // блокируется только сама упёртая клетка, а остальная часть связной
-    // группы, потеряв её как мост, естественно распадается на независимые
-    // кусочки — и те из них, что физически свободны, падают, как и должны.
-    const isBlockedBelow = (i) => {
-      const x = i % w, y = (i / w) | 0;
-      if (y + 1 >= h) return true;
-      const bi = this.idx(x, y + 1);
-      const bt = this.type[bi];
-      if (bt === EL.EMPTY) return false;
-      const bEl = ELEMENTS[bt];
-      if (bEl && bEl.cat === CAT.GAS) return false;
-      if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) return false;
-      const it = this.type[i];
-      if (stab[bi] === 0 && (bt === it || bt === EL.OILFILM || it === EL.OILFILM)) return false;
-      return true;
-    };
-
-    let tag = 0;
-    const comp = [];
-    for (let i = 0; i < n; i++) {
-      if (visited[i] || moved[i]) { visited[i] = 1; continue; }
-      if (!isStructural(this.type[i]) || stab[i] !== 0 || isBlockedBelow(i)) { visited[i] = 1; continue; }
-      tag++;
-      comp.length = 0;
-      comp.push(i);
-      visited[i] = 1;
-      compTag[i] = tag;
-      let compMinX = i % w, compMaxX = i % w;
-      // Компонента объединяет только ОДИН материал (плюс маслянную плёнку,
-      // которая просто обмазывает свой объект и не считается отдельным
-      // материалом). Без этого ограничения соседняя, вообще не связанная
-      // структура из другого материала (например, отдельно стоящий
-      // каменный столб башни, у которого просто не хватило СВОЕГО бюджета
-      // на такую высоту) затягивалась в ту же самую "падающую" группу через
-      // случайное касание бортом — и если ГДЕ-ТО в этой чужой структуре
-      // дальше по цепочке находилась настоящая опора (пол под тем самым
-      // столбом), вся объединённая масса, включая исходно ни при чём не
-      // повинную короткую консоль, намертво зависала, упираясь в эту чужую
-      // опору. Материал не должен наследовать судьбу соседа только потому,
-      // что тот тоже "недодержал" собственный бюджет.
-      let hostType = (this.type[i] !== EL.OILFILM) ? this.type[i] : null;
-      let head = 0;
-      while (head < comp.length) {
-        const ci = comp[head++];
-        const cx = ci % w, cy = (ci / w) | 0;
-        for (let k = 0; k < 4; k++) {
-          const nx = cx + DX4[k], ny = cy + DY4[k];
-          if (!this.inBounds(nx, ny)) continue;
-          const ni = this.idx(nx, ny);
-          if (visited[ni] || moved[ni]) continue;
-          visited[ni] = 1;
-          const nid = this.type[ni];
-          const typeOk = nid === EL.OILFILM || hostType === null || nid === hostType;
-          if (isStructural(nid) && stab[ni] === 0 && !isBlockedBelow(ni) && typeOk) {
-            compTag[ni] = tag;
-            comp.push(ni);
-            if (hostType === null && nid !== EL.OILFILM) hostType = nid;
-            if (nx < compMinX) compMinX = nx; else if (nx > compMaxX) compMaxX = nx;
-          }
-        }
-      }
-      // Вытеснение ограничено шириной ВСЕЙ структуры (плюс небольшой запас),
-      // а не радиусом от точки контакта каждой отдельной колонки — иначе у
-      // тела с неровным дном разные колонки контактируют на разной глубине,
-      // и жидкость, вытесняемая КАЖДОЙ из них независимо в своём локальном
-      // радиусе, суммарно всё равно могла бы уйти за пределы объекта целиком
-      // (переходя из-под одной колонки под соседнюю и так далее), даже если
-      // ни один отдельный вызов вытеснения формально не превышал свой лимит.
-      const margin = 5;
-      const loBound = compMinX - margin, hiBound = compMaxX + margin;
-
-      // Заодно с проверкой canFall сразу пробуем вытеснить жидкость/песок под
-      // ногами — если совсем некуда (ни рядом, ни где-то в общей массе),
-      // считаем клетку заблокированной, и вся структура просто не падает в
-      // этот кадр (остаётся на текущем месте, "фиксируется").
-      let canFall = true;
-      for (let k2 = 0; k2 < comp.length; k2++) {
-        const ci = comp[k2];
-        const cx = ci % w, cy = (ci / w) | 0;
-        if (cy + 1 >= h) { canFall = false; break; }
-        const below = this.idx(cx, cy + 1);
-        if (compTag[below] === tag) continue;
-        const bt = this.type[below];
-        if (bt === EL.EMPTY) continue;
-        const bEl = ELEMENTS[bt];
-        if (bEl && bEl.cat === CAT.GAS) continue; // газ не держит, вытеснять не нужно
-        if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) {
-          if (this.displaceFluid(cx, cy + 1, loBound, hiBound) || this.displaceFluidWide(cx, cy + 1, loBound, hiBound)) continue;
-        }
-        canFall = false; break;
-      }
-      if (canFall) {
-        comp.sort((a, b) => ((b / w) | 0) - ((a / w) | 0));
-        for (let k2 = 0; k2 < comp.length; k2++) {
-          const ci = comp[k2];
-          const cx = ci % w, cy = (ci / w) | 0;
-          const below = this.idx(cx, cy + 1);
-          this.swap(ci, below);
-          moved[below] = 1;
-        }
-      }
-    }
-  }
-
-  // Твёрдое тело, тонущее в жидкости/песке, выталкивает их в сторону — ищем
-  // ближайшую свободную клетку в том же ряду, не дальше 5 клеток. Идём
-  // "стенкой" в каждую сторону и останавливаемся на первом же твёрдом
-  // препятствии — сквозь него нельзя телепортироваться на другую
-  // (противоположную) сторону тонущего тела, можно вытесниться только в
-  // ближайший реальный просвет у своего края. Через другую жидкость/газ по
-  // пути — можно (сливается с соседним водоёмом). Из двух сторон выбираем
-  // ту, что ближе. Возвращает true при успехе.
-  // loBound/hiBound (по X) — жёсткая граница всей падающей структуры целиком
-  // (её minX/maxX с запасом), не только этой отдельной колонки. См. вызов из
-  // updateStructures().
-  displaceFluid(x, y, loBound = -Infinity, hiBound = Infinity) {
-    const w = this.w;
-    const radius = 5;
-    const scan = (dir) => {
-      for (let step = 1; step <= radius; step++) {
-        const nx = x + dir * step;
-        if (nx < 0 || nx >= w || nx < loBound || nx > hiBound) return -1;
-        const t = this.type[this.idx(nx, y)];
-        if (t === EL.EMPTY) return step;
-        const el = ELEMENTS[t];
-        if (!el || (el.cat !== CAT.LIQUID && el.cat !== CAT.GAS)) return -1; // упёрлись в твёрдое
-      }
-      return -1;
-    };
-    const rDist = scan(1), lDist = scan(-1);
-    if (rDist === -1 && lDist === -1) return false;
-    const useRight = rDist !== -1 && (lDist === -1 || rDist <= lDist);
-    const dist = useRight ? rDist : lDist;
-    const nx = x + (useRight ? 1 : -1) * dist;
-    this.swap(this.idx(x, y), this.idx(nx, y));
-    return true;
-  }
-
-  // Если у самой точки контакта вытеснить некуда (в пределах 5 клеток по
-  // displaceFluid) — пробуем вытеснить какой-нибудь ДРУГОЙ случайный кусочек
-  // той же массы жидкости/песка: случайное блуждание по связным клеткам
-  // того же типа (дёшево, без полного заливочного поиска всей области), и
-  // если у найденной случайной клетки самой находится просвет — переносим
-  // ИСХОДНУЮ клетку на её место (сама она уже вытеснилась в этот просвет).
-  // loBound/hiBound — см. displaceFluid: та же общая граница по X для ВСЕЙ
-  // структуры целиком, не только точки контакта (x,y) этого конкретного
-  // вызова. Раньше блуждание ограничивалось только maxReach ОТ СВОЕЙ ЖЕ
-  // точки контакта — а у тела с неровным дном разные колонки контактируют
-  // на разной глубине и каждая тянула жидкость в своём локальном радиусе;
-  // суммарно (через цепочку соседних колонок) жидкость всё равно могла уйти
-  // за пределы объекта, хотя ни один отдельный вызов не превышал свой лимит.
-  // Общая граница на уровне всей структуры закрывает эту дыру.
-  displaceFluidWide(x, y, loBound = -Infinity, hiBound = Infinity) {
-    const t = this.type[this.idx(x, y)];
-    const attempts = 6;
-    // По вертикали по-прежнему ограничиваем блуждание относительно точки
-    // контакта — глубина колодца сама по себе не создаёт риск "телепорта на
-    // другую сторону объекта", в отличие от смещения по X.
-    const maxVReach = 12;
-    for (let a = 0; a < attempts; a++) {
-      let cx = x, cy = y;
-      const walkSteps = 8 + (Math.random() * 24 | 0);
-      for (let s = 0; s < walkSteps; s++) {
-        const order = [0, 1, 2, 3].sort(() => Math.random() - 0.5);
-        let stepped = false;
-        for (const k of order) {
-          const nx = cx + DX4[k], ny = cy + DY4[k];
-          if (!this.inBounds(nx, ny)) continue;
-          if (nx < loBound || nx > hiBound || Math.abs(ny - y) > maxVReach) continue;
-          if (this.type[this.idx(nx, ny)] === t) { cx = nx; cy = ny; stepped = true; break; }
-        }
-        if (!stepped) break;
-      }
-      if (cx === x && cy === y) continue;
-      if (this.displaceFluid(cx, cy, loBound, hiBound)) {
-        this.swap(this.idx(x, y), this.idx(cx, cy));
-        return true;
-      }
-    }
-    return false;
   }
 
   // ---- реакции ----
