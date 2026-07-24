@@ -204,11 +204,24 @@ class Sim {
     const moved = this.moved;
     visited.fill(0);
 
+    // Клетка со stability===0 всё равно физически подпёрта снизу, если прямо
+    // под ней лежит СВОЯ (уже стабильная) структура — путевой бюджет исчерпан
+    // на передачу опоры ДАЛЬШЕ, но саму себя такая клетка держит сжатием, а
+    // не "зависает" в противоречивом состоянии "должна падать, но упасть
+    // некуда" (иначе верхушка любой достаточно высокой башни зависала бы
+    // навечно, не падая и не становясь стабильной — так и был баг).
+    const restsOnStable = (i) => {
+      const x = i % w, y = (i / w) | 0;
+      if (y + 1 >= h) return false;
+      const bi = this.idx(x, y + 1);
+      return isStructural(this.type[bi]) && stab[bi] > 0;
+    };
+
     let tag = 0;
     const comp = [];
     for (let i = 0; i < n; i++) {
       if (visited[i] || moved[i]) { visited[i] = 1; continue; }
-      if (!isStructural(this.type[i]) || stab[i] !== 0) { visited[i] = 1; continue; }
+      if (!isStructural(this.type[i]) || stab[i] !== 0 || restsOnStable(i)) { visited[i] = 1; continue; }
       tag++;
       comp.length = 0;
       comp.push(i);
@@ -224,7 +237,7 @@ class Sim {
           const ni = this.idx(nx, ny);
           if (visited[ni] || moved[ni]) continue;
           visited[ni] = 1;
-          if (isStructural(this.type[ni]) && stab[ni] === 0) {
+          if (isStructural(this.type[ni]) && stab[ni] === 0 && !restsOnStable(ni)) {
             compTag[ni] = tag;
             comp.push(ni);
           }
