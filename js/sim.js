@@ -44,7 +44,6 @@ class Sim {
     this.moved = new Uint8Array(n);
     this.stability = new Int16Array(n);
     this.sideCounter = new Int16Array(n);
-    this.upCounter = new Int16Array(n);
     this.paused = false;
     this.frame = 0;
   }
@@ -132,21 +131,23 @@ class Sim {
 
   // У каждого структурного материала своя maxStability (значение, которое
   // получает клетка, касающаяся низа поля или якоря — стена/пустота/клонер)
-  // и toughness = X (через сколько клеток пути стабильность падает на 1).
-  // Стабильность распространяется соседям, но подъём вверх и шаг вбок/вниз
-  // считаются двумя НЕЗАВИСИМЫМИ счётчиками пути: свернув наверх, не успев
-  // пройти X клеток вбок, боковой счётчик просто замирает (сохраняется) —
-  // и так можно откладывать его сколько угодно раз, переключаясь между
-  // направлениями, лишь бы каждый отдельный счётчик не набрал свои X.
+  // и toughness = X (через сколько клеток БОКОВОГО пути стабильность падает
+  // на 1). По вертикали (вверх ИЛИ вниз) стабильность передаётся соседу
+  // целиком, бесплатно, без всякого счётчика — столб, просто стоящий друг
+  // на друге (или свисающий по прямой вниз от опоры), в реальности держится
+  // собственным весом и сцеплением, и его высота сама по себе никак его не
+  // ослабляет. Бюджет (toughness) расходуется только на боковой, консольный
+  // вылет — именно там материалу физически не на что опереться напрямую.
+  // Боковой счётчик при движении по вертикали не сбрасывается и не растёт —
+  // просто переносится как есть, так что боковой вылет, начатый с любой
+  // высоты столба, получает полный горизонтальный бюджет с нуля.
   // X берётся из материала ПРИНИМАЮЩЕЙ клетки (не источника).
   computeStability() {
     const w = this.w, h = this.h, n = w * h;
     const stab = this.stability;
     const sideC = this.sideCounter;
-    const upC = this.upCounter;
     stab.fill(0);
     sideC.fill(0);
-    upC.fill(0);
 
     const maxLevel = 64;
     const buckets = this._stabBuckets || (this._stabBuckets = Array.from({ length: maxLevel + 1 }, () => []));
@@ -154,7 +155,7 @@ class Sim {
 
     const seed = (i, id) => {
       const s = Math.min(ELEMENTS[id].maxStability || 0, maxLevel);
-      if (s > stab[i]) { stab[i] = s; sideC[i] = 0; upC[i] = 0; buckets[s].push(i); }
+      if (s > stab[i]) { stab[i] = s; sideC[i] = 0; buckets[s].push(i); }
     };
     for (let x = 0; x < w; x++) {
       const i = this.idx(x, h - 1);
@@ -171,7 +172,7 @@ class Sim {
       }
     }
 
-    const steps = [[0, -1, true], [1, 0, false], [-1, 0, false], [0, 1, false]];
+    const steps = [[0, -1], [0, 1], [1, 0], [-1, 0]];
     for (let level = maxLevel; level >= 1; level--) {
       const bucket = buckets[level];
       for (let bi = 0; bi < bucket.length; bi++) {
@@ -182,26 +183,24 @@ class Sim {
         // связи (проверка ниже, при рассмотрении его как соседа), но само
         // никому её не передаёт — иначе стало бы мостом между двумя объектами.
         if (this.type[i] === EL.OILFILM) continue;
-        for (const [dx, dy, isUp] of steps) {
+        for (const [dx, dy] of steps) {
           const nx = x + dx, ny = y + dy;
           if (!this.inBounds(nx, ny)) continue;
           const ni = this.idx(nx, ny);
           const nid = this.type[ni];
           if (!isStructural(nid)) continue;
           if (nid === EL.OILFILM && this.extra[ni] !== oilOppositeDir(oilDirCode(dx, dy))) continue;
-          const X = ELEMENTS[nid].toughness || 1;
-          let newStab, newSideC, newUpC;
-          if (isUp) {
+          let newStab, newSideC;
+          if (dx === 0) {
+            newStab = stab[i];
             newSideC = sideC[i];
-            newUpC = upC[i] + 1;
-            if (newUpC >= X) { newStab = stab[i] - 1; newUpC = 0; } else newStab = stab[i];
           } else {
-            newUpC = upC[i];
+            const X = ELEMENTS[nid].toughness || 1;
             newSideC = sideC[i] + 1;
             if (newSideC >= X) { newStab = stab[i] - 1; newSideC = 0; } else newStab = stab[i];
           }
           if (newStab > stab[ni]) {
-            stab[ni] = newStab; sideC[ni] = newSideC; upC[ni] = newUpC;
+            stab[ni] = newStab; sideC[ni] = newSideC;
             if (newStab >= 1) buckets[Math.min(newStab, maxLevel)].push(ni);
           }
         }
