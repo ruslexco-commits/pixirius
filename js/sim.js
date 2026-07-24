@@ -227,24 +227,42 @@ class Sim {
     // на клетку вниз то там, то тут — старые данные то совпадали, то нет.
     compTag.fill(0);
 
-    // Клетка со stability===0 всё равно физически подпёрта снизу, если прямо
-    // под ней лежит СВОЯ (уже стабильная) структура — путевой бюджет исчерпан
-    // на передачу опоры ДАЛЬШЕ, но саму себя такая клетка держит сжатием, а
-    // не "зависает" в противоречивом состоянии "должна падать, но упасть
-    // некуда" (иначе верхушка любой достаточно высокой башни зависала бы
-    // навечно, не падая и не становясь стабильной — так и был баг).
-    const restsOnStable = (i) => {
+    // Клетка со stability===0 физически не сдвинется с места, если прямо под
+    // ней — непроходимое препятствие: либо чужая (уже стабильная, либо
+    // просто ДРУГОГО материала) структура, либо край мира. Но если внизу
+    // ТОТ ЖЕ материал и он ТОЖЕ вышел за бюджет — это не препятствие, а
+    // продолжение той же самой обвисшей массы, и её надо включить в общую
+    // падающую группу, а не считать точкой опоры.
+    //
+    // Раньше здесь проверялось только "стоит ли клетка на уже стабильной
+    // СВОЕЙ структуре" (restsOnStable) — этого хватало, чтобы верхушка
+    // башни не зависала в противоречивом состоянии "должна падать, но
+    // падать некуда", но НЕ хватало для соседних построек: если консоль
+    // упиралась в чужой, вообще не связанный объект (например, лежала
+    // краем на отдельно стоящем каменном столбе), блокировался весь ряд
+    // целиком — вплоть до его дальнего, ничем не подпёртого конца. Теперь
+    // блокируется только сама упёртая клетка, а остальная часть связной
+    // группы, потеряв её как мост, естественно распадается на независимые
+    // кусочки — и те из них, что физически свободны, падают, как и должны.
+    const isBlockedBelow = (i) => {
       const x = i % w, y = (i / w) | 0;
-      if (y + 1 >= h) return false;
+      if (y + 1 >= h) return true;
       const bi = this.idx(x, y + 1);
-      return isStructural(this.type[bi]) && stab[bi] > 0;
+      const bt = this.type[bi];
+      if (bt === EL.EMPTY) return false;
+      const bEl = ELEMENTS[bt];
+      if (bEl && bEl.cat === CAT.GAS) return false;
+      if (bEl && (bEl.cat === CAT.LIQUID || bEl.cat === CAT.POWDER)) return false;
+      const it = this.type[i];
+      if (stab[bi] === 0 && (bt === it || bt === EL.OILFILM || it === EL.OILFILM)) return false;
+      return true;
     };
 
     let tag = 0;
     const comp = [];
     for (let i = 0; i < n; i++) {
       if (visited[i] || moved[i]) { visited[i] = 1; continue; }
-      if (!isStructural(this.type[i]) || stab[i] !== 0 || restsOnStable(i)) { visited[i] = 1; continue; }
+      if (!isStructural(this.type[i]) || stab[i] !== 0 || isBlockedBelow(i)) { visited[i] = 1; continue; }
       tag++;
       comp.length = 0;
       comp.push(i);
@@ -276,7 +294,7 @@ class Sim {
           visited[ni] = 1;
           const nid = this.type[ni];
           const typeOk = nid === EL.OILFILM || hostType === null || nid === hostType;
-          if (isStructural(nid) && stab[ni] === 0 && !restsOnStable(ni) && typeOk) {
+          if (isStructural(nid) && stab[ni] === 0 && !isBlockedBelow(ni) && typeOk) {
             compTag[ni] = tag;
             comp.push(ni);
             if (hostType === null && nid !== EL.OILFILM) hostType = nid;

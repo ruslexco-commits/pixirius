@@ -129,7 +129,7 @@ class InputController {
     if (e.code === 'Tab') {
       if (!e.repeat) this.brushShape = this.brushShape === 'circle' ? 'square' : 'circle';
       e.preventDefault();
-    } else if (e.code === 'KeyB') {
+    } else if (e.code === 'Digit1') {
       if (!e.repeat) this.debugStability = !this.debugStability;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
