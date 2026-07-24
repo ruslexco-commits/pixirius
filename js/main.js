@@ -134,8 +134,8 @@ function buildMaterialInfoHTML(id, isEraser, name) {
   return `<div class="mi-title">${el.name}</div>${rows}`;
 }
 
-function showMaterialInfo(clientX, clientY, id, isEraser, name) {
-  materialInfo.innerHTML = buildMaterialInfoHTML(id, isEraser, name);
+function showMaterialInfoHTML(clientX, clientY, html) {
+  materialInfo.innerHTML = html;
   materialInfo.classList.add('visible');
   const pad = 12;
   const rect = materialInfo.getBoundingClientRect();
@@ -144,6 +144,10 @@ function showMaterialInfo(clientX, clientY, id, isEraser, name) {
   if (top + rect.height > window.innerHeight) top = clientY - rect.height - pad;
   materialInfo.style.left = Math.max(4, left) + 'px';
   materialInfo.style.top = Math.max(4, top) + 'px';
+}
+
+function showMaterialInfo(clientX, clientY, id, isEraser, name) {
+  showMaterialInfoHTML(clientX, clientY, buildMaterialInfoHTML(id, isEraser, name));
 }
 
 function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
@@ -175,8 +179,37 @@ function addPaletteButton(id, isEraser) {
   return btn;
 }
 
+// "Инструмент" — в отличие от addPaletteButton, ничего не пишет в
+// sim.type и не берёт цвет/название из ELEMENTS (там его нет — это не
+// материал). При выборе LMB/ПКМ на канвасе делают что-то своё, см.
+// InputController.onMouseDown.
+function addToolButton(toolValue, name, cssColor, infoHTML) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'el-btn el-tool';
+  btn.style.background = cssColor;
+  btn.title = name;
+  btn.addEventListener('click', () => {
+    selectedElement = toolValue;
+    for (const b of palette.children) b.classList.remove('selected');
+    btn.classList.add('selected');
+    statusLabel.textContent = name;
+  });
+  btn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showMaterialInfoHTML(e.clientX, e.clientY, infoHTML);
+  });
+  btn.addEventListener('mouseleave', hideMaterialInfo);
+  palette.appendChild(btn);
+  return btn;
+}
+
 addPaletteButton(EL.EMPTY, true);
 for (const id of ELEMENT_ORDER) addPaletteButton(id, false);
+addToolButton(TOOL_PRESSURE, 'Давление', '#e0a030',
+  '<div class="mi-title">Давление</div>'
+  + '<div class="mi-row"><span>ЛКМ</span><span>усилить поток</span></div>'
+  + '<div class="mi-row"><span>ПКМ</span><span>погасить поток</span></div>');
 palette.children[1].classList.add('selected');
 statusLabel.textContent = ELEMENTS[ELEMENT_ORDER[0]].name;
 

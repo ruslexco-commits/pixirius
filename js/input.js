@@ -43,6 +43,7 @@ class InputController {
     this.drag = null;
 
     this.debugStability = false;
+    this.debugWind = false;
 
     this._bind();
   }
@@ -131,6 +132,8 @@ class InputController {
       e.preventDefault();
     } else if (e.code === 'Digit1') {
       if (!e.repeat) this.debugStability = !this.debugStability;
+    } else if (e.code === 'Digit2') {
+      if (!e.repeat) this.debugWind = !this.debugWind;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -197,6 +200,19 @@ class InputController {
     }
 
     const elementId = this.getSelectedElement();
+
+    // Инструмент "давление" — особый случай: не рисует материал, а
+    // напрямую правит поток воздуха под кистью (ЛКМ усиливает, ПКМ
+    // гасит); модификаторы (shift/ctrl/alt) тут не участвуют, и в
+    // историю отмены это не попадает — сетка ветра не часть отменяемого
+    // состояния (пересчитывается заново каждый кадр).
+    if (elementId === TOOL_PRESSURE) {
+      const mode = e.button === 0 ? 'pressureInc' : 'pressureDec';
+      this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
+      this.sim.applyPressureBrush(egx, egy, this.brushRX, this.brushRY, mode === 'pressureInc' ? 1 : -1);
+      return;
+    }
+
     let mode;
     // Shift+Ctrl+ЛКМ и Shift+Alt+ЛКМ — оба дают линию с привязкой к 45°
     if (shift && (ctrl || alt) && e.button === 0) mode = 'lineSnap';
@@ -229,6 +245,9 @@ class InputController {
         d.lastX = egx; d.lastY = egy;
       } else if (d.mode === 'line' || d.mode === 'lineSnap') {
         d.lastX = egx; d.lastY = egy;
+      } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {
+        this.sim.applyPressureBrush(egx, egy, this.brushRX, this.brushRY, d.mode === 'pressureInc' ? 1 : -1);
+        d.lastX = egx; d.lastY = egy;
       }
     }
     this.gx = gx; this.gy = gy;
@@ -253,6 +272,8 @@ class InputController {
     const d = this.drag;
     if (d.mode === 'paint' || d.mode === 'erase') {
       this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
+    } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {
+      this.sim.applyPressureBrush(d.lastX, d.lastY, this.brushRX, this.brushRY, d.mode === 'pressureInc' ? 1 : -1);
     }
   }
 
@@ -276,6 +297,7 @@ class InputController {
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
       debugStability: this.debugStability,
+      debugWind: this.debugWind,
     };
   }
 }

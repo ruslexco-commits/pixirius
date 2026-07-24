@@ -285,8 +285,8 @@ class Sim {
   // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
   // диффузия (смешивание с соседними клетками сетки ветра, чтобы резкое
   // возмущение в одном месте плавно расползалось, а не оставалось иглой).
-  // Сама сетка ветра пополняется отдельно — постоянными источниками
-  // (вентилятор, см. reactFan) и разовыми возмущениями от любого реального
+  // Сама сетка ветра пополняется отдельно — инструментом "давление" (см.
+  // applyPressureBrush) и разовыми возмущениями от любого реального
   // движения частиц (см. disturbWind, вызывается из swap()).
   updateWind() {
     const aw = this.airW, ah = this.airH, an = aw * ah;
@@ -333,6 +333,34 @@ class Sim {
     return Math.random() < pRight ? 1 : -1;
   }
 
+  // Инструмент "давление" — не рисует материал, а напрямую правит сетку
+  // ветра под кистью (кисть та же, что и для рисования: rx,ry в клетках
+  // симуляции). sign>0 (ЛКМ, "усилить") толкает воздух РАДИАЛЬНО НАРУЖУ
+  // от центра кисти — локальная зона повышенного давления; sign<0 (ПКМ,
+  // "погасить") тянет воздух НАЗАД к центру — зона пониженного давления
+  // (всасывание). В самом центре направление не определено (некуда
+  // "наружу" от самой точки) — там ничего не меняется, эффект виден на
+  // остальной площади кисти.
+  applyPressureBrush(cx, cy, rx, ry, sign) {
+    const acx = cx / this.airCell, acy = cy / this.airCell;
+    const arx = Math.max(0.5, rx / this.airCell), ary = Math.max(0.5, ry / this.airCell);
+    const ax0 = Math.max(0, Math.floor(acx - arx)), ax1 = Math.min(this.airW - 1, Math.ceil(acx + arx));
+    const ay0 = Math.max(0, Math.floor(acy - ary)), ay1 = Math.min(this.airH - 1, Math.ceil(acy + ary));
+    const PUSH = 0.5;
+    for (let ay = ay0; ay <= ay1; ay++) {
+      for (let ax = ax0; ax <= ax1; ax++) {
+        const nx = (ax - acx) / arx, ny = (ay - acy) / ary;
+        if (nx * nx + ny * ny > 1) continue;
+        let pdx = ax - acx, pdy = ay - acy;
+        const len = Math.sqrt(pdx * pdx + pdy * pdy) || 1;
+        pdx /= len; pdy /= len;
+        const ai = ay * this.airW + ax;
+        this.windVX[ai] += sign * PUSH * pdx;
+        this.windVY[ai] += sign * PUSH * pdy;
+      }
+    }
+  }
+
   // ---- реакции ----
 
   react(x, y, i, id) {
@@ -352,17 +380,7 @@ class Sim {
       case EL.WATER: this.reactWater(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
-      case EL.FAN: this.reactFan(x, y, i); break;
     }
-  }
-
-  // Неподвижное устройство: каждый кадр нагнетает ветер вправо в свою клетку
-  // сетки воздуха (см. updateWind) — постоянный, управляемый источник
-  // течения, в отличие от разовых возмущений от обычного движения частиц.
-  reactFan(x, y, i) {
-    const ai = this.airIdx(x, y);
-    const FAN_PUSH = 0.6, FAN_MAX = 6;
-    this.windVX[ai] = Math.min(FAN_MAX, this.windVX[ai] + FAN_PUSH);
   }
 
   reactFlammable(x, y, i, id) {

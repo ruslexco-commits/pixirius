@@ -2,6 +2,24 @@
 
 function clamp8(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
+function hsvToRgb(h, s, v) {
+  const i = Math.floor(h * 6);
+  const f = h * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  let r, g, b;
+  switch (i % 6) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
 class Renderer {
   constructor(sim, canvas, zoom) {
     this.sim = sim;
@@ -22,11 +40,17 @@ class Renderer {
     this.zoomBoxMargin = 10;
 
     this.debugStability = false;
+    this.debugWind = false;
   }
 
   cellColor(i) {
     const sim = this.sim;
     const id = sim.type[i];
+    if (this.debugWind) {
+      const x = i % sim.w, y = (i / sim.w) | 0;
+      const wc = this.windColor(x, y);
+      if (wc) return wc;
+    }
     if (id === EL.EMPTY) return [14, 14, 18];
     const el = ELEMENTS[id];
     if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
@@ -53,6 +77,22 @@ class Renderer {
     if (ratio < 0.5) { r = 255; g = Math.round(255 * (ratio / 0.5)); }
     else { r = Math.round(255 * (1 - (ratio - 0.5) / 0.5)); g = 255; }
     return [r, g, 40];
+  }
+
+  // Направление и сила локального ветра как цвет: угол вектора (vx,vy) -
+  // оттенок по цветовому кругу (вправо - красный, вверх - жёлто-зелёный,
+  // влево - голубой, вниз - сине-фиолетовый), величина - яркость. Совсем
+  // слабый ветер (ниже порога) не подсвечивается вовсе (null) — иначе на
+  // полностью тихой сцене без единого дуновения весь экран был бы залит
+  // одним тусклым цветом вместо обычного вида.
+  windColor(x, y) {
+    const sim = this.sim;
+    const vx = sim.getWindVX(x, y), vy = sim.getWindVY(x, y);
+    const mag = Math.sqrt(vx * vx + vy * vy);
+    if (mag < 0.02) return null;
+    const hue = (Math.atan2(vy, vx) / (2 * Math.PI) + 1) % 1;
+    const val = Math.min(1, 0.35 + mag * 0.3);
+    return hsvToRgb(hue, 0.85, val);
   }
 
   buildImage() {
@@ -236,6 +276,7 @@ class Renderer {
 
   render(cursor) {
     this.debugStability = !!cursor.debugStability;
+    this.debugWind = !!cursor.debugWind;
     this.drawFrame();
     if (cursor.linePreview) {
       const lp = cursor.linePreview;
