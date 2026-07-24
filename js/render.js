@@ -316,35 +316,48 @@ class Renderer {
       this.lastZoomBoxRect = null;
     }
 
-    if (this.debugStability) {
+    if (this.debugStability || this.debugWind) {
       const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
-      if (hovering) this.drawStabilityInfo(cursor.zoomHoverGX, cursor.zoomHoverGY);
-      else if (cursor.showBrush) this.drawStabilityInfo(cursor.gx, cursor.gy);
+      if (hovering) this.drawDebugInfo(cursor.zoomHoverGX, cursor.zoomHoverGY);
+      else if (cursor.showBrush) this.drawDebugInfo(cursor.gx, cursor.gy);
     }
   }
 
-  // Значение заземлённости клетки под курсором - в верхнем левом углу канваса.
-  drawStabilityInfo(gx, gy) {
+  stabilityInfoText(gx, gy) {
     const sim = this.sim;
-    if (!sim.inBounds(gx, gy)) return;
     const i = sim.idx(gx, gy);
     const id = sim.type[i];
-    let text;
-    if (id === EL.EMPTY) {
-      text = 'Пусто';
-    } else if (!isStructural(id)) {
-      text = ELEMENTS[id].name;
-    } else {
-      const maxS = ELEMENTS[id].maxStability || 0;
-      text = `${ELEMENTS[id].name}: заземлённость ${sim.stability[i]}/${maxS}`;
-    }
+    if (id === EL.EMPTY) return 'Пусто';
+    if (!isStructural(id)) return ELEMENTS[id].name;
+    const maxS = ELEMENTS[id].maxStability || 0;
+    return `${ELEMENTS[id].name}: заземлённость ${sim.stability[i]}/${maxS}`;
+  }
+
+  windInfoText(gx, gy) {
+    const sim = this.sim;
+    const vx = sim.getWindVX(gx, gy), vy = sim.getWindVY(gx, gy);
+    const mag = Math.sqrt(vx * vx + vy * vy);
+    return `Давление: ${mag.toFixed(2)} (vx ${vx.toFixed(2)}, vy ${vy.toFixed(2)})`;
+  }
+
+  // Значения под курсором для включённых режимов отладки (заземлённость,
+  // давление воздуха) - в верхнем левом углу канваса, по строке на режим.
+  drawDebugInfo(gx, gy) {
+    const sim = this.sim;
+    if (!sim.inBounds(gx, gy)) return;
+    const lines = [];
+    if (this.debugStability) lines.push(this.stabilityInfoText(gx, gy));
+    if (this.debugWind) lines.push(this.windInfoText(gx, gy));
+    if (!lines.length) return;
 
     const ctx = this.ctx;
     ctx.save();
     ctx.font = '14px monospace';
     const padX = 8, padY = 6, lineH = 18;
-    const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
-    const h = lineH + padY * 2;
+    let maxW = 0;
+    for (const line of lines) maxW = Math.max(maxW, ctx.measureText(line).width);
+    const w = Math.ceil(maxW) + padX * 2;
+    const h = lineH * lines.length + padY * 2;
     const x = 8, y = 8;
     ctx.fillStyle = 'rgba(10,10,13,0.85)';
     ctx.fillRect(x, y, w, h);
@@ -353,7 +366,9 @@ class Renderer {
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
     ctx.fillStyle = '#e8e8ee';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, x + padX, y + h / 2);
+    for (let k = 0; k < lines.length; k++) {
+      ctx.fillText(lines[k], x + padX, y + padY + lineH * k + lineH / 2);
+    }
     ctx.restore();
   }
 }

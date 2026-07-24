@@ -157,7 +157,9 @@ class Sim {
     const id2 = this.type[i];
     if (id2 === EL.EMPTY || this.moved[i]) return;
     const el2 = ELEMENTS[id2];
-    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2);
+    // windScale=0 у обычного сыпучего (песок и т.п.) — оно и так тяжёлое и
+    // осознанно оставлено ветром не сносимым (см. updatePowder).
+    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0);
     else if (el2.cat === CAT.LIQUID) this.updateLiquid(x, y, i, el2);
     else if (el2.cat === CAT.GAS) this.updateGas(x, y, i, el2);
     else if (id2 === EL.FIRE) this.updateFireMovement(x, y, i);
@@ -166,7 +168,10 @@ class Sim {
     // и дальше падает точно так же, как сыпучий материал (вниз, а если
     // прямо под ней занято — по диагонали в сторону): та же updatePowder,
     // с той же плотностью материала для сравнения при вытеснении жидкостей.
-    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2);
+    // В отличие от обычного песка, ветер ЗАМЕТНО меняет её траекторию
+    // падения (windScale>0) — обломки лёгкие и рыхлые в сравнении с целым,
+    // ещё держащимся телом.
+    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.06);
   }
 
   // ---- структурная устойчивость твёрдых тел ----
@@ -331,6 +336,30 @@ class Sim {
     const wind = this.getWindVX(x, y);
     const pRight = Math.max(0.05, Math.min(0.95, 0.5 + wind * scale));
     return Math.random() < pRight ? 1 : -1;
+  }
+
+  // Пытается толкнуть частицу чисто горизонтально по ветру, с шансом,
+  // растущим вместе с силой локального ветра — используется как попытка,
+  // "перебивающая" обычное движение по гравитации/плавучести, ПЕРЕД ним.
+  // Без этого в открытом пространстве обычное падение/всплытие почти
+  // всегда успевало бы сработать раньше, и ветер оставался бы заметен
+  // только там, где путь и так уже перекрыт, а не в самом обычном случае
+  // свободного падения/подъёма. windScale масштабирует чувствительность
+  // (0 или отсутствие — полностью выключает эффект для этого вызова),
+  // maxChance ограничивает шанс сверху, чтобы ветер не мог КАЖДЫЙ кадр
+  // полностью отменять гравитацию/плавучесть. rising — как в
+  // attemptSwapOrMove (газ поднимается — true, жидкость/сыпучее падают — false).
+  tryWindPush(x, y, i, el, windScale, maxChance, rising) {
+    if (!windScale) return false;
+    const w = this.w;
+    const wind = this.getWindVX(x, y);
+    const chance = Math.min(maxChance, Math.abs(wind) * windScale);
+    if (Math.random() >= chance) return false;
+    const wdir = wind > 0 ? 1 : -1;
+    const nx = x + wdir;
+    if (nx < 0 || nx >= w) return false;
+    const ni = this.idx(nx, y);
+    return this.attemptSwapOrMove(i, ni, el, rising);
   }
 
   // Инструмент "давление" — не рисует материал, а напрямую правит сетку
@@ -659,12 +688,16 @@ class Sim {
     return false;
   }
 
-  updatePowder(x, y, i, el) {
+  // windScale — см. tryWindPush; для настоящего сыпучего (песок и т.п.)
+  // вызывается с 0 (эффект выключен, поведение как раньше), для осыпавшихся
+  // структурных обломков — с ненулевым (см. вызов в updateCell).
+  updatePowder(x, y, i, el, windScale) {
     const w = this.w, h = this.h;
+    if (this.tryWindPush(x, y, i, el, windScale, 0.35, false)) return;
     if (y + 1 >= h) return;
     const bi = this.idx(x, y + 1);
     if (this.attemptSwapOrMove(i, bi, el, false)) return;
-    const dir = Math.random() < 0.5 ? 1 : -1;
+    const dir = windScale ? this.windDir(x, y, windScale) : (Math.random() < 0.5 ? 1 : -1);
     for (const dx of [dir, -dir]) {
       const nx = x + dx;
       if (nx < 0 || nx >= w) continue;
@@ -675,6 +708,11 @@ class Sim {
 
   updateLiquid(x, y, i, el) {
     const w = this.w, h = this.h;
+    // Ветер должен уметь заметно расталкивать жидкость (не только чуть
+    // смещать вероятность уже сработавшего растекания) — та же
+    // "перебивающая" попытка, что и у газа/осыпавшихся тел, только слабее
+    // (жидкость тяжелее, гравитацию перебивает не так легко).
+    if (this.tryWindPush(x, y, i, el, 0.08, 0.3, false)) return;
     if (y + 1 < h) {
       const bi = this.idx(x, y + 1);
       if (this.attemptSwapOrMove(i, bi, el, false)) return;
@@ -710,29 +748,14 @@ class Sim {
 
   updateGas(x, y, i, el) {
     const w = this.w;
-    // Сильный ветер может "перебить" обычное всплытие вверх — иначе газ в
-    // открытом воздухе почти всегда сначала успешно поднимался бы на клетку
-    // вверх и функция возвращалась бы раньше, чем вообще доходила до
-    // ветро-зависимого выбора направления ниже: ветер оставался бы заметен
-    // только там, где путь вверх и так уже перекрыт, а не в open air —
-    // самом обычном случае для дыма/пара.
-    const wind = this.getWindVX(x, y);
-    const windPush = Math.min(0.6, Math.abs(wind) * 0.2);
-    if (Math.random() < windPush) {
-      const wdir = wind > 0 ? 1 : -1;
-      const nx = x + wdir;
-      if (nx >= 0 && nx < w) {
-        const ni = this.idx(nx, y);
-        if (this.attemptSwapOrMove(i, ni, el, true)) return;
-      }
-    }
+    // Газ — самый лёгкий, ветер "перебивает" его обычное всплытие вверх
+    // заметнее всего (у жидкости и осыпавшихся тел та же tryWindPush
+    // работает с меньшим scale — см. их функции).
+    if (this.tryWindPush(x, y, i, el, 0.2, 0.6, true)) return;
     if (y - 1 >= 0) {
       const ai = this.idx(x, y - 1);
       if (this.attemptSwapOrMove(i, ai, el, true)) return;
     }
-    // Газ — самый лёгкий, поэтому заметнее всего сносится ветром (у жидкости
-    // тот же механизм действует с гораздо меньшим scale, у сыпучего — не
-    // используется вовсе).
     const dir = this.windDir(x, y, 0.15);
     if (y - 1 >= 0) {
       for (const dx of [dir, -dir]) {
