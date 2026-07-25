@@ -62,6 +62,17 @@ class Sim {
     // не Math.random() отдельно на каждую клетку.
     this._windRoll = 0;
 
+    // "Открытость" каждой клетки сетки ветра — 1 = воздух течёт свободно,
+    // 0 = преграда (см. isAirtight и computeAirBlock). Клетка сетки ветра
+    // грубее основной (airCell клеток симуляции на одну), но блокируется
+    // целиком, если внутри есть ХОТЯ БЫ ОДНА непроницаемая клетка — иначе
+    // при дробном пересчёте (доля перекрытия) обычная тонкая стена в одну
+    // клетку почти не мешала бы потоку (перекрывала бы жалкую 1/16 клетки
+    // сетки ветра), а стена обязана держать по-настоящему. Пересчитывается
+    // каждый кадр, т.к. материалы двигаются/падают.
+    this.airOpen = new Float32Array(this.airW * this.airH).fill(1);
+    this._airBlocked = new Uint8Array(this.airW * this.airH);
+
     this.paused = false;
     this.frame = 0;
   }
@@ -301,17 +312,55 @@ class Sim {
 
   // ---- потоки воздуха ----
 
+  // Помечает клетки сетки ветра, содержащие хотя бы одну непроницаемую
+  // клетку симуляции (см. isAirtight), как полностью закрытые. Пересчитывается
+  // каждый кадр перед диффузией, т.к. стена/металл могут появляться, а
+  // обломки — падать и открывать проход.
+  computeAirBlock() {
+    const w = this.w, h = this.h, ac = this.airCell, aw = this.airW;
+    const an = aw * this.airH;
+    const blocked = this._airBlocked;
+    blocked.fill(0);
+    const type = this.type;
+    for (let y = 0; y < h; y++) {
+      const rowBase = ((y / ac) | 0) * aw;
+      for (let x = 0; x < w; x++) {
+        const ai = rowBase + ((x / ac) | 0);
+        if (!blocked[ai] && isAirtight(type[y * w + x])) blocked[ai] = 1;
+      }
+    }
+    const open = this.airOpen;
+    for (let ai = 0; ai < an; ai++) open[ai] = blocked[ai] ? 0 : 1;
+  }
+
   // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
   // диффузия (смешивание с соседними клетками сетки ветра, чтобы резкое
   // возмущение в одном месте плавно расползалось, а не оставалось иглой).
   // Сама сетка ветра пополняется отдельно — инструментом "давление" (см.
   // applyPressureBrush) и разовыми возмущениями от любого реального
   // движения частиц (см. disturbWind, вызывается из swap()).
+  //
+  // Скорость диффузии (rate) не постоянна, а растёт вместе с локальным
+  // перепадом (разницей между клеткой и соседями) — лёгкий сквозняк
+  // выравнивается медленно и плавно, как раньше, а сильный перепад
+  // давления "летит" заметно быстрее, а не ползёт с той же фиксированной
+  // долей за кадр.
+  //
+  // Стена и металл (isAirtight) для этой диффузии — настоящая преграда:
+  // вклад каждой клетки (и своей, и соседской) в сумму взвешен её долей
+  // "открытости" (airOpen, см. computeAirBlock), точно так же, как уже
+  // исключались из соседей клетки за границей поля — сплошная преграда для
+  // соседа неотличима от края симуляции. Внутри самой преграды воздуха
+  // нет — её результирующая скорость гасится той же долей открытости.
   updateWind() {
     const aw = this.airW, ah = this.airH, an = aw * ah;
     const vx = this.windVX, vy = this.windVY;
+    this.computeAirBlock();
+    const open = this.airOpen;
     const DECAY = 0.995;
-    const DIFFUSE = 0.15;
+    const DIFFUSE_BASE = 0.15;
+    const DIFFUSE_GAIN = 0.6;
+    const DIFFUSE_MAX = 0.85;
     if (!this._windVX2 || this._windVX2.length !== an) {
       this._windVX2 = new Float32Array(an);
       this._windVY2 = new Float32Array(an);
@@ -320,14 +369,18 @@ class Sim {
     for (let ay = 0; ay < ah; ay++) {
       for (let ax = 0; ax < aw; ax++) {
         const ai = ay * aw + ax;
-        let sumX = vx[ai], sumY = vy[ai], cnt = 1;
-        if (ax > 0) { const ni = ai - 1; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
-        if (ax < aw - 1) { const ni = ai + 1; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
-        if (ay > 0) { const ni = ai - aw; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
-        if (ay < ah - 1) { const ni = ai + aw; sumX += vx[ni]; sumY += vy[ni]; cnt++; }
-        const avgX = sumX / cnt, avgY = sumY / cnt;
-        let nx = (vx[ai] + (avgX - vx[ai]) * DIFFUSE) * DECAY;
-        let ny = (vy[ai] + (avgY - vy[ai]) * DIFFUSE) * DECAY;
+        const selfOpen = open[ai];
+        let sumX = vx[ai] * selfOpen, sumY = vy[ai] * selfOpen, cnt = selfOpen;
+        if (ax > 0) { const ni = ai - 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+        if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+        if (ay > 0) { const ni = ai - aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+        if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+        const avgX = cnt > 1e-4 ? sumX / cnt : 0, avgY = cnt > 1e-4 ? sumY / cnt : 0;
+        const diffX = avgX - vx[ai], diffY = avgY - vy[ai];
+        const rate = Math.min(DIFFUSE_MAX, DIFFUSE_BASE + Math.hypot(diffX, diffY) * DIFFUSE_GAIN);
+        let nx = (vx[ai] + diffX * rate) * DECAY;
+        let ny = (vy[ai] + diffY * rate) * DECAY;
+        nx *= selfOpen; ny *= selfOpen;
         // Совсем крошечные значения обнуляем, чтобы не гонять вечный
         // фоновый шум там, где ветра по сути уже нет.
         if (Math.abs(nx) < 0.001) nx = 0;

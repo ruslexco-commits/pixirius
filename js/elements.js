@@ -67,7 +67,7 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.STEAM,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM,
 ];
 
 function isMovable(cat) {
@@ -89,4 +89,13 @@ function isStructural(id) {
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
 function isAnchor(id) {
   return id === EL.WALL || id === EL.VOID || id === EL.CLONE;
+}
+
+// Непроницаемые для потоков воздуха (см. Sim.computeAirBlock/updateWind) —
+// настоящая преграда, через которую ветер не диффундирует, в отличие от
+// прочих твёрдых тел (камень, дерево, стекло, лёд и т.д.), которые для
+// потоков воздуха прозрачны. Пустота (VOID) намеренно НЕ входит сюда —
+// роль непроницаемой стены отдана именно "Стене", а не "Пустоте".
+function isAirtight(id) {
+  return id === EL.WALL || id === EL.METAL;
 }
