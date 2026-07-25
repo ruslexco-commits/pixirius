@@ -58,6 +58,9 @@ class Sim {
     this.airH = Math.ceil(h / this.airCell);
     this.windVX = new Float32Array(this.airW * this.airH);
     this.windVY = new Float32Array(this.airW * this.airH);
+    // Один "бросок" на весь кадр для ветро-зависимых решений (см. step()) —
+    // не Math.random() отдельно на каждую клетку.
+    this._windRoll = 0;
 
     this.paused = false;
     this.frame = 0;
@@ -135,6 +138,17 @@ class Sim {
     this.moved.fill(0);
     this.computeStability();
     this.updateWind();
+    // Один общий "бросок" на весь кадр для ветро-зависимых решений (см.
+    // tryWindPush/windDir) — если бы каждая клетка бросала свой Math.random()
+    // независимо, разные клетки ОДНОГО цельного куска (например, прямой
+    // палки) толкались бы ветром в разные, случайно несовпадающие моменты и
+    // расходились бы в стороны, превращая падающее тело в облако пыли вместо
+    // того, чтобы просто отнести его целиком. Общий бросок на кадр даёт
+    // клеткам с одинаковым (или близким) локальным ветром одинаковый ответ
+    // "да/нет" в этом кадре — форма не рвётся, а долгосрочная частота
+    // срабатывания (в среднем по многим кадрам) остаётся той же chance, что
+    // и раньше, просто не независимой по каждой клетке.
+    this._windRoll = Math.random();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -332,10 +346,11 @@ class Sim {
   // жёстко диктует направление (иначе газ/жидкость в потоке выглядели бы
   // механически), а лишь делает движение "по ветру" вероятнее. scale задаёт
   // силу влияния: у газа заметно сильнее, чем у более тяжёлой жидкости.
+  // Сравнивается с ОБЩИМ на кадр _windRoll (см. tryWindPush — та же причина).
   windDir(x, y, scale) {
     const wind = this.getWindVX(x, y);
     const pRight = Math.max(0.05, Math.min(0.95, 0.5 + wind * scale));
-    return Math.random() < pRight ? 1 : -1;
+    return this._windRoll < pRight ? 1 : -1;
   }
 
   // Пытается толкнуть частицу чисто горизонтально по ветру, с шансом,
@@ -349,17 +364,82 @@ class Sim {
   // maxChance ограничивает шанс сверху, чтобы ветер не мог КАЖДЫЙ кадр
   // полностью отменять гравитацию/плавучесть. rising — как в
   // attemptSwapOrMove (газ поднимается — true, жидкость/сыпучее падают — false).
+  //
+  // Сравнение идёт с ОБЩИМ на весь кадр _windRoll, а не с независимым
+  // Math.random() на каждую клетку — иначе разные клетки одного цельного
+  // куска (например, падающей прямой палки) толкались бы ветром в
+  // случайно несовпадающие моменты и расходились бы в стороны, разрывая
+  // форму. Клетки с одинаковым (или близким) локальным ветром при общем
+  // броске отвечают "да/нет" синхронно — толкает целиком, не рвёт на части.
   tryWindPush(x, y, i, el, windScale, maxChance, rising) {
     if (!windScale) return false;
     const w = this.w;
     const wind = this.getWindVX(x, y);
     const chance = Math.min(maxChance, Math.abs(wind) * windScale);
-    if (Math.random() >= chance) return false;
+    if (this._windRoll >= chance) return false;
     const wdir = wind > 0 ? 1 : -1;
     const nx = x + wdir;
     if (nx < 0 || nx >= w) return false;
     const ni = this.idx(nx, y);
+    // Соседняя клетка ТОГО ЖЕ материала, вытянутого вдоль направления
+    // толчка (например, горизонтальная палка, которую толкает ГОРИЗОНТАЛЬНО),
+    // ещё не сдвинулась в этом кадре и потому блокирует одиночный своп —
+    // а раз следующая клетка дальше по цепочке в СЛЕДУЮЩЕЙ итерации того же
+    // кадра решит толкнуться туда же (тот же общий бросок, тот же локальный
+    // ветер), одиночные свопы просто упирались бы друг в друга, и толкалась
+    // бы только передняя кромка, отрываясь от остального куска. Сдвигаем
+    // всю связную цепочку одним атомарным действием вместо этого.
+    if (this.type[ni] === this.type[i]) return this.shiftChain(x, y, wdir, el, rising);
     return this.attemptSwapOrMove(i, ni, el, rising);
+  }
+
+  // Сдвигает связную цепочку клеток одного материала, начинающуюся в (x,y)
+  // и тянущуюся в направлении wdir, на один шаг в ту же сторону целиком —
+  // но только если на дальнем конце цепочки вообще есть куда деться (пусто
+  // или вытесняемая более лёгкая/плотная — как в attemptSwapOrMove —
+  // жидкость/газ/сыпучее). Все клетки цепочки и принимающая клетка на
+  // дальнем конце помечаются moved, чтобы не обработаться повторно в этом
+  // же кадре. maxChain ограничивает длину поиска.
+  shiftChain(x, y, wdir, el, rising) {
+    const w = this.w;
+    const t = this.type[this.idx(x, y)];
+    const maxChain = 64;
+    const chain = [this.idx(x, y)];
+    let cx = x;
+    for (let step = 1; step <= maxChain; step++) {
+      const nx = cx + wdir;
+      if (nx < 0 || nx >= w) return false;
+      const ni = this.idx(nx, y);
+      const nt = this.type[ni];
+      if (nt === t) { chain.push(ni); cx = nx; continue; }
+      let canAccept = nt === EL.EMPTY;
+      if (!canAccept) {
+        const nEl = ELEMENTS[nt];
+        canAccept = !!nEl && isMovable(nEl.cat) && (rising ? nEl.density > el.density : nEl.density < el.density);
+      }
+      if (!canAccept) return false;
+      // Содержимое принимающей клетки "оборачивается" в начало цепочки —
+      // остальные клетки просто получают содержимое своего предшественника,
+      // идём с дальнего конца к ближнему, чтобы не затереть источник раньше времени.
+      const farType = this.type[ni], farLife = this.life[ni], farExtra = this.extra[ni], farShade = this.shade[ni];
+      for (let k = chain.length - 1; k >= 0; k--) {
+        const to = (k === chain.length - 1) ? ni : chain[k + 1];
+        const from = chain[k];
+        this.type[to] = this.type[from];
+        this.life[to] = this.life[from];
+        this.extra[to] = this.extra[from];
+        this.shade[to] = this.shade[from];
+        this.moved[to] = 1;
+      }
+      this.type[chain[0]] = farType;
+      this.life[chain[0]] = farLife;
+      this.extra[chain[0]] = farExtra;
+      this.shade[chain[0]] = farShade;
+      this.moved[chain[0]] = 1;
+      this.disturbWind(chain[0], ni);
+      return true;
+    }
+    return false;
   }
 
   // Инструмент "давление" — не рисует материал, а напрямую правит сетку
