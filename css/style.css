@@ -70,6 +70,26 @@ html, body {
 .tool-btn svg { width: 100%; height: 100%; display: block; }
 .tool-btn.active { border-color: #7ad1ff; background: #182530; }
 
+#paletteTabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.cat-tab {
+  border: 1px solid #34343c;
+  border-radius: 0;
+  background: #1a1a20;
+  color: #b8b8c0;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 7px 4px;
+  cursor: pointer;
+}
+
+.cat-tab:hover { background: #24242c; }
+.cat-tab.active { border-color: #7ad1ff; background: #182530; color: #e8e8ec; }
+
 #palette {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -146,4 +166,5 @@ html, body {
   #view { width: 100%; height: auto; max-height: 60vh; }
   #panel { flex: 0 0 auto; width: 100%; max-height: none; }
   #palette, #tools { grid-template-columns: repeat(8, 1fr); }
+  #paletteTabs { grid-template-columns: repeat(4, 1fr); }
 }

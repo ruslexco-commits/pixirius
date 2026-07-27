@@ -110,6 +110,7 @@ fileLoad.addEventListener('change', () => {
 
 // ---- палитра элементов ----
 
+const paletteTabs = document.getElementById('paletteTabs');
 const palette = document.getElementById('palette');
 const statusLabel = document.getElementById('statusLabel');
 const materialInfo = document.getElementById('materialInfo');
@@ -164,6 +165,7 @@ function addPaletteButton(id, isEraser) {
     btn.style.background = rgbCss(ELEMENTS[id].color);
   }
   btn.title = name;
+  if (id === selectedElement) btn.classList.add('selected');
   btn.addEventListener('click', () => {
     selectedElement = id;
     for (const b of palette.children) b.classList.remove('selected');
@@ -189,6 +191,7 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
   btn.className = 'el-btn el-tool';
   btn.style.background = cssColor;
   btn.title = name;
+  if (toolValue === selectedElement) btn.classList.add('selected');
   btn.addEventListener('click', () => {
     selectedElement = toolValue;
     for (const b of palette.children) b.classList.remove('selected');
@@ -204,13 +207,60 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
   return btn;
 }
 
-addPaletteButton(EL.EMPTY, true);
-for (const id of ELEMENT_ORDER) addPaletteButton(id, false);
-addToolButton(TOOL_PRESSURE, 'Давление', '#e0a030',
-  '<div class="mi-title">Давление</div>'
-  + '<div class="mi-row"><span>ЛКМ</span><span>усилить поток</span></div>'
-  + '<div class="mi-row"><span>ПКМ</span><span>погасить поток</span></div>');
-palette.children[1].classList.add('selected');
+// Категории — чисто UI-группировка палитры (не связана с CAT/симуляцией
+// напрямую, кроме как через материал -> cat). "Технологии" — инструменты
+// воздействия на мир (не материалы), а не только физическая материя;
+// сейчас там только "Давление", остальное наполнится позже.
+const CATEGORIES = [
+  { key: 'gas', label: 'Газ' },
+  { key: 'solid', label: 'Тела' },
+  { key: 'liquid', label: 'Жидкости' },
+  { key: 'tech', label: 'Технологии' },
+];
+
+function materialCategoryKey(id) {
+  const cat = ELEMENTS[id].cat;
+  if (cat === CAT.GAS) return 'gas';
+  if (cat === CAT.LIQUID) return 'liquid';
+  return 'solid';
+}
+
+let activeCategory = materialCategoryKey(selectedElement);
+
+function buildPaletteTabs() {
+  paletteTabs.innerHTML = '';
+  for (const c of CATEGORIES) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'cat-tab' + (c.key === activeCategory ? ' active' : '');
+    btn.textContent = c.label;
+    btn.addEventListener('click', () => {
+      if (activeCategory === c.key) return;
+      activeCategory = c.key;
+      buildPaletteTabs();
+      buildPaletteGrid();
+    });
+    paletteTabs.appendChild(btn);
+  }
+}
+
+function buildPaletteGrid() {
+  palette.innerHTML = '';
+  addPaletteButton(EL.EMPTY, true);
+  if (activeCategory === 'tech') {
+    addToolButton(TOOL_PRESSURE, 'Давление', '#e0a030',
+      '<div class="mi-title">Давление</div>'
+      + '<div class="mi-row"><span>ЛКМ</span><span>усилить поток</span></div>'
+      + '<div class="mi-row"><span>ПКМ</span><span>погасить поток</span></div>');
+  } else {
+    for (const id of ELEMENT_ORDER) {
+      if (materialCategoryKey(id) === activeCategory) addPaletteButton(id, false);
+    }
+  }
+}
+
+buildPaletteTabs();
+buildPaletteGrid();
 statusLabel.textContent = ELEMENTS[ELEMENT_ORDER[0]].name;
 
 // ---- игровой цикл ----
