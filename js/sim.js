@@ -419,6 +419,25 @@ class Sim {
   // давления "летит" заметно быстрее, а не ползёт с той же фиксированной
   // долей за кадр.
   //
+  // За кадр делается несколько (WIND_SUBSTEPS) проходов диффузии подряд,
+  // а не один. Один проход смешивает клетку только с её ПРЯМЫМИ соседями —
+  // сколько бы ни был высок rate, за один проход возмущение физически не
+  // может уйти дальше чем на 1 клетку сетки ветра, и с фиксированным
+  // затуханием (DECAY) оно попросту гаснет раньше, чем успевает расползтись
+  // на сколько-нибудь заметное расстояние (на глаз — распространение почти
+  // не заметно, хотя видно, что клетка-источник довольно быстро остывает).
+  // Несколько проходов за тот же кадр дают возмущению пройти несколько
+  // клеток сетки ветра за кадр, оставаясь тем же диффузионным механизмом
+  // (просто применённым чаще), без пересмотра модели на что-то вроде
+  // полноценной адвекции/уравнений Навье-Стокса. DECAY также немного
+  // ослаблен (0.995 -> 0.997) — при неизменном "трении" возмущение попросту
+  // не успевало прожить достаточно кадров, чтобы уйти далеко, сколько бы
+  // проходов диффузии на кадр ни делалось. DIFFUSE_MAX на один проход при
+  // этом снижен (0.85 -> 0.5) — тот же суммарный эффект за кадр даёт
+  // несколько более мягких проходов подряд, что и было целью, а не один
+  // резкий (колебаний на резких перепадах не обнаружено ни на старом, ни на
+  // новом рейте, но более мягкий шаг всё равно оставлен с запасом).
+  //
   // Стена и металл (isAirtight) для этой диффузии — настоящая преграда:
   // вклад каждой клетки (и своей, и соседской) в сумму взвешен её долей
   // "открытости" (airOpen, см. computeAirBlock), точно так же, как уже
@@ -427,42 +446,51 @@ class Sim {
   // нет — её результирующая скорость гасится той же долей открытости.
   updateWind() {
     const aw = this.airW, ah = this.airH, an = aw * ah;
-    const vx = this.windVX, vy = this.windVY;
     this.computeAirBlock();
     const open = this.airOpen;
-    const DECAY = 0.995;
+    const DECAY = 0.997;
     const DIFFUSE_BASE = 0.15;
     const DIFFUSE_GAIN = 0.6;
-    const DIFFUSE_MAX = 0.85;
+    const DIFFUSE_MAX = 0.5;
+    const WIND_SUBSTEPS = 4;
     if (!this._windVX2 || this._windVX2.length !== an) {
       this._windVX2 = new Float32Array(an);
       this._windVY2 = new Float32Array(an);
     }
-    const vx2 = this._windVX2, vy2 = this._windVY2;
-    for (let ay = 0; ay < ah; ay++) {
-      for (let ax = 0; ax < aw; ax++) {
-        const ai = ay * aw + ax;
-        const selfOpen = open[ai];
-        let sumX = vx[ai] * selfOpen, sumY = vy[ai] * selfOpen, cnt = selfOpen;
-        if (ax > 0) { const ni = ai - 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
-        if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
-        if (ay > 0) { const ni = ai - aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
-        if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
-        const avgX = cnt > 1e-4 ? sumX / cnt : 0, avgY = cnt > 1e-4 ? sumY / cnt : 0;
-        const diffX = avgX - vx[ai], diffY = avgY - vy[ai];
-        const rate = Math.min(DIFFUSE_MAX, DIFFUSE_BASE + Math.hypot(diffX, diffY) * DIFFUSE_GAIN);
-        let nx = (vx[ai] + diffX * rate) * DECAY;
-        let ny = (vy[ai] + diffY * rate) * DECAY;
-        nx *= selfOpen; ny *= selfOpen;
-        // Совсем крошечные значения обнуляем, чтобы не гонять вечный
-        // фоновый шум там, где ветра по сути уже нет.
-        if (Math.abs(nx) < 0.001) nx = 0;
-        if (Math.abs(ny) < 0.001) ny = 0;
-        vx2[ai] = nx; vy2[ai] = ny;
+    let vx = this.windVX, vy = this.windVY;
+    let vx2 = this._windVX2, vy2 = this._windVY2;
+    for (let step = 0; step < WIND_SUBSTEPS; step++) {
+      const isLast = step === WIND_SUBSTEPS - 1;
+      for (let ay = 0; ay < ah; ay++) {
+        for (let ax = 0; ax < aw; ax++) {
+          const ai = ay * aw + ax;
+          const selfOpen = open[ai];
+          let sumX = vx[ai] * selfOpen, sumY = vy[ai] * selfOpen, cnt = selfOpen;
+          if (ax > 0) { const ni = ai - 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+          if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+          if (ay > 0) { const ni = ai - aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+          if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
+          const avgX = cnt > 1e-4 ? sumX / cnt : 0, avgY = cnt > 1e-4 ? sumY / cnt : 0;
+          const diffX = avgX - vx[ai], diffY = avgY - vy[ai];
+          const rate = Math.min(DIFFUSE_MAX, DIFFUSE_BASE + Math.hypot(diffX, diffY) * DIFFUSE_GAIN);
+          let nx = vx[ai] + diffX * rate;
+          let ny = vy[ai] + diffY * rate;
+          if (isLast) { nx *= DECAY; ny *= DECAY; }
+          nx *= selfOpen; ny *= selfOpen;
+          // Совсем крошечные значения обнуляем, чтобы не гонять вечный
+          // фоновый шум там, где ветра по сути уже нет.
+          if (isLast) {
+            if (Math.abs(nx) < 0.001) nx = 0;
+            if (Math.abs(ny) < 0.001) ny = 0;
+          }
+          vx2[ai] = nx; vy2[ai] = ny;
+        }
       }
+      const tx = vx; vx = vx2; vx2 = tx;
+      const ty = vy; vy = vy2; vy2 = ty;
     }
-    this.windVX = vx2; this._windVX2 = vx;
-    this.windVY = vy2; this._windVY2 = vy;
+    this.windVX = vx; this._windVX2 = vx2;
+    this.windVY = vy; this._windVY2 = vy2;
   }
 
   // Читают ЗАМОРОЖЕННЫЙ снимок (windVXFrame/windVYFrame), а не живые
