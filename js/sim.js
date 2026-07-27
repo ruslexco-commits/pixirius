@@ -661,6 +661,7 @@ class Sim {
       case EL.WATER: this.reactWater(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
+      case EL.STONE: case EL.METAL: case EL.GLASS: this.reactMelt(x, y, i, id); break;
     }
   }
 
@@ -849,6 +850,26 @@ class Sim {
       const nt = this.type[this.idx(nx, ny)];
       if (nt === EL.LAVA || nt === EL.FIRE) {
         if (Math.random() < 0.01) this.spawn(i, EL.GLASS);
+        return;
+      }
+    }
+  }
+
+  // Твёрдые материалы плавятся в лаву у огня/лавы. Дерево/масло(-плёнка)/
+  // порох сюда не входят — у них своя реакция горения (reactFlammable);
+  // лёд тоже не входит — у него уже есть reactIce (топится в воду, а не
+  // в лаву, плюс попутно замораживает воду рядом — отдельный, не сводимый
+  // к простому "плавлению" механизм). meltChance/meltsInto — данные на
+  // элементе (см. elements.js), тот же принцип, что и burnChance у горючих:
+  // generic-функция, а не отдельная реакция на каждый плавящийся материал.
+  reactMelt(x, y, i, id) {
+    const el = ELEMENTS[id];
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const nt = this.type[this.idx(nx, ny)];
+      if (nt === EL.FIRE || nt === EL.LAVA) {
+        if (Math.random() < el.meltChance) this.spawn(i, el.meltsInto);
         return;
       }
     }
