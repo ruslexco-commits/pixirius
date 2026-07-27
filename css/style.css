@@ -110,11 +110,6 @@ html, body {
   box-shadow: 0 0 0 1px #000 inset;
 }
 
-.el-eraser {
-  background-color: #1a1a20;
-  background-image: repeating-linear-gradient(45deg, #1a1a20, #1a1a20 4px, #28282f 4px, #28282f 8px);
-}
-
 #statusLabel {
   border: 1px solid #34343c;
   background: #1a1a20;

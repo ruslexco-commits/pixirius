@@ -117,8 +117,7 @@ const materialInfo = document.getElementById('materialInfo');
 
 function rgbCss(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
 
-function buildMaterialInfoHTML(id, isEraser, name) {
-  if (isEraser) return `<div class="mi-title">${name}</div>`;
+function buildMaterialInfoHTML(id) {
   const el = ELEMENTS[id];
   let rows = '';
   if (isStructural(id)) {
@@ -130,6 +129,9 @@ function buildMaterialInfoHTML(id, isEraser, name) {
   }
   if (el.flammable) {
     rows += `<div class="mi-row"><span>Горючесть</span><span>${Math.round(el.burnChance * 100)}%</span></div>`;
+  }
+  if (el.meltChance) {
+    rows += `<div class="mi-row"><span>Плавится в</span><span>${ELEMENTS[el.meltsInto].name}</span></div>`;
   }
   if (!rows) rows = `<div class="mi-row"><span>Особых характеристик нет</span></div>`;
   return `<div class="mi-title">${el.name}</div>${rows}`;
@@ -147,8 +149,8 @@ function showMaterialInfoHTML(clientX, clientY, html) {
   materialInfo.style.top = Math.max(4, top) + 'px';
 }
 
-function showMaterialInfo(clientX, clientY, id, isEraser, name) {
-  showMaterialInfoHTML(clientX, clientY, buildMaterialInfoHTML(id, isEraser, name));
+function showMaterialInfo(clientX, clientY, id) {
+  showMaterialInfoHTML(clientX, clientY, buildMaterialInfoHTML(id));
 }
 
 function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
@@ -156,14 +158,12 @@ function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
 document.addEventListener('click', hideMaterialInfo);
 document.addEventListener('scroll', hideMaterialInfo, true);
 
-function addPaletteButton(id, isEraser) {
+function addPaletteButton(id) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = 'el-btn' + (isEraser ? ' el-eraser' : '');
-  const name = isEraser ? 'Ластик' : ELEMENTS[id].name;
-  if (!isEraser) {
-    btn.style.background = rgbCss(ELEMENTS[id].color);
-  }
+  btn.className = 'el-btn';
+  const name = ELEMENTS[id].name;
+  btn.style.background = rgbCss(ELEMENTS[id].color);
   btn.title = name;
   if (id === selectedElement) btn.classList.add('selected');
   btn.addEventListener('click', () => {
@@ -174,7 +174,7 @@ function addPaletteButton(id, isEraser) {
   });
   btn.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    showMaterialInfo(e.clientX, e.clientY, id, isEraser, name);
+    showMaterialInfo(e.clientX, e.clientY, id);
   });
   btn.addEventListener('mouseleave', hideMaterialInfo);
   palette.appendChild(btn);
@@ -246,7 +246,6 @@ function buildPaletteTabs() {
 
 function buildPaletteGrid() {
   palette.innerHTML = '';
-  addPaletteButton(EL.EMPTY, true);
   if (activeCategory === 'tech') {
     addToolButton(TOOL_PRESSURE, 'Давление', '#e0a030',
       '<div class="mi-title">Давление</div>'
@@ -254,7 +253,7 @@ function buildPaletteGrid() {
       + '<div class="mi-row"><span>ПКМ</span><span>погасить поток</span></div>');
   } else {
     for (const id of ELEMENT_ORDER) {
-      if (materialCategoryKey(id) === activeCategory) addPaletteButton(id, false);
+      if (materialCategoryKey(id) === activeCategory) addPaletteButton(id);
     }
   }
 }
