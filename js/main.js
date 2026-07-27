@@ -208,14 +208,16 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
 }
 
 // Категории — чисто UI-группировка палитры (не связана с CAT/симуляцией
-// напрямую, кроме как через материал -> cat). "Технологии" — инструменты
-// воздействия на мир (не материалы), а не только физическая материя;
-// сейчас там только "Давление", остальное наполнится позже.
+// напрямую, кроме как через материал -> cat). "Разное" — инструменты
+// воздействия на мир (не материалы: давление воздуха, температура — оба
+// по одному и тому же принципу ЛКМ добавляет/ПКМ убавляет). "Технологии"
+// пока пуста — пользователь наполнит её позже, отдельно от "Разное".
 const CATEGORIES = [
   { key: 'gas', label: 'Газ' },
   { key: 'solid', label: 'Тела' },
   { key: 'liquid', label: 'Жидкости' },
   { key: 'tech', label: 'Технологии' },
+  { key: 'misc', label: 'Разное' },
 ];
 
 function materialCategoryKey(id) {
@@ -246,11 +248,17 @@ function buildPaletteTabs() {
 
 function buildPaletteGrid() {
   palette.innerHTML = '';
-  if (activeCategory === 'tech') {
+  if (activeCategory === 'misc') {
     addToolButton(TOOL_PRESSURE, 'Давление', '#e0a030',
       '<div class="mi-title">Давление</div>'
       + '<div class="mi-row"><span>ЛКМ</span><span>усилить поток</span></div>'
       + '<div class="mi-row"><span>ПКМ</span><span>погасить поток</span></div>');
+    addToolButton(TOOL_TEMP, 'Температура', '#e03030',
+      '<div class="mi-title">Температура</div>'
+      + '<div class="mi-row"><span>ЛКМ</span><span>нагреть</span></div>'
+      + '<div class="mi-row"><span>ПКМ</span><span>охладить</span></div>');
+  } else if (activeCategory === 'tech') {
+    // Пусто — пользователь наполнит позже.
   } else {
     for (const id of ELEMENT_ORDER) {
       if (materialCategoryKey(id) === activeCategory) addPaletteButton(id);

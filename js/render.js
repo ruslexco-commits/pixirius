@@ -60,8 +60,30 @@ class Renderer {
       const flick = (sim.life[i] * 37 + i * 13) % 46;
       r = clamp8(r + flick);
       g = clamp8(g + (flick >> 1));
+    } else if (el.meltPoint) {
+      [r, g, b] = this.heatTint(i, r, g, b, el.meltPoint);
     }
     return [r, g, b];
+  }
+
+  // Плавящиеся материалы (meltPoint на элементе) постепенно краснеют по
+  // мере нагрева — цвет плавно тянется к раскалённому красно-оранжевому
+  // (та же логика "чем ближе к порогу плавления, тем сильнее", что и у
+  // reactMelt: 0 = обычный цвет материала, 1 = уже на грани, вот-вот
+  // расплавится). ratio считается от meltPoint, а не от какого-то общего
+  // максимума — у разных материалов разный порог, и на глаз должно быть
+  // видно приближение именно к ИХ порогу, а не к абсолютной шкале.
+  heatTint(i, r, g, b, meltPoint) {
+    const sim = this.sim;
+    const x = i % sim.w, y = (i / sim.w) | 0;
+    const t = sim.getTemp(x, y);
+    if (t <= 0) return [r, g, b];
+    const ratio = Math.min(1, t / meltPoint);
+    return [
+      clamp8(r + (255 - r) * ratio),
+      clamp8(g + (40 - g) * ratio),
+      clamp8(b + (20 - b) * ratio),
+    ];
   }
 
   // Заземлённость клетки как доля от maxStability её материала: 0 (вот-вот

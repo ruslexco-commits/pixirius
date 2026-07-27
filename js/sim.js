@@ -88,6 +88,22 @@ class Sim {
     this.airOpen = new Float32Array(this.airW * this.airH).fill(1);
     this._airBlocked = new Uint8Array(this.airW * this.airH);
 
+    // Температура — та же грубая сетка, что и ветер (то же airCell), тот же
+    // принцип управления инструментом (см. applyTempBrush: ЛКМ добавляет,
+    // ПКМ убавляет — как и applyPressureBrush). 0 = комнатная (окружающая),
+    // диффузия/затухание тянут к ней же — физически "пусто" и "комнатная
+    // температура" это одно и то же исходное состояние. В отличие от ветра —
+    // скаляр (нет направления, только "насколько горячо/холодно"), поэтому
+    // инструмент правит значение напрямую, без радиального push/pull.
+    // Не нужен отдельный замороженный снимок на кадр (как windVXFrame для
+    // ветра): temp только ЧИТАЕТСЯ во время покадрового обхода клеток
+    // (reactMelt), ничего не пишет в него в процессе — в отличие от ветра,
+    // где движение (disturbWind) само правит live-сетку прямо во время
+    // обхода. updateTemp() пересчитывает всё целиком один раз в начале
+    // кадра, до обхода клеток — этого достаточно.
+    this.temp = new Float32Array(this.airW * this.airH);
+    this._temp2 = new Float32Array(this.airW * this.airH);
+
     // Кэш "ветер на всю связную компоненту" для осыпавшихся структурных
     // обломков — см. computeDebrisWindChance(). Даже с заморозкой снимка
     // ветра на кадр, у ДОСТАТОЧНО ПРОТЯЖЁННОГО куска за много кадров
@@ -140,6 +156,7 @@ class Sim {
     this.moved.fill(0);
     this.windVX.fill(0);
     this.windVY.fill(0);
+    this.temp.fill(0);
   }
 
   swap(i, j) {
@@ -175,6 +192,7 @@ class Sim {
     this.moved.fill(0);
     this.computeStability();
     this.updateWind();
+    this.updateTemp();
     this.windVXFrame.set(this.windVX);
     this.windVYFrame.set(this.windVY);
     // Один общий "бросок" на весь кадр для ветро-зависимых решений (см.
@@ -497,6 +515,82 @@ class Sim {
   // windVX/windVY — см. комментарий в конструкторе про windVXFrame.
   getWindVX(x, y) { return this.windVXFrame[this.airIdx(x, y)]; }
   getWindVY(x, y) { return this.windVYFrame[this.airIdx(x, y)]; }
+
+  // Раз в кадр: сначала клетки FIRE/LAVA подтягивают температуру СВОЕЙ
+  // клетки сетки тепла к своему heatSource (термостатом — max(), а не
+  // "+=", иначе значение росло бы неограниченно, пока источник стоит на
+  // месте), затем обычная диффузия+остывание к 0, тем же простым
+  // Джакоби-проходом, что и у ветра, но скаляром (одно число на клетку,
+  // а не вектор) и БЕЗ под-шагов (WIND_SUBSTEPS у ветра нарочно ускорял
+  // распространение — здесь наоборот хочется, чтобы "потихоньку
+  // краснело", а не сразу; один проход в кадр держит нагрев заметно
+  // более медленным и плавным). Стены/металл (isAirtight) блокируют
+  // передачу тепла тем же airOpen, что и ветер — уже посчитан в этом же
+  // кадре в updateWind(), пересчитывать второй раз незачем.
+  updateTemp() {
+    const aw = this.airW, ah = this.airH, an = aw * ah;
+    const open = this.airOpen;
+    const type = this.type, w = this.w, h = this.h, ac = this.airCell;
+    const src = this.temp;
+    // Полный проход по клеткам симуляции (не по одной "угловой" клетке на
+    // блок сетки тепла) — та же логика, что и в computeAirBlock: иначе
+    // огонь/лава, оказавшиеся НЕ в сэмплируемом углу своего блока 4x4,
+    // просто не заметились бы как источник тепла.
+    for (let y = 0; y < h; y++) {
+      const rowBase = ((y / ac) | 0) * aw;
+      for (let x = 0; x < w; x++) {
+        const t = type[y * w + x];
+        if (t === EL.FIRE || t === EL.LAVA) {
+          const ai = rowBase + ((x / ac) | 0);
+          const hs = ELEMENTS[t].heatSource;
+          if (src[ai] < hs) src[ai] = hs;
+        }
+      }
+    }
+    const DECAY = 0.995;
+    const DIFFUSE_RATE = 0.25;
+    const dst = this._temp2;
+    for (let ay = 0; ay < ah; ay++) {
+      for (let ax = 0; ax < aw; ax++) {
+        const ai = ay * aw + ax;
+        const selfOpen = open[ai];
+        let sum = src[ai] * selfOpen, cnt = selfOpen;
+        if (ax > 0) { const ni = ai - 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
+        if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
+        if (ay > 0) { const ni = ai - aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
+        if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
+        const avg = cnt > 1e-4 ? sum / cnt : 0;
+        let nt = (src[ai] + (avg - src[ai]) * DIFFUSE_RATE) * DECAY;
+        nt *= selfOpen;
+        if (Math.abs(nt) < 0.05) nt = 0;
+        dst[ai] = nt;
+      }
+    }
+    this.temp = dst; this._temp2 = src;
+  }
+
+  getTemp(x, y) { return this.temp[this.airIdx(x, y)]; }
+
+  // Инструмент "температура" — та же кисть, что и у давления (rx,ry в
+  // клетках симуляции), но правит sim.temp напрямую (скаляр, без
+  // направления): sign>0 (ЛКМ) — греет, sign<0 (ПКМ) — студит. В отличие
+  // от applyPressureBrush тут нет смысла в радиальном push/pull от
+  // центра — "температура" не течёт в направлении, а просто повышается
+  // или понижается на охваченной кистью площади.
+  applyTempBrush(cx, cy, rx, ry, sign) {
+    const acx = cx / this.airCell, acy = cy / this.airCell;
+    const arx = Math.max(0.5, rx / this.airCell), ary = Math.max(0.5, ry / this.airCell);
+    const ax0 = Math.max(0, Math.floor(acx - arx)), ax1 = Math.min(this.airW - 1, Math.ceil(acx + arx));
+    const ay0 = Math.max(0, Math.floor(acy - ary)), ay1 = Math.min(this.airH - 1, Math.ceil(acy + ary));
+    const PUSH = 3;
+    for (let ay = ay0; ay <= ay1; ay++) {
+      for (let ax = ax0; ax <= ax1; ax++) {
+        const nx = (ax - acx) / arx, ny = (ay - acy) / ary;
+        if (nx * nx + ny * ny > 1) continue;
+        this.temp[ay * this.airW + ax] += sign * PUSH;
+      }
+    }
+  }
 
   // Направление ±1 по X, статистически смещённое локальным ветром — не
   // жёстко диктует направление (иначе газ/жидкость в потоке выглядели бы
@@ -855,23 +949,23 @@ class Sim {
     }
   }
 
-  // Твёрдые материалы плавятся в лаву у огня/лавы. Дерево/масло(-плёнка)/
+  // Твёрдые материалы плавятся в лаву, если ЛОКАЛЬНАЯ температура (см.
+  // updateTemp/getTemp) достигла их meltPoint — не по факту касания
+  // огня/лавы напрямую, а через тепло, которое от них диффундирует
+  // (см. updateTemp): тело рядом, но не впритык, тоже постепенно
+  // нагреется и в итоге расплавится, просто медленнее. meltChance —
+  // шанс В КАДР собственно перехода, если условие по температуре уже
+  // выполнено (не "успеет ли расплавиться вообще", а "именно в этот
+  // кадр" — чтобы разные клетки одного блока не плавились все разом в
+  // ту же миллисекунду, когда переваливают порог). Дерево/масло(-плёнка)/
   // порох сюда не входят — у них своя реакция горения (reactFlammable);
   // лёд тоже не входит — у него уже есть reactIce (топится в воду, а не
   // в лаву, плюс попутно замораживает воду рядом — отдельный, не сводимый
-  // к простому "плавлению" механизм). meltChance/meltsInto — данные на
-  // элементе (см. elements.js), тот же принцип, что и burnChance у горючих:
-  // generic-функция, а не отдельная реакция на каждый плавящийся материал.
+  // к простому "плавлению" механизм).
   reactMelt(x, y, i, id) {
     const el = ELEMENTS[id];
-    for (let k = 0; k < 4; k++) {
-      const nx = x + DX4[k], ny = y + DY4[k];
-      if (!this.inBounds(nx, ny)) continue;
-      const nt = this.type[this.idx(nx, ny)];
-      if (nt === EL.FIRE || nt === EL.LAVA) {
-        if (Math.random() < el.meltChance) this.spawn(i, el.meltsInto);
-        return;
-      }
+    if (this.getTemp(x, y) >= el.meltPoint && Math.random() < el.meltChance) {
+      this.spawn(i, el.meltsInto);
     }
   }
 
