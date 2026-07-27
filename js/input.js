@@ -35,6 +35,7 @@ class InputController {
     this.zoomHoverGY = null;
 
     this.undoStack = [];
+    this.redoStack = [];
     this.maxUndoSteps = 20;
 
     this.gx = 0;
@@ -44,6 +45,7 @@ class InputController {
 
     this.debugStability = false;
     this.debugWind = false;
+    this.debugTherm = false;
 
     this._bind();
   }
@@ -51,11 +53,25 @@ class InputController {
   pushUndo() {
     this.undoStack.push(this.sim.snapshot());
     if (this.undoStack.length > this.maxUndoSteps) this.undoStack.shift();
+    // Новое действие делает старую "будущую" историю redo недостижимой —
+    // как и везде (Word, VS Code и т.д.): если после отмены нарисовать
+    // что-то новое, повторить отменённое действие уже нельзя, это была бы
+    // альтернативная ветка, которую мы не храним.
+    this.redoStack.length = 0;
   }
 
   undo() {
     const snap = this.undoStack.pop();
-    if (snap) this.sim.restore(snap);
+    if (!snap) return;
+    this.redoStack.push(this.sim.snapshot());
+    this.sim.restore(snap);
+  }
+
+  redo() {
+    const snap = this.redoStack.pop();
+    if (!snap) return;
+    this.undoStack.push(this.sim.snapshot());
+    this.sim.restore(snap);
   }
 
   // Элемент, который реально запишется на клетку (стирание всегда пишет "пусто").
@@ -134,6 +150,8 @@ class InputController {
       if (!e.repeat) this.debugStability = !this.debugStability;
     } else if (e.code === 'Digit2') {
       if (!e.repeat) this.debugWind = !this.debugWind;
+    } else if (e.code === 'Digit3') {
+      if (!e.repeat) this.debugTherm = !this.debugTherm;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -145,6 +163,9 @@ class InputController {
         if (!e.repeat && this.zoomPinned) this.zoomPinned = false;
         this.zoomKeyDown = true;
       }
+    } else if (e.code === 'KeyY' && e.ctrlKey) {
+      if (!e.repeat) this.redo();
+      e.preventDefault();
     }
   }
 
@@ -312,6 +333,7 @@ class InputController {
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
       debugStability: this.debugStability,
       debugWind: this.debugWind,
+      debugTherm: this.debugTherm,
     };
   }
 }
