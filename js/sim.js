@@ -103,6 +103,13 @@ class Sim {
     // кадра, до обхода клеток — этого достаточно.
     this.temp = new Float32Array(this.airW * this.airH);
     this._temp2 = new Float32Array(this.airW * this.airH);
+    // Своя, ОТДЕЛЬНАЯ от airOpen маска для тепла (см. isHeatInsulator,
+    // computeHeatBlock) — металл перекрывает airOpen (блокирует ветер), но
+    // обязан пропускать/проводить тепло, иначе клетка металла никогда не
+    // смогла бы нагреться выше 0 (nt *= selfOpen обнулял бы её же
+    // собственную температуру) и, соответственно, никогда бы не расплавилась.
+    this.heatOpen = new Float32Array(this.airW * this.airH).fill(1);
+    this._heatBlocked = new Uint8Array(this.airW * this.airH);
 
     // Кэш "ветер на всю связную компоненту" для осыпавшихся структурных
     // обломков — см. computeDebrisWindChance(). Даже с заморозкой снимка
@@ -145,6 +152,19 @@ class Sim {
       case EL.SMOKE: this.life[i] = 50 + (Math.random() * 40 | 0); break;
       case EL.FIRE: this.life[i] = 18 + (Math.random() * 14 | 0); break;
       default: this.life[i] = 0;
+    }
+    // Источники тепла (FIRE/LAVA) засевают свою клетку сетки тепла ОДИН
+    // РАЗ, в момент появления — max(), а не "+=", чтобы повторный spawn
+    // в уже горячей области (например, соседняя клетка плавится следом
+    // за первой) не разгонял температуру выше heatSource. Дальше это
+    // тепло живёт по общим правилам updateTemp() — диффундирует и
+    // остывает само, никто больше не подпитывает его насильно каждый
+    // кадр (см. комментарий в updateTemp про прежний баг с термостатом).
+    const el = ELEMENTS[id];
+    if (el && el.heatSource) {
+      const x = i % this.w, y = (i / this.w) | 0;
+      const ai = this.airIdx(x, y);
+      if (this.temp[ai] < el.heatSource) this.temp[ai] = el.heatSource;
     }
   }
 
@@ -424,6 +444,26 @@ class Sim {
     for (let ai = 0; ai < an; ai++) open[ai] = blocked[ai] ? 0 : 1;
   }
 
+  // То же самое, что и computeAirBlock, но по своему набору "преград"
+  // (isHeatInsulator, а не isAirtight) — металл блокирует воздух, но не
+  // тепло, поэтому не может использовать общую маску с ветром.
+  computeHeatBlock() {
+    const w = this.w, h = this.h, ac = this.airCell, aw = this.airW;
+    const an = aw * this.airH;
+    const blocked = this._heatBlocked;
+    blocked.fill(0);
+    const type = this.type;
+    for (let y = 0; y < h; y++) {
+      const rowBase = ((y / ac) | 0) * aw;
+      for (let x = 0; x < w; x++) {
+        const ai = rowBase + ((x / ac) | 0);
+        if (!blocked[ai] && isHeatInsulator(type[y * w + x])) blocked[ai] = 1;
+      }
+    }
+    const open = this.heatOpen;
+    for (let ai = 0; ai < an; ai++) open[ai] = blocked[ai] ? 0 : 1;
+  }
+
   // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
   // диффузия (смешивание с соседними клетками сетки ветра, чтобы резкое
   // возмущение в одном месте плавно расползалось, а не оставалось иглой).
@@ -516,52 +556,61 @@ class Sim {
   getWindVX(x, y) { return this.windVXFrame[this.airIdx(x, y)]; }
   getWindVY(x, y) { return this.windVYFrame[this.airIdx(x, y)]; }
 
-  // Раз в кадр: сначала клетки FIRE/LAVA подтягивают температуру СВОЕЙ
-  // клетки сетки тепла к своему heatSource (термостатом — max(), а не
-  // "+=", иначе значение росло бы неограниченно, пока источник стоит на
-  // месте), затем обычная диффузия+остывание к 0, тем же простым
+  // Раз в кадр: обычная диффузия+остывание к 0, тем же простым
   // Джакоби-проходом, что и у ветра, но скаляром (одно число на клетку,
   // а не вектор) и БЕЗ под-шагов (WIND_SUBSTEPS у ветра нарочно ускорял
   // распространение — здесь наоборот хочется, чтобы "потихоньку
   // краснело", а не сразу; один проход в кадр держит нагрев заметно
-  // более медленным и плавным). Стены/металл (isAirtight) блокируют
-  // передачу тепла тем же airOpen, что и ветер — уже посчитан в этом же
-  // кадре в updateWind(), пересчитывать второй раз незачем.
+  // более медленным и плавным). Преграду для тепла даёт СВОЯ маска
+  // (heatOpen/computeHeatBlock, isHeatInsulator) — НЕ airOpen ветра:
+  // металл блокирует воздух, но обязан проводить/принимать тепло, иначе
+  // никогда не смог бы нагреться выше 0 и, соответственно, расплавиться.
+  //
+  // Важно: источники тепла (FIRE/LAVA) НЕ подпитываются здесь заново
+  // каждый кадр — их клетка сетки тепла засевается один раз при
+  // появлении (см. spawn()) и дальше живёт по тем же правилам, что и
+  // всё остальное тепло: диффундирует и остывает. Раньше был термостат
+  // ("если ниже heatSource — подтянуть обратно к heatSource" каждый
+  // кадр), и из-за него ОДНА клетка лавы была неисчерпаемым источником —
+  // расплавит сколько угодно камня и сама не остынет ни на градус, пока
+  // стоит на месте. Реальная лава должна отдавать своё тепло и в
+  // процессе остывать (см. reactLava — при достаточном остывании
+  // застывает обратно в камень), а не действовать как вечная батарейка.
   updateTemp() {
-    const aw = this.airW, ah = this.airH, an = aw * ah;
-    const open = this.airOpen;
-    const type = this.type, w = this.w, h = this.h, ac = this.airCell;
+    const aw = this.airW, ah = this.airH;
+    this.computeHeatBlock();
+    const open = this.heatOpen;
     const src = this.temp;
-    // Полный проход по клеткам симуляции (не по одной "угловой" клетке на
-    // блок сетки тепла) — та же логика, что и в computeAirBlock: иначе
-    // огонь/лава, оказавшиеся НЕ в сэмплируемом углу своего блока 4x4,
-    // просто не заметились бы как источник тепла.
-    for (let y = 0; y < h; y++) {
-      const rowBase = ((y / ac) | 0) * aw;
-      for (let x = 0; x < w; x++) {
-        const t = type[y * w + x];
-        if (t === EL.FIRE || t === EL.LAVA) {
-          const ai = rowBase + ((x / ac) | 0);
-          const hs = ELEMENTS[t].heatSource;
-          if (src[ai] < hs) src[ai] = hs;
-        }
-      }
-    }
     const DECAY = 0.995;
     const DIFFUSE_RATE = 0.25;
     const dst = this._temp2;
     for (let ay = 0; ay < ah; ay++) {
       for (let ax = 0; ax < aw; ax++) {
         const ai = ay * aw + ax;
-        const selfOpen = open[ai];
-        let sum = src[ai] * selfOpen, cnt = selfOpen;
+        if (!open[ai]) {
+          // Заблокированная клетка (внутри её 4x4-блока есть стена) не
+          // обменивается теплом с соседями ни в одну, ни в другую сторону
+          // — но если тут же оказался источник тепла (стена стоит вплотную
+          // к лаве в той же грубой клетке сетки, а не только "лава
+          // где-то далеко в открытом поле"), его засев не обнуляется
+          // мгновенно (как было раньше — nt*=selfOpen), а просто угасает
+          // обычным DECAY, как и везде. Раньше это ломало вполне обычную
+          // сцену "лава на полу": пол в той же грубой клетке сетки тепла
+          // мгновенно обнулял температуру лавы прямо над ним, и она
+          // застывала обратно в камень уже на первом кадре, толком не
+          // успев ничего нагреть/поджечь.
+          let nt = src[ai] * DECAY;
+          if (Math.abs(nt) < 0.05) nt = 0;
+          dst[ai] = nt;
+          continue;
+        }
+        let sum = src[ai], cnt = 1;
         if (ax > 0) { const ni = ai - 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
         if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
         if (ay > 0) { const ni = ai - aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
         if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
         const avg = cnt > 1e-4 ? sum / cnt : 0;
         let nt = (src[ai] + (avg - src[ai]) * DIFFUSE_RATE) * DECAY;
-        nt *= selfOpen;
         if (Math.abs(nt) < 0.05) nt = 0;
         dst[ai] = nt;
       }
@@ -871,7 +920,13 @@ class Sim {
     }
   }
 
+  // Порог застывания заметно ниже meltPoint камня (55), а не тот же самый —
+  // иначе клетка на самой границе колебалась бы между лавой и камнем каждый
+  // кадр от мельчайших шумовых колебаний температуры около одного и того же
+  // числа (гистерезис: плавится при 55+, застывает только при 30-, между
+  // ними остаётся тем, чем уже является).
   reactLava(x, y, i) {
+    if (this.getTemp(x, y) < 30) { this.spawn(i, EL.STONE); return; }
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
@@ -1208,12 +1263,22 @@ class Sim {
 
   // ---- отмена (Ctrl+Z) ----
 
+  // temp — часть отменяемого состояния, в отличие от ветра (windVX/VY,
+  // см. комментарий в input.js про pressureInc/Dec): ветер — фоновое,
+  // самопроизвольно гуляющее состояние, которое ни от чего "не зависит"
+  // с точки зрения истории действий. Температура — иначе: она НАПРЯМУЮ
+  // определяет, расплавится ли материал (reactMelt), и это необратимое,
+  // "случившееся один раз" превращение. Без temp в снимке отмена вернёт
+  // камню его type=STONE, но клетка сетки тепла останется такой же
+  // горячей — и камень тут же расплавится заново на следующий же кадр,
+  // так что отмена выглядела бы так, будто она вообще не сработала.
   snapshot() {
     return {
       type: this.type.slice(),
       life: this.life.slice(),
       extra: this.extra.slice(),
       shade: this.shade.slice(),
+      temp: this.temp.slice(),
     };
   }
 
@@ -1222,6 +1287,7 @@ class Sim {
     this.life.set(snap.life);
     this.extra.set(snap.extra);
     this.shade.set(snap.shade);
+    this.temp.set(snap.temp);
     this.moved.fill(0);
   }
 
@@ -1234,6 +1300,7 @@ class Sim {
       life: bufToB64(this.life.buffer),
       extra: bufToB64(this.extra.buffer),
       shade: bufToB64(this.shade.buffer),
+      temp: bufToB64(this.temp.buffer),
     };
   }
 
@@ -1243,6 +1310,9 @@ class Sim {
     this.life.set(new Int16Array(b64ToBuf(obj.life)));
     this.extra.set(new Uint8Array(b64ToBuf(obj.extra)));
     this.shade.set(new Int8Array(b64ToBuf(obj.shade)));
+    // temp отсутствует в файлах, сохранённых до её появления — просто
+    // оставляем как есть (комнатная температура) вместо падения.
+    if (obj.temp) this.temp.set(new Float32Array(b64ToBuf(obj.temp)));
     this.moved.fill(0);
     return true;
   }
