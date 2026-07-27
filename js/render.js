@@ -2,6 +2,18 @@
 
 function clamp8(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 
+// Смешивает базовый цвет (rgb) с тоном отладочного режима (tint) в пропорции
+// weight (0 = чистый базовый, 1 = чистый tint) — используется, чтобы режимы
+// ветра/тепловизора подсвечивали клетку, а не полностью прятали под собой
+// то, что там реально стоит (см. cellColor).
+function blendColor(r, g, b, tint, weight) {
+  return [
+    clamp8(Math.round(r + (tint[0] - r) * weight)),
+    clamp8(Math.round(g + (tint[1] - g) * weight)),
+    clamp8(Math.round(b + (tint[2] - b) * weight)),
+  ];
+}
+
 function hsvToRgb(h, s, v) {
   const i = Math.floor(h * 6);
   const f = h * 6 - i;
@@ -41,27 +53,47 @@ class Renderer {
 
     this.debugStability = false;
     this.debugWind = false;
+    this.debugTherm = false;
   }
 
   cellColor(i) {
     const sim = this.sim;
     const id = sim.type[i];
-    if (this.debugWind) {
-      const x = i % sim.w, y = (i / sim.w) | 0;
-      const wc = this.windColor(x, y);
-      if (wc) return wc;
-    }
-    if (id === EL.EMPTY) return [14, 14, 18];
-    const el = ELEMENTS[id];
     if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
+    const x = i % sim.w, y = (i / sim.w) | 0;
+
+    if (id === EL.EMPTY) {
+      // Пустая клетка — фону нечего "закрывать", поэтому тон ветра/тепла
+      // здесь по-прежнему показывается чисто, как и раньше.
+      if (this.debugTherm) { const tc = this.thermalColor(x, y); if (tc) return tc; }
+      else if (this.debugWind) { const wc = this.windColor(x, y); if (wc) return wc; }
+      return [14, 14, 18];
+    }
+
+    const el = ELEMENTS[id];
     const s = sim.shade[i];
     let r = clamp8(el.color[0] + s), g = clamp8(el.color[1] + s), b = clamp8(el.color[2] + s);
     if (id === EL.FIRE) {
       const flick = (sim.life[i] * 37 + i * 13) % 46;
       r = clamp8(r + flick);
       g = clamp8(g + (flick >> 1));
-    } else if (el.meltPoint) {
+    } else if (el.meltPoint && !this.debugTherm) {
+      // При включённом тепловизоре ниже и так подмешается тон по той же
+      // температуре — не дублируем два разных красных подряд.
       [r, g, b] = this.heatTint(i, r, g, b, el.meltPoint);
+    }
+
+    // Занятая клетка — режимы ветра/тепловизора СМЕШИВАЮТ свой тон с
+    // цветом материала (а не заменяют его целиком, как было раньше) —
+    // иначе, например, стена в сильном потоке воздуха становится
+    // невидимой (виден только радужный цвет ветра), и не разобрать, что
+    // именно там стоит и перегораживает/направляет поток.
+    if (this.debugTherm) {
+      const tc = this.thermalColor(x, y);
+      if (tc) return blendColor(r, g, b, tc, 0.55);
+    } else if (this.debugWind) {
+      const wc = this.windColor(x, y);
+      if (wc) return blendColor(r, g, b, wc, 0.55);
     }
     return [r, g, b];
   }
@@ -115,6 +147,32 @@ class Renderer {
     const hue = (Math.atan2(vy, vx) / (2 * Math.PI) + 1) % 1;
     const val = Math.min(1, 0.35 + mag * 0.3);
     return hsvToRgb(hue, 0.85, val);
+  }
+
+  // Тепловизор (клавиша 3): температура клетки как цвет — от нейтрального
+  // тёмно-серого к раскалённому красно-оранжевому (нагрев, sim.temp>0) или
+  // к холодному синему (охлаждение инструментом ниже комнатной, temp<0).
+  // Шкалы для жара и холода разные (100 и 50) — ЛКМ/ПКМ инструмента и
+  // источники тепла (heatSource~90-100) естественно дают жар в разы
+  // сильнее, чем холод обычно уходит от инструмента охлаждения.
+  thermalColor(x, y) {
+    const t = this.sim.getTemp(x, y);
+    if (Math.abs(t) < 1) return null;
+    const base = 40;
+    if (t > 0) {
+      const ratio = Math.min(1, t / 100);
+      return [
+        Math.round(base + (255 - base) * ratio),
+        Math.round(base + (60 - base) * ratio),
+        Math.round(base + (20 - base) * ratio),
+      ];
+    }
+    const ratio = Math.min(1, -t / 50);
+    return [
+      Math.round(base + (20 - base) * ratio),
+      Math.round(base + (90 - base) * ratio),
+      Math.round(base + (255 - base) * ratio),
+    ];
   }
 
   buildImage() {
@@ -299,6 +357,7 @@ class Renderer {
   render(cursor) {
     this.debugStability = !!cursor.debugStability;
     this.debugWind = !!cursor.debugWind;
+    this.debugTherm = !!cursor.debugTherm;
     this.drawFrame();
     if (cursor.linePreview) {
       const lp = cursor.linePreview;
@@ -338,7 +397,7 @@ class Renderer {
       this.lastZoomBoxRect = null;
     }
 
-    if (this.debugStability || this.debugWind) {
+    if (this.debugStability || this.debugWind || this.debugTherm) {
       const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
       if (hovering) this.drawDebugInfo(cursor.zoomHoverGX, cursor.zoomHoverGY);
       else if (cursor.showBrush) this.drawDebugInfo(cursor.gx, cursor.gy);
@@ -362,14 +421,20 @@ class Renderer {
     return `Давление: ${mag.toFixed(2)} (vx ${vx.toFixed(2)}, vy ${vy.toFixed(2)})`;
   }
 
+  tempInfoText(gx, gy) {
+    return `Температура: ${this.sim.getTemp(gx, gy).toFixed(1)}`;
+  }
+
   // Значения под курсором для включённых режимов отладки (заземлённость,
-  // давление воздуха) - в верхнем левом углу канваса, по строке на режим.
+  // давление воздуха, температура) - в верхнем левом углу канваса, по
+  // строке на режим.
   drawDebugInfo(gx, gy) {
     const sim = this.sim;
     if (!sim.inBounds(gx, gy)) return;
     const lines = [];
     if (this.debugStability) lines.push(this.stabilityInfoText(gx, gy));
     if (this.debugWind) lines.push(this.windInfoText(gx, gy));
+    if (this.debugTherm) lines.push(this.tempInfoText(gx, gy));
     if (!lines.length) return;
 
     const ctx = this.ctx;
