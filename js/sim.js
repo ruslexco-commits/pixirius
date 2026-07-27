@@ -58,6 +58,21 @@ class Sim {
     this.airH = Math.ceil(h / this.airCell);
     this.windVX = new Float32Array(this.airW * this.airH);
     this.windVY = new Float32Array(this.airW * this.airH);
+    // Замороженный снимок ветра на начало кадра (см. step()) — то, что
+    // реально читают tryWindPush/windDir через getWindVX/getWindVY. Без
+    // этого разные клетки ОДНОЙ ещё целой цепочки, обработанные в разный
+    // момент одного и того же кадра, видели бы РАЗНЫЕ значения: любое
+    // движение (в т.ч. чужое, соседней клетки, обработанной чуть раньше в
+    // этом же кадре) сразу же чуть возмущает windVX/windVY через
+    // disturbWind — и клетка, до которой очередь в развёртке дошла позже,
+    // читала бы уже слегка изменённый ветер, а не тот, что был в начале
+    // кадра. На протяжённом объекте это накапливалось вдоль его длины и
+    // рвало форму даже при общем броске _windRoll. Снимок берётся один раз
+    // в step() сразу после updateWind() и не меняется до конца кадра —
+    // движение по-прежнему пишет в live windVX/windVY (через disturbWind),
+    // это просто повлияет на снимок уже СЛЕДУЮЩЕГО кадра.
+    this.windVXFrame = new Float32Array(this.airW * this.airH);
+    this.windVYFrame = new Float32Array(this.airW * this.airH);
     // Один "бросок" на весь кадр для ветро-зависимых решений (см. step()) —
     // не Math.random() отдельно на каждую клетку.
     this._windRoll = 0;
@@ -72,6 +87,17 @@ class Sim {
     // каждый кадр, т.к. материалы двигаются/падают.
     this.airOpen = new Float32Array(this.airW * this.airH).fill(1);
     this._airBlocked = new Uint8Array(this.airW * this.airH);
+
+    // Кэш "ветер на всю связную компоненту" для осыпавшихся структурных
+    // обломков — см. computeDebrisWindChance(). Даже с заморозкой снимка
+    // ветра на кадр, у ДОСТАТОЧНО ПРОТЯЖЁННОГО куска за много кадров
+    // накапливается настоящий (не шумовой) перепад силы ветра вдоль его
+    // длины — и клетки на разных концах, каждая честно читая свою точку,
+    // могут в одном кадре прийти к разным решениям "толкает/не толкает",
+    // разрывая форму. Одно общее значение на всю компоненту убирает саму
+    // возможность разногласия.
+    this._debrisWindVX = new Float32Array(n);
+    this._debrisVisited = new Uint8Array(n);
 
     this.paused = false;
     this.frame = 0;
@@ -149,6 +175,8 @@ class Sim {
     this.moved.fill(0);
     this.computeStability();
     this.updateWind();
+    this.windVXFrame.set(this.windVX);
+    this.windVYFrame.set(this.windVY);
     // Один общий "бросок" на весь кадр для ветро-зависимых решений (см.
     // tryWindPush/windDir) — если бы каждая клетка бросала свой Math.random()
     // независимо, разные клетки ОДНОГО цельного куска (например, прямой
@@ -160,6 +188,7 @@ class Sim {
     // срабатывания (в среднем по многим кадрам) остаётся той же chance, что
     // и раньше, просто не независимой по каждой клетке.
     this._windRoll = Math.random();
+    this.computeDebrisWindChance();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -312,6 +341,50 @@ class Sim {
 
   // ---- потоки воздуха ----
 
+  // Раз в кадр, ДО того как хоть одна клетка успела сдвинуться: для каждой
+  // ещё не рассмотренной клетки осыпавшегося структурного материала
+  // (isStructural && stability===0) находит её связную (4-соседство, тот
+  // же материал) компоненту целиком и запоминает ОДНО общее значение силы
+  // ветра для всех её клеток — сэмплированное из уже замороженного на этот
+  // кадр снимка (getWindVX) в ОДНОЙ фиксированной точке компоненты. tryWindPush
+  // читает именно этот кэш для таких клеток (см. ниже), поэтому любая клетка
+  // ещё не разорванной цепочки в этом кадре видит один и тот же ветер и
+  // приходит к тому же решению "толкает/не толкает" — само разногласие
+  // становится невозможным, а не просто маловероятным.
+  computeDebrisWindChance() {
+    const w = this.w, n = w * this.h;
+    const visited = this._debrisVisited;
+    visited.fill(0);
+    const cache = this._debrisWindVX;
+    const stab = this.stability;
+    const stack = this._debrisStack || (this._debrisStack = []);
+    for (let i = 0; i < n; i++) {
+      if (visited[i]) continue;
+      visited[i] = 1;
+      const t = this.type[i];
+      if (!isStructural(t) || stab[i] !== 0) continue;
+      const wind = this.getWindVX(i % w, (i / w) | 0);
+      stack.length = 0;
+      stack.push(i);
+      cache[i] = wind;
+      while (stack.length) {
+        const ci = stack.pop();
+        const cx = ci % w, cy = (ci / w) | 0;
+        for (let k = 0; k < 4; k++) {
+          const nx = cx + DX4[k], ny = cy + DY4[k];
+          if (!this.inBounds(nx, ny)) continue;
+          const ni = this.idx(nx, ny);
+          if (visited[ni]) continue;
+          visited[ni] = 1;
+          if (this.type[ni] === t && stab[ni] === 0) {
+            cache[ni] = wind;
+            stack.push(ni);
+          }
+        }
+      }
+    }
+  }
+
   // Помечает клетки сетки ветра, содержащие хотя бы одну непроницаемую
   // клетку симуляции (см. isAirtight), как полностью закрытые. Пересчитывается
   // каждый кадр перед диффузией, т.к. стена/металл могут появляться, а
@@ -392,16 +465,21 @@ class Sim {
     this.windVY = vy2; this._windVY2 = vy;
   }
 
-  getWindVX(x, y) { return this.windVX[this.airIdx(x, y)]; }
-  getWindVY(x, y) { return this.windVY[this.airIdx(x, y)]; }
+  // Читают ЗАМОРОЖЕННЫЙ снимок (windVXFrame/windVYFrame), а не живые
+  // windVX/windVY — см. комментарий в конструкторе про windVXFrame.
+  getWindVX(x, y) { return this.windVXFrame[this.airIdx(x, y)]; }
+  getWindVY(x, y) { return this.windVYFrame[this.airIdx(x, y)]; }
 
   // Направление ±1 по X, статистически смещённое локальным ветром — не
   // жёстко диктует направление (иначе газ/жидкость в потоке выглядели бы
   // механически), а лишь делает движение "по ветру" вероятнее. scale задаёт
   // силу влияния: у газа заметно сильнее, чем у более тяжёлой жидкости.
   // Сравнивается с ОБЩИМ на кадр _windRoll (см. tryWindPush — та же причина).
+  // Для осыпавшихся структурных обломков берёт кэш всей компоненты (см.
+  // computeDebrisWindChance), а не свою точку — та же причина, что и там.
   windDir(x, y, scale) {
-    const wind = this.getWindVX(x, y);
+    const i = this.idx(x, y);
+    const wind = (isStructural(this.type[i]) && this.stability[i] === 0) ? this._debrisWindVX[i] : this.getWindVX(x, y);
     const pRight = Math.max(0.05, Math.min(0.95, 0.5 + wind * scale));
     return this._windRoll < pRight ? 1 : -1;
   }
@@ -418,16 +496,29 @@ class Sim {
   // полностью отменять гравитацию/плавучесть. rising — как в
   // attemptSwapOrMove (газ поднимается — true, жидкость/сыпучее падают — false).
   //
-  // Сравнение идёт с ОБЩИМ на весь кадр _windRoll, а не с независимым
-  // Math.random() на каждую клетку — иначе разные клетки одного цельного
-  // куска (например, падающей прямой палки) толкались бы ветром в
-  // случайно несовпадающие моменты и расходились бы в стороны, разрывая
-  // форму. Клетки с одинаковым (или близким) локальным ветром при общем
-  // броске отвечают "да/нет" синхронно — толкает целиком, не рвёт на части.
+  // Сравнение идёт с ОБЩИМ на весь кадр _windRoll (а не с независимым
+  // Math.random() на каждую клетку) И с ЗАМОРОЖЕННЫМ на весь кадр снимком
+  // ветра (getWindVX/getWindVY — см. windVXFrame в конструкторе), а не с
+  // живым windVX/windVY. Без ЛЮБОГО из этих двух разные клетки одного
+  // цельного куска (например, падающей прямой палки) толкались бы ветром
+  // в разные моменты и расходились бы в стороны, разрывая форму: без
+  // общего roll — по случайности броска на каждую клетку; без заморозки
+  // снимка — потому что клетка, до которой очередь в развёртке кадра
+  // дошла позже, уже видела бы чуть возмущённый (чужим же движением,
+  // через disturbWind) ветер, а не тот, что было в начале кадра. Вместе
+  // они дают любой клетке ещё целой цепочки одинаковый ответ "да/нет" в
+  // этом кадре — долгосрочная частота срабатывания (в среднем по многим
+  // кадрам) при этом не меняется, просто перестаёт быть независимой по
+  // каждой клетке.
   tryWindPush(x, y, i, el, windScale, maxChance, rising) {
     if (!windScale) return false;
     const w = this.w;
-    const wind = this.getWindVX(x, y);
+    // Для клеток структурного мусора (stability===0) берём ЕДИНЫЙ на весь
+    // связный кусок ветер из computeDebrisWindChance, а не локальный —
+    // иначе даже с общим roll и заморозкой снимка разные клетки одной
+    // цепочки могут со временем накопить разный локальный ветер (реальный
+    // пространственный градиент вдоль широкого объекта) и разойтись.
+    const wind = (isStructural(this.type[i]) && this.stability[i] === 0) ? this._debrisWindVX[i] : this.getWindVX(x, y);
     const chance = Math.min(maxChance, Math.abs(wind) * windScale);
     if (this._windRoll >= chance) return false;
     const wdir = wind > 0 ? 1 : -1;
