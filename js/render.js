@@ -106,9 +106,7 @@ class Renderer {
   // максимума — у разных материалов разный порог, и на глаз должно быть
   // видно приближение именно к ИХ порогу, а не к абсолютной шкале.
   heatTint(i, r, g, b, meltPoint) {
-    const sim = this.sim;
-    const x = i % sim.w, y = (i / sim.w) | 0;
-    const t = sim.getTemp(x, y);
+    const t = this.sim.temp[i];
     if (t <= 0) return [r, g, b];
     const ratio = Math.min(1, t / meltPoint);
     return [
