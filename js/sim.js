@@ -110,6 +110,19 @@ class Sim {
     // собственную температуру) и, соответственно, никогда бы не расплавилась.
     this.heatOpen = new Float32Array(this.airW * this.airH).fill(1);
     this._heatBlocked = new Uint8Array(this.airW * this.airH);
+    // Насколько клетка сетки тепла "занята" веществом (0 = сплошной
+    // открытый воздух, 1 = целиком забита материалом) — используется как
+    // множитель теплопроводности соседа при диффузии (см. updateTemp):
+    // открытый воздух проводит тепло НАМНОГО хуже прямого контакта с
+    // веществом (та же причина, по которой в реальности термос из
+    // воздушной прослойки держит тепло куда дольше открытого металла).
+    // Без этого различия одиночная лава, ничем не окружённая, кроме
+    // пустоты, отдавала тепло в открытый воздух с той же скоростью, что и
+    // в соседний камень — и остывала почти мгновенно, хотя физически
+    // воздух вокруг неё — плохой проводник, а не такой же полноценный
+    // теплоотвод, как твёрдое/жидкое вещество.
+    this.heatCond = new Float32Array(this.airW * this.airH).fill(1);
+    this._heatOccCount = new Uint16Array(this.airW * this.airH);
 
     // Кэш "ветер на всю связную компоненту" для осыпавшихся структурных
     // обломков — см. computeDebrisWindChance(). Даже с заморозкой снимка
@@ -446,22 +459,40 @@ class Sim {
 
   // То же самое, что и computeAirBlock, но по своему набору "преград"
   // (isHeatInsulator, а не isAirtight) — металл блокирует воздух, но не
-  // тепло, поэтому не может использовать общую маску с ветром.
+  // тепло, поэтому не может использовать общую маску с ветром. Заодно
+  // считает occCount — сколько клеток симуляции в блоке заняты хоть
+  // каким-то веществом (не пусто) — из него ниже строится heatCond.
   computeHeatBlock() {
     const w = this.w, h = this.h, ac = this.airCell, aw = this.airW;
     const an = aw * this.airH;
     const blocked = this._heatBlocked;
     blocked.fill(0);
+    const occCount = this._heatOccCount;
+    occCount.fill(0);
     const type = this.type;
     for (let y = 0; y < h; y++) {
       const rowBase = ((y / ac) | 0) * aw;
       for (let x = 0; x < w; x++) {
+        const t = type[y * w + x];
         const ai = rowBase + ((x / ac) | 0);
-        if (!blocked[ai] && isHeatInsulator(type[y * w + x])) blocked[ai] = 1;
+        if (t !== EL.EMPTY) occCount[ai]++;
+        if (!blocked[ai] && isHeatInsulator(t)) blocked[ai] = 1;
       }
     }
     const open = this.heatOpen;
-    for (let ai = 0; ai < an; ai++) open[ai] = blocked[ai] ? 0 : 1;
+    const cond = this.heatCond;
+    const cellArea = ac * ac;
+    // AIR_COND — теплопроводность полностью открытого воздуха относительно
+    // прямого контакта с веществом (1.0). Подобрано так, чтобы одиночная
+    // лава в открытом воздухе теряла заметную часть тепла за несколько
+    // секунд, а не за доли секунды, но всё равно оставалась конечным,
+    // рано или поздно остывающим источником — не бесконечной батарейкой.
+    const AIR_COND = 0.12;
+    for (let ai = 0; ai < an; ai++) {
+      open[ai] = blocked[ai] ? 0 : 1;
+      const frac = Math.min(1, occCount[ai] / cellArea);
+      cond[ai] = AIR_COND + frac * (1 - AIR_COND);
+    }
   }
 
   // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
@@ -580,6 +611,7 @@ class Sim {
     const aw = this.airW, ah = this.airH;
     this.computeHeatBlock();
     const open = this.heatOpen;
+    const cond = this.heatCond;
     const src = this.temp;
     const DECAY = 0.995;
     const DIFFUSE_RATE = 0.25;
@@ -604,11 +636,18 @@ class Sim {
           dst[ai] = nt;
           continue;
         }
+        // Вес соседа — не просто "открыт/закрыт" (open), а ещё и НАСКОЛЬКО
+        // он теплопроводен (cond): полностью открытый воздух проводит тепло
+        // куда хуже прямого контакта с веществом (см. computeHeatBlock).
+        // Без этого множителя открытый воздух и соседний камень отбирали
+        // бы тепло с одинаковой скоростью, и одиночная лава посреди
+        // пустоты остывала бы так же быстро, как лава, обложенная камнем
+        // со всех сторон, — а физически это два совсем разных случая.
         let sum = src[ai], cnt = 1;
-        if (ax > 0) { const ni = ai - 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
-        if (ax < aw - 1) { const ni = ai + 1; const o = open[ni]; sum += src[ni] * o; cnt += o; }
-        if (ay > 0) { const ni = ai - aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
-        if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sum += src[ni] * o; cnt += o; }
+        if (ax > 0) { const ni = ai - 1; const o = open[ni] * cond[ni]; sum += src[ni] * o; cnt += o; }
+        if (ax < aw - 1) { const ni = ai + 1; const o = open[ni] * cond[ni]; sum += src[ni] * o; cnt += o; }
+        if (ay > 0) { const ni = ai - aw; const o = open[ni] * cond[ni]; sum += src[ni] * o; cnt += o; }
+        if (ay < ah - 1) { const ni = ai + aw; const o = open[ni] * cond[ni]; sum += src[ni] * o; cnt += o; }
         const avg = cnt > 1e-4 ? sum / cnt : 0;
         let nt = (src[ai] + (avg - src[ai]) * DIFFUSE_RATE) * DECAY;
         if (Math.abs(nt) < 0.05) nt = 0;
@@ -1310,9 +1349,15 @@ class Sim {
     this.life.set(new Int16Array(b64ToBuf(obj.life)));
     this.extra.set(new Uint8Array(b64ToBuf(obj.extra)));
     this.shade.set(new Int8Array(b64ToBuf(obj.shade)));
-    // temp отсутствует в файлах, сохранённых до её появления — просто
-    // оставляем как есть (комнатная температура) вместо падения.
+    // temp отсутствует в файлах, сохранённых до её появления — тогда
+    // явно обнуляем (комнатная температура), а НЕ оставляем как есть:
+    // "как есть" — это температура ТЕКУЩЕЙ, ещё не выгруженной сессии,
+    // а не сохранённого мира. Без явного обнуления что-нибудь горячее,
+    // над чем шёл эксперимент до нажатия "Загрузить", утекало бы в
+    // свежезагруженный мир и плавило бы там то, что там в принципе не
+    // должно быть горячим.
     if (obj.temp) this.temp.set(new Float32Array(b64ToBuf(obj.temp)));
+    else this.temp.fill(0);
     this.moved.fill(0);
     return true;
   }
