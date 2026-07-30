@@ -127,6 +127,14 @@ class Sim {
     this._debrisWindVX = new Float32Array(n);
     this._debrisVisited = new Uint8Array(n);
 
+    // Кэш "есть ли у этой жидкости вообще путь наружу" — см.
+    // computeLiquidEscape()/attemptSwapOrMove(). 1 = связная область той же
+    // жидкости (напрямую или через цепочку соседей того же типа) где-то
+    // касается хотя бы одной пустой клетки, 0 = карман запечатан со всех
+    // сторон целиком.
+    this._liquidEscape = new Uint8Array(n);
+    this._liquidVisited = new Uint8Array(n);
+
     this.paused = false;
     this.frame = 0;
   }
@@ -247,6 +255,7 @@ class Sim {
     // и раньше, просто не независимой по каждой клетке.
     this._windRoll = Math.random();
     this.computeDebrisWindChance();
+    this.computeLiquidEscape();
     const w = this.w, h = this.h;
     const ltr = (this.frame & 1) === 0;
     for (let y = h - 1; y >= 0; y--) {
@@ -440,6 +449,66 @@ class Sim {
           }
         }
       }
+    }
+  }
+
+  // Раз в кадр, тем же приёмом, что и computeDebrisWindChance() выше: для
+  // каждой ещё не рассмотренной клетки жидкости находит её связную (4-соседство,
+  // ТОЛЬКО тот же тип — вода не считается путём наружу для лавы и наоборот)
+  // компоненту целиком и запоминает ОДИН флаг на всю компоненту — есть ли у
+  // неё где-нибудь хоть одна пустая клетка-сосед. attemptSwapOrMove читает
+  // именно этот кэш: если у всей связной лужи нет НИ ОДНОГО выхода вообще
+  // (запечатана целиком твёрдым/другим веществом со всех сторон), тонущий
+  // объект её не вытесняет — жидкость несжимаема и ей физически некуда
+  // деться, поэтому объект остаётся лежать поверх, а не проваливается
+  // сквозь. Если выход есть хоть где-то в компоненте (пусть за десятки
+  // клеток от места вытеснения) — вытеснение по-прежнему разрешено: сама
+  // лужа за много кадров успеет перераспределиться к этому выходу, это
+  // просто не мгновенно и не обязано укладываться в дальность одного
+  // displaceLiquidSideways.
+  computeLiquidEscape() {
+    const w = this.w, h = this.h, n = w * h;
+    const type = this.type;
+    const visited = this._liquidVisited;
+    visited.fill(0);
+    const escape = this._liquidEscape;
+    const stack = this._liquidStack || (this._liquidStack = []);
+    const comp = this._liquidComp || (this._liquidComp = []);
+    for (let i = 0; i < n; i++) {
+      if (visited[i]) continue;
+      visited[i] = 1;
+      const t = type[i];
+      const el = ELEMENTS[t];
+      if (!el || el.cat !== CAT.LIQUID) continue;
+      stack.length = 0; stack.push(i);
+      comp.length = 0; comp.push(i);
+      let hasEscape = false;
+      while (stack.length) {
+        const ci = stack.pop();
+        const cx = ci % w, cy = (ci / w) | 0;
+        if (cx > 0) {
+          const ni = ci - 1;
+          if (type[ni] === EL.EMPTY) hasEscape = true;
+          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+        }
+        if (cx < w - 1) {
+          const ni = ci + 1;
+          if (type[ni] === EL.EMPTY) hasEscape = true;
+          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+        }
+        if (cy > 0) {
+          const ni = ci - w;
+          if (type[ni] === EL.EMPTY) hasEscape = true;
+          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+        }
+        if (cy < h - 1) {
+          const ni = ci + w;
+          if (type[ni] === EL.EMPTY) hasEscape = true;
+          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+        }
+      }
+      const val = hasEscape ? 1 : 0;
+      for (let k = 0; k < comp.length; k++) escape[comp[k]] = val;
     }
   }
 
@@ -1125,9 +1194,18 @@ class Sim {
       // вытесняющий материал — обычно прямо НАД ним. Повторяясь кадр за
       // кадром, пока объект тонет, это громоздит вытесненную жидкость
       // ровно колонкой над его путём вместо того, чтобы она растекалась
-      // вокруг, как в реальности. Если сбоку действительно некуда —
-      // остаётся обычный своп (жидкость подпирает объект сверху).
-      if (!rising && nEl.cat === CAT.LIQUID) this.displaceLiquidSideways(ni);
+      // вокруг, как в реальности.
+      if (!rising && nEl.cat === CAT.LIQUID) {
+        if (this.displaceLiquidSideways(ni)) { this.swap(i, ni); this.moved[ni] = 1; return true; }
+        // Некуда подвинуть локально (в пределах dispersion). Если у всей
+        // связной лужи нет вообще никакого выхода нигде (см.
+        // computeLiquidEscape) — она несжимаема и запечатана целиком,
+        // вытеснять её физически некуда, и объект остаётся лежать поверх,
+        // а НЕ проваливается сквозь. Если выход в луже всё-таки есть, просто
+        // не рядом — обычный своп (жидкость временно подпирает объект
+        // сверху, как раньше), лужа сама перераспределится за много кадров.
+        if (!this._liquidEscape[ni]) return false;
+      }
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
     return false;
@@ -1166,12 +1244,23 @@ class Sim {
   // иначе любая осевшая жидкость с открытым воздухом над собой "кипела" бы,
   // бесконечно прыгая на клетку вверх-вниз (пустота не притягивает жидкость,
   // тянет только более лёгкая vs более тяжёлая жидкость друг сквозь друга).
+  //
+  // Это ЗЕРКАЛЬНЫЙ путь к тому же самому "тонущий объект вытесняет жидкость"
+  // из attemptSwapOrMove — только инициатор здесь сама жидкость (смотрит
+  // вверх, видит более плотное над собой, поднимается ему навстречу), а не
+  // тонущий объект (смотрит вниз/по диагонали). Без своей собственной
+  // проверки пути наружу этот путь тихо обходил бы стороной весь фикс
+  // attemptSwapOrMove: тонущему объекту НЕ обязательно самому свопаться
+  // вниз — запечатанная жидкость снизу с тем же успехом всплывёт В НЕГО
+  // сама, и объект "провалится" тем же на вид результатом, только
+  // инициированным с другого конца пары клеток.
   attemptBuoyantRise(i, ni, el) {
     const nt = this.type[ni];
     if (nt === EL.EMPTY) return false;
     const nEl = ELEMENTS[nt];
     if (!nEl || !isMovable(nEl.cat)) return false;
     if (nEl.density > el.density) {
+      if (!this._liquidEscape[i]) return false;
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
     return false;
