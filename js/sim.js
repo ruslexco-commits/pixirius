@@ -202,6 +202,23 @@ class Sim {
     // переезжает вместе с клеткой при движении (см. swap()).
     const el = ELEMENTS[id];
     if (seedHeat && el && el.heatSource && this.temp[i] < el.heatSource) this.temp[i] = el.heatSource;
+    // Балка запоминает связь с опорой РОВНО в момент появления, а не позже
+    // (см. reactBeam) — битовая маска направлений (по индексам DX4/DY4:
+    // 1=вправо, 2=влево, 4=вниз, 8=вверх), где на момент спавна стоял
+    // структурный материал или якорь. Если тогда рядом не было НИ ОДНОГО
+    // такого соседа — связи не было и не будет: reactBeam увидит mask===0
+    // и сразу превратит клетку в обычный камень.
+    if (id === EL.BEAM) {
+      const w = this.w, x = i % w, y = (i / w) | 0;
+      let mask = 0;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (!this.inBounds(nx, ny)) continue;
+        const nt = this.type[this.idx(nx, ny)];
+        if (isStructural(nt) || isAnchor(nt)) mask |= (1 << k);
+      }
+      this.extra[i] = mask;
+    }
   }
 
   clear() {
@@ -996,7 +1013,33 @@ class Sim {
         this.tickMoisture(x, y, i, EL.WET_EARTH);
         this.tryEvaporateMoisture(x, y, i);
         break;
+      case EL.BEAM: this.reactBeam(x, y, i); break;
     }
+  }
+
+  // Раз в кадр проверяет, что связь балки с опорой (запомненная один раз
+  // при спавне — см. spawn()) всё ещё цела: у каждого направления в маске
+  // extra[i] на месте должен стоять структурный материал/якорь ПРЯМО
+  // СЕЙЧАС, не важно, тот же самый или другой — связь про факт опоры в эту
+  // сторону, а не про конкретного соседа. Если хоть одно из направлений
+  // связи нарушено (или связи не было вовсе, mask===0 — см. spawn()) —
+  // балка необратимо становится обычным камнем: reactMelt для камня
+  // выполняется уже на следующий кадр как для STONE, отдельно вызывать не
+  // нужно. Пока связь цела — ведёт себя как STONE и в остальном (плавление
+  // через reactMelt).
+  reactBeam(x, y, i) {
+    const mask = this.extra[i];
+    let broken = mask === 0;
+    if (!broken) {
+      for (let k = 0; k < 4; k++) {
+        if (!(mask & (1 << k))) continue;
+        const nx = x + DX4[k], ny = y + DY4[k];
+        const nt = this.inBounds(nx, ny) ? this.type[this.idx(nx, ny)] : EL.EMPTY;
+        if (!isStructural(nt) && !isAnchor(nt)) { broken = true; break; }
+      }
+    }
+    if (broken) { this.spawn(i, EL.STONE); return; }
+    this.reactMelt(x, y, i, EL.BEAM);
   }
 
   reactFlammable(x, y, i, id) {
@@ -1390,6 +1433,24 @@ class Sim {
 
   attemptSwapOrMove(i, ni, el, rising) {
     const nt = this.type[ni];
+    // Балка не задерживает падающее/сыпучее/текучее (rising=false — газ,
+    // единственный, кто зовёт с rising=true, сквозь неё по-прежнему не
+    // проходит, ведёт себя как обычный камень) — ищем первую НЕ-балочную
+    // клетку в том же направлении движения (сквозь несколько балок подряд
+    // разом, если они есть) и адресуем всю обычную проверку ЕЙ, как будто
+    // балки на пути вовсе не было. Сама балка при этом никуда не сдвигается
+    // и остаётся собой — это не своп с ней, а взгляд СКВОЗЬ.
+    if (!rising && nt === EL.BEAM) {
+      const w = this.w;
+      const dx = (ni % w) - (i % w), dy = ((ni / w) | 0) - ((i / w) | 0);
+      let cx = ni % w, cy = (ni / w) | 0, ti = ni;
+      while (this.type[ti] === EL.BEAM) {
+        cx += dx; cy += dy;
+        if (cx < 0 || cx >= w || cy < 0 || cy >= this.h) return false;
+        ti = this.idx(cx, cy);
+      }
+      return this.attemptSwapOrMove(i, ti, el, rising);
+    }
     if (nt === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
     const nEl = ELEMENTS[nt];
     if (!nEl || !isMovable(nEl.cat)) return false;

@@ -253,6 +253,10 @@ const CATEGORIES = [
 ];
 
 function materialCategoryKey(id) {
+  // Технологии — не про физическую категорию (у балки та же CAT.SOLID, что
+  // и у камня), а про смысл: место среди построек/механизмов, а не сырых
+  // материалов, поэтому проверяется до общего сопоставления по cat.
+  if (TECH_ELEMENTS.has(id)) return 'tech';
   const cat = ELEMENTS[id].cat;
   if (cat === CAT.GAS) return 'gas';
   if (cat === CAT.LIQUID) return 'liquid';
@@ -291,8 +295,6 @@ function buildPaletteGrid() {
       + '<div class="mi-row"><span>ЛКМ</span><span>нагреть</span></div>'
       + '<div class="mi-row"><span>ПКМ</span><span>охладить</span></div>');
     addTimeScaleControl();
-  } else if (activeCategory === 'tech') {
-    // Пусто — пользователь наполнит позже.
   } else {
     for (const id of ELEMENT_ORDER) {
       if (materialCategoryKey(id) === activeCategory) addPaletteButton(id);

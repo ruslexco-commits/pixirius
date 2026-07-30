@@ -25,6 +25,7 @@ const EL = {
   OILFILM: 20,
   EARTH: 21,
   WET_EARTH: 22,
+  BEAM: 23,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -67,6 +68,11 @@ const ELEMENTS = {
   [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
   [EL.EARTH]: { id: EL.EARTH, name: 'Земля', cat: CAT.POWDER, color: [150, 96, 58], density: 15, flammable: false },
   [EL.WET_EARTH]: { id: EL.WET_EARTH, name: 'Мокрая земля', cat: CAT.SOLID, color: [68, 46, 32], density: 40, flammable: false, maxStability: 3, toughness: 2 },
+  // Полностью повторяет камень (тот же вес/бюджет устойчивости/плавление) —
+  // единственная разница в reactBeam/attemptSwapOrMove (см. sim.js): не
+  // держит падающее/сыпучее/текучее, они проходят сквозь неё, и связь с
+  // опорой запоминается один раз при спавне, а не пересчитывается заново.
+  [EL.BEAM]: { id: EL.BEAM, name: 'Балка', cat: CAT.SOLID, color: [92, 102, 116], density: 40, flammable: false, maxStability: 5, toughness: 4, meltPoint: 55, meltChance: 0.04, meltsInto: EL.LAVA },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -74,8 +80,13 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM,
 ];
+
+// Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
+// (балка — обычное CAT.SOLID, как камень), но их место среди технологий,
+// не среди сырых материалов (см. materialCategoryKey в main.js).
+const TECH_ELEMENTS = new Set([EL.BEAM]);
 
 function isMovable(cat) {
   return cat === CAT.POWDER || cat === CAT.LIQUID || cat === CAT.GAS;
@@ -90,7 +101,7 @@ function isMovable(cat) {
 // и никогда не передаёт её дальше — не может служить мостом между
 // двумя разными объектами.
 function isStructural(id) {
-  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH;
+  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH || id === EL.BEAM;
 }
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
