@@ -26,6 +26,7 @@ const EL = {
   EARTH: 21,
   WET_EARTH: 22,
   BEAM: 23,
+  COLONIST: 24,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -73,6 +74,17 @@ const ELEMENTS = {
   // держит падающее/сыпучее/текучее, они проходят сквозь неё, и связь с
   // опорой запоминается один раз при спавне, а не пересчитывается заново.
   [EL.BEAM]: { id: EL.BEAM, name: 'Балка', cat: CAT.SOLID, color: [92, 102, 116], density: 40, flammable: false, maxStability: 5, toughness: 4, meltPoint: 55, meltChance: 0.04, meltsInto: EL.LAVA },
+  // Физика сыпучего (падает как обычный порошок, см. CAT.POWDER), но со
+  // своей собственной реакцией (reactColonist в sim.js) поверх — копает и
+  // блуждает вместо простого лежания на месте.
+  // density РОВНО как у земли (не выше и не ниже) нарочно: attemptSwapOrMove
+  // вытесняет только при СТРОГОМ неравенстве плотности — при точном
+  // совпадении ни земля не расталкивает колониста при осыпании рядом с
+  // шахтой, ни сам колонист не проваливается сквозь землю обычной
+  // гравитацией сыпучего в обход своей же логики копания (reactColonist).
+  // Копает он всегда явно (clearCell + extra[i]), а не просто "тонет" в
+  // земле как более тяжёлый объект.
+  [EL.COLONIST]: { id: EL.COLONIST, name: 'Колонист', cat: CAT.POWDER, color: [255, 255, 255], density: 15, flammable: false },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -80,13 +92,14 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.COLONIST,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
-// (балка — обычное CAT.SOLID, как камень), но их место среди технологий,
-// не среди сырых материалов (см. materialCategoryKey в main.js).
-const TECH_ELEMENTS = new Set([EL.BEAM]);
+// (балка — обычное CAT.SOLID, как камень; колонист — CAT.POWDER, как
+// земля), но их место среди технологий, не среди сырых материалов (см.
+// materialCategoryKey в main.js).
+const TECH_ELEMENTS = new Set([EL.BEAM, EL.COLONIST]);
 
 function isMovable(cat) {
   return cat === CAT.POWDER || cat === CAT.LIQUID || cat === CAT.GAS;
