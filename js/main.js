@@ -207,6 +207,36 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
   return btn;
 }
 
+// Ползунок общей скорости процессов, привязанных к "секундам" (пока что —
+// только впитывание/выравнивание влажности земли, см. Sim.moistureTickPeriod),
+// а не самой физики движения/падения. 100 — обычная скорость (как и
+// sim.timeScale по умолчанию в конструкторе), меньше — медленнее, больше —
+// быстрее. Живёт во вкладке "Разное", рядом с инструментами давления и
+// температуры, но сам не инструмент — не откликается на клики по канвасу,
+// просто правит sim.timeScale напрямую.
+function addTimeScaleControl() {
+  const wrap = document.createElement('div');
+  wrap.className = 'time-scale';
+  const label = document.createElement('div');
+  label.className = 'time-scale-label';
+  const refreshLabel = () => { label.textContent = `Течение времени: ${sim.timeScale}%`; };
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '10';
+  slider.max = '400';
+  slider.step = '5';
+  slider.value = String(sim.timeScale);
+  slider.title = 'Скорость процессов вроде впитывания влаги землёй';
+  slider.addEventListener('input', () => {
+    sim.timeScale = Number(slider.value);
+    refreshLabel();
+  });
+  refreshLabel();
+  wrap.appendChild(label);
+  wrap.appendChild(slider);
+  palette.appendChild(wrap);
+}
+
 // Категории — чисто UI-группировка палитры (не связана с CAT/симуляцией
 // напрямую, кроме как через материал -> cat). "Разное" — инструменты
 // воздействия на мир (не материалы: давление воздуха, температура — оба
@@ -215,6 +245,7 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
 const CATEGORIES = [
   { key: 'gas', label: 'Газ' },
   { key: 'solid', label: 'Тела' },
+  { key: 'powder', label: 'Сыпучее' },
   { key: 'liquid', label: 'Жидкости' },
   { key: 'tech', label: 'Технологии' },
   { key: 'misc', label: 'Разное' },
@@ -224,6 +255,7 @@ function materialCategoryKey(id) {
   const cat = ELEMENTS[id].cat;
   if (cat === CAT.GAS) return 'gas';
   if (cat === CAT.LIQUID) return 'liquid';
+  if (cat === CAT.POWDER) return 'powder';
   return 'solid';
 }
 
@@ -257,6 +289,7 @@ function buildPaletteGrid() {
       '<div class="mi-title">Температура</div>'
       + '<div class="mi-row"><span>ЛКМ</span><span>нагреть</span></div>'
       + '<div class="mi-row"><span>ПКМ</span><span>охладить</span></div>');
+    addTimeScaleControl();
   } else if (activeCategory === 'tech') {
     // Пусто — пользователь наполнит позже.
   } else {

@@ -135,6 +135,17 @@ class Sim {
     this._liquidEscape = new Uint8Array(n);
     this._liquidVisited = new Uint8Array(n);
 
+    // Запас впитанной воды у ЗЕМЛИ/МОКРОЙ ЗЕМЛИ (0..3, см. tickMoisture) —
+    // отдельное поле, а не перегрузка extra/life: обеим нужен независимый
+    // от типа клетки счётчик, который переживает переход земля<->мокрая
+    // земля (spawn() его не трогает и не обнуляет, в отличие от extra/life).
+    this.moisture = new Uint8Array(n);
+    // Общий множитель скорости для процессов, привязанных к "секундам", а
+    // не к самой физике движения (пока что — только тик влажности земли,
+    // см. moistureTickPeriod) — 100 = обычная скорость, см. ползунок
+    // "Течение времени" во вкладке "Разное".
+    this.timeScale = 100;
+
     this.paused = false;
     this.frame = 0;
   }
@@ -199,6 +210,7 @@ class Sim {
     this.windVX.fill(0);
     this.windVY.fill(0);
     this.temp.fill(0);
+    this.moisture.fill(0);
   }
 
   swap(i, j) {
@@ -212,6 +224,13 @@ class Sim {
     // привязанной к позиции, и текущая/падающая лава просто оставляла своё
     // тепло на месте, вместо того чтобы нести его с собой.
     t = this.temp[i]; this.temp[i] = this.temp[j]; this.temp[j] = t;
+    // Влажность земли/мокрой земли — та же логика, что и у temp чуть выше:
+    // это тоже часть клетки-частицы (сколько воды впитано именно в ЭТУ
+    // землю), а не точки на карте. Без этого падающая мокрая земля роняла
+    // бы свою влажность на месте при каждом свопе и высыхала бы "сама по
+    // себе" почти мгновенно на первом же тике после падения, хотя реально
+    // влагу никуда не теряла — просто клетка сдвинулась, а число осталось.
+    t = this.moisture[i]; this.moisture[i] = this.moisture[j]; this.moisture[j] = t;
     this.disturbWind(i, j);
   }
 
@@ -969,6 +988,11 @@ class Sim {
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
       case EL.STONE: case EL.METAL: case EL.GLASS: this.reactMelt(x, y, i, id); break;
+      case EL.EARTH: this.tickMoisture(x, y, i, EL.EARTH); break;
+      case EL.WET_EARTH:
+        this.tickMoisture(x, y, i, EL.WET_EARTH);
+        this.tryEvaporateMoisture(x, y, i);
+        break;
     }
   }
 
@@ -1249,6 +1273,118 @@ class Sim {
     }
   }
 
+  // Сколько кадров длится один "тик" влажности земли при текущем
+  // this.timeScale — см. ползунок "Течение времени" (misc-вкладка палитры,
+  // main.js). При timeScale=100 (по умолчанию) это 60 кадров, то есть
+  // примерно раз в секунду при 60 fps; вдвое больше timeScale — вдвое
+  // короче тик (процессы идут быстрее), и наоборот.
+  moistureTickPeriod() {
+    const FRAMES_PER_TICK_AT_100 = 60;
+    return Math.max(1, Math.round(FRAMES_PER_TICK_AT_100 * 100 / Math.max(1, this.timeScale)));
+  }
+
+  // Раз в тик влажности (см. moistureTickPeriod) земля/мокрая земля по
+  // очереди: (1) впитывает соседний пиксель воды, если есть запас ёмкости
+  // (MAX_MOISTURE) — именно от этого земля впервые становится мокрой
+  // землёй; (2) отдаёт ровно 1 единицу влажности САМОМУ СУХОМУ соседу
+  // своего же семейства (земля/мокрая земля), если у него меньше — простая
+  // диффузия влажности, которая может домочить соседнюю сухую землю; (3) —
+  // только мокрая земля, только в покое (stability>0 — уже не собирается
+  // падать в этот кадр) и только если внизу есть куда упасть воде — капает,
+  // теряя 1 единицу влажности. Каждый из этих шагов — строго атомарная пара
+  // "убрать у источника / добавить получателю" (никогда одно без другого),
+  // чтобы вода не дублировалась и не терялась в никуда. Высохшая до 0
+  // мокрая земля возвращается в обычную землю.
+  tickMoisture(x, y, i, id) {
+    this.life[i]++;
+    if (this.life[i] < this.moistureTickPeriod()) return;
+    this.life[i] = 0;
+
+    const w = this.w, h = this.h;
+    const MAX_MOISTURE = 3;
+    let moisture = this.moisture[i];
+    let curId = id;
+
+    if (moisture < MAX_MOISTURE) {
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (!this.inBounds(nx, ny)) continue;
+        const ni = this.idx(nx, ny);
+        if (this.type[ni] === EL.WATER) {
+          this.clearCell(ni);
+          moisture++;
+          if (curId === EL.EARTH) { this.spawn(i, EL.WET_EARTH); curId = EL.WET_EARTH; }
+          break;
+        }
+      }
+    }
+
+    if (moisture > 0) {
+      let targetNi = -1, targetMoisture = moisture;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (!this.inBounds(nx, ny)) continue;
+        const ni = this.idx(nx, ny);
+        const nt = this.type[ni];
+        if (nt !== EL.EARTH && nt !== EL.WET_EARTH) continue;
+        const nm = this.moisture[ni];
+        if (nm < targetMoisture) { targetMoisture = nm; targetNi = ni; }
+      }
+      if (targetNi !== -1) {
+        if (this.type[targetNi] === EL.EARTH) this.spawn(targetNi, EL.WET_EARTH);
+        this.moisture[targetNi]++;
+        moisture--;
+      }
+    }
+
+    if (curId === EL.WET_EARTH && moisture > 0 && this.stability[i] > 0) {
+      const slots = [];
+      if (y + 1 < h) {
+        const bi = this.idx(x, y + 1);
+        if (this.type[bi] === EL.EMPTY) slots.push(bi);
+        if (x > 0) { const bli = this.idx(x - 1, y + 1); if (this.type[bli] === EL.EMPTY) slots.push(bli); }
+        if (x < w - 1) { const bri = this.idx(x + 1, y + 1); if (this.type[bri] === EL.EMPTY) slots.push(bri); }
+      }
+      if (slots.length > 0) {
+        const drip = slots[(Math.random() * slots.length) | 0];
+        this.spawn(drip, EL.WATER);
+        moisture--;
+      }
+    }
+
+    this.moisture[i] = moisture;
+    if (curId === EL.WET_EARTH && moisture === 0) this.spawn(i, EL.EARTH);
+  }
+
+  // Каждый кадр (как обычное плавление reactMelt, а не по тику влажности) —
+  // если клетку нагрело до точки кипения воды (ELEMENTS[EL.WATER].boilPoint),
+  // есть небольшой шанс, что часть влаги просочится наружу паром через
+  // любую соседнюю пустую клетку (по возможности вверх — пар поднимается).
+  tryEvaporateMoisture(x, y, i) {
+    if (this.moisture[i] <= 0) return;
+    const boilPoint = ELEMENTS[EL.WATER].boilPoint;
+    if (this.temp[i] < boilPoint) return;
+    const EVAP_CHANCE = 0.05;
+    if (Math.random() >= EVAP_CHANCE) return;
+    const w = this.w, h = this.h;
+    let target = -1;
+    if (y - 1 >= 0) {
+      const ni = this.idx(x, y - 1);
+      if (this.type[ni] === EL.EMPTY) target = ni;
+    }
+    if (target === -1) {
+      const opts = [];
+      if (x > 0) { const ni = this.idx(x - 1, y); if (this.type[ni] === EL.EMPTY) opts.push(ni); }
+      if (x < w - 1) { const ni = this.idx(x + 1, y); if (this.type[ni] === EL.EMPTY) opts.push(ni); }
+      if (y + 1 < h) { const ni = this.idx(x, y + 1); if (this.type[ni] === EL.EMPTY) opts.push(ni); }
+      if (opts.length) target = opts[(Math.random() * opts.length) | 0];
+    }
+    if (target === -1) return;
+    this.spawn(target, EL.STEAM);
+    this.moisture[i]--;
+    if (this.moisture[i] === 0) this.spawn(i, EL.EARTH);
+  }
+
   // ---- движение по категориям ----
 
   attemptSwapOrMove(i, ni, el, rising) {
@@ -1519,6 +1655,7 @@ class Sim {
       extra: this.extra.slice(),
       shade: this.shade.slice(),
       temp: this.temp.slice(),
+      moisture: this.moisture.slice(),
     };
   }
 
@@ -1528,6 +1665,8 @@ class Sim {
     this.extra.set(snap.extra);
     this.shade.set(snap.shade);
     this.temp.set(snap.temp);
+    if (snap.moisture) this.moisture.set(snap.moisture);
+    else this.moisture.fill(0);
     this.moved.fill(0);
   }
 
@@ -1541,6 +1680,7 @@ class Sim {
       extra: bufToB64(this.extra.buffer),
       shade: bufToB64(this.shade.buffer),
       temp: bufToB64(this.temp.buffer),
+      moisture: bufToB64(this.moisture.buffer),
     };
   }
 
@@ -1550,15 +1690,16 @@ class Sim {
     this.life.set(new Int16Array(b64ToBuf(obj.life)));
     this.extra.set(new Uint8Array(b64ToBuf(obj.extra)));
     this.shade.set(new Int8Array(b64ToBuf(obj.shade)));
-    // temp отсутствует в файлах, сохранённых до её появления — тогда
-    // явно обнуляем (комнатная температура), а НЕ оставляем как есть:
-    // "как есть" — это температура ТЕКУЩЕЙ, ещё не выгруженной сессии,
-    // а не сохранённого мира. Без явного обнуления что-нибудь горячее,
-    // над чем шёл эксперимент до нажатия "Загрузить", утекало бы в
-    // свежезагруженный мир и плавило бы там то, что там в принципе не
-    // должно быть горячим.
+    // temp/moisture отсутствуют в файлах, сохранённых до их появления —
+    // тогда явно обнуляем, а НЕ оставляем как есть: "как есть" — это
+    // состояние ТЕКУЩЕЙ, ещё не выгруженной сессии, а не сохранённого
+    // мира. Без явного обнуления что-нибудь горячее/мокрое, над чем шёл
+    // эксперимент до нажатия "Загрузить", утекало бы в свежезагруженный
+    // мир, где ничего подобного в принципе быть не должно.
     if (obj.temp) this.temp.set(new Float32Array(b64ToBuf(obj.temp)));
     else this.temp.fill(0);
+    if (obj.moisture) this.moisture.set(new Uint8Array(b64ToBuf(obj.moisture)));
+    else this.moisture.fill(0);
     this.moved.fill(0);
     return true;
   }

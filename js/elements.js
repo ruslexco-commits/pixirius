@@ -23,6 +23,8 @@ const EL = {
   VOID: 18,
   CLONE: 19,
   OILFILM: 20,
+  EARTH: 21,
+  WET_EARTH: 22,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -44,7 +46,7 @@ const CAT = {
 // density: больше -> тяжелее (тонет ниже среди подвижной материи)
 const ELEMENTS = {
   [EL.SAND]:  { id: EL.SAND,  name: 'Песок',   cat: CAT.POWDER, color: [225, 201, 130], density: 16, flammable: false },
-  [EL.WATER]: { id: EL.WATER, name: 'Вода',    cat: CAT.LIQUID, color: [64, 122, 224],  density: 10, flammable: false, dispersion: 6 },
+  [EL.WATER]: { id: EL.WATER, name: 'Вода',    cat: CAT.LIQUID, color: [64, 122, 224],  density: 10, flammable: false, dispersion: 6, boilPoint: 34 },
   [EL.STONE]: { id: EL.STONE, name: 'Камень',  cat: CAT.SOLID,  color: [122, 122, 130], density: 40, flammable: false, maxStability: 5, toughness: 4, meltPoint: 55, meltChance: 0.04, meltsInto: EL.LAVA },
   [EL.WOOD]:  { id: EL.WOOD,  name: 'Дерево',  cat: CAT.SOLID,  color: [126, 84, 44],   density: 40, flammable: true, burnChance: 0.14, burnLife: 55, maxStability: 3, toughness: 2 },
   [EL.OIL]:   { id: EL.OIL,   name: 'Масло',   cat: CAT.LIQUID, color: [107, 88, 38],   density: 6,  flammable: true, burnChance: 0.55, burnLife: 16, dispersion: 4 },
@@ -63,6 +65,8 @@ const ELEMENTS = {
   [EL.VOID]:  { id: EL.VOID,  name: 'Пустота', cat: CAT.SOLID,  color: [18, 14, 24],    density: 40, flammable: false },
   [EL.CLONE]: { id: EL.CLONE, name: 'Клонер',  cat: CAT.SOLID,  color: [224, 64, 196],  density: 40, flammable: false },
   [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
+  [EL.EARTH]: { id: EL.EARTH, name: 'Земля', cat: CAT.POWDER, color: [150, 96, 58], density: 15, flammable: false },
+  [EL.WET_EARTH]: { id: EL.WET_EARTH, name: 'Мокрая земля', cat: CAT.SOLID, color: [68, 46, 32], density: 40, flammable: false, maxStability: 3, toughness: 2 },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -70,7 +74,7 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH,
 ];
 
 function isMovable(cat) {
@@ -86,7 +90,7 @@ function isMovable(cat) {
 // и никогда не передаёт её дальше — не может служить мостом между
 // двумя разными объектами.
 function isStructural(id) {
-  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM;
+  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH;
 }
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
