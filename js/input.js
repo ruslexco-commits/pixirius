@@ -85,6 +85,20 @@ class InputController {
     return mode === 'paint' && elementId !== EL.EMPTY;
   }
 
+  // Колонист — не заливочный материал, а отдельный агент ("когда он
+  // спавнится" — в единственном числе). Текущей кистью (по умолчанию радиус
+  // 5, то есть круг ~81 клетки) один клик ставил бы сразу толпу колонистов
+  // друг на друге; плотность колониста намеренно равна плотности земли
+  // (см. elements.js), поэтому такие колонисты не могут протолкнуться мимо
+  // соседей обычной физикой и весь ком намертво стопорится — это и читалось
+  // пользователю как "прыгает на месте", "таинственно теряет пиксели" и
+  // "не идёт к открытому камню". Поэтому при рисовании именно колониста
+  // радиус кисти принудительно 0 — один клик/клетка мазка — один колонист,
+  // независимо от текущего размера кисти для остальных материалов.
+  brushRadiusFor(writeElementId) {
+    return writeElementId === EL.COLONIST ? [0, 0] : [this.brushRX, this.brushRY];
+  }
+
   toGrid(clientX, clientY) {
     const [cx, cy] = this.toCanvasPixels(clientX, clientY);
     return [Math.floor(cx / this.renderer.zoom), Math.floor(cy / this.renderer.zoom)];
@@ -254,7 +268,9 @@ class InputController {
     this.pushUndo();
 
     if (mode === 'paint' || mode === 'erase') {
-      this.sim.stampBrush(egx, egy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(mode, elementId), this.onlyEmptyFor(mode, elementId));
+      const writeEl = this.paintElementFor(mode, elementId);
+      const [brx, bry] = this.brushRadiusFor(writeEl);
+      this.sim.stampBrush(egx, egy, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(mode, elementId));
     } else if (mode === 'fill') {
       this.sim.floodFill(egx, egy, elementId, false);
     } else if (mode === 'fillErase') {
@@ -271,7 +287,9 @@ class InputController {
     if (this.drag) {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
-        this.sim.stampLine(d.lastX, d.lastY, egx, egy, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
+        const writeEl = this.paintElementFor(d.mode, d.elementId);
+        const [brx, bry] = this.brushRadiusFor(writeEl);
+        this.sim.stampLine(d.lastX, d.lastY, egx, egy, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
         d.lastX = egx; d.lastY = egy;
       } else if (d.mode === 'line' || d.mode === 'lineSnap') {
         d.lastX = egx; d.lastY = egy;
@@ -292,7 +310,8 @@ class InputController {
     if (d.mode === 'line' || d.mode === 'lineSnap') {
       let ex = d.lastX, ey = d.lastY;
       if (d.mode === 'lineSnap') [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
-      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, this.brushRX, this.brushRY, d.elementId, this.onlyEmptyFor('paint', d.elementId));
+      const [brx, bry] = this.brushRadiusFor(d.elementId);
+      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, brx, bry, d.elementId, this.onlyEmptyFor('paint', d.elementId));
     }
     this.drag = null;
   }
@@ -304,7 +323,9 @@ class InputController {
     if (!this.drag) return;
     const d = this.drag;
     if (d.mode === 'paint' || d.mode === 'erase') {
-      this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, this.brushRX, this.brushRY, this.paintElementFor(d.mode, d.elementId), this.onlyEmptyFor(d.mode, d.elementId));
+      const writeEl = this.paintElementFor(d.mode, d.elementId);
+      const [brx, bry] = this.brushRadiusFor(writeEl);
+      this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
     } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {
       this.sim.applyPressureBrush(d.lastX, d.lastY, this.brushRX, this.brushRY, d.mode === 'pressureInc' ? 1 : -1);
     } else if (d.mode === 'tempInc' || d.mode === 'tempDec') {

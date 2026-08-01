@@ -1111,9 +1111,13 @@ class Sim {
           }
         }
 
-        const MAX_DEPTH = 50;
+        // Глубина ограничена только самой картой (cy>=h ниже) — произвольный
+        // потолок вроде "50 клеток" на практике почти всегда меньше
+        // реальной толщины слоя земли (карта высотой в сотни клеток), и
+        // колонист попросту никогда не "видел" камень глубже него — то
+        // самое "не стремится к открытому источнику камня" из бага.
         let stoneReachable = false;
-        for (let d = 1; d <= MAX_DEPTH; d++) {
+        for (let d = 1; ; d++) {
           const cy = y + 1 + d;
           if (cy >= h) break;
           const ct = this.type[this.idx(x, cy)];
@@ -1196,15 +1200,15 @@ class Sim {
   // раскопке.
   hasOpenPathDown(x, y) {
     const h = this.h;
-    const MAX_DEPTH = 50;
-    for (let d = 0; d <= MAX_DEPTH; d++) {
+    // Как и в reactColonist — глубина ограничена только самой картой, без
+    // отдельного произвольного потолка (см. комментарий там же).
+    for (let d = 0; ; d++) {
       const cy = y + d;
       if (cy >= h) return false;
       const ct = this.type[this.idx(x, cy)];
       if (ct === EL.STONE) return d > 0; // сама точка (x,y) не в счёт, нужен хоть шаг вниз
       if (ct !== EL.EMPTY) return false;
     }
-    return false;
   }
 
   // Пытается освободить клетку ni для колониста, идущего домой: если уже
