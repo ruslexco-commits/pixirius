@@ -324,6 +324,17 @@ class InputController {
     const d = this.drag;
     if (d.mode === 'paint' || d.mode === 'erase') {
       const writeEl = this.paintElementFor(d.mode, d.elementId);
+      // Колонист — не льющийся материал (см. brushRadiusFor выше): одно
+      // нажатие должно поставить РОВНО одного, а не штамповать нового
+      // на КАЖДЫЙ кадр, пока кнопка мыши просто зажата (курсор при этом
+      // может вообще не двигаться — tickHold всё равно вызывается каждый
+      // кадр игрового цикла). Без этой отсечки: первый колонист трогается
+      // с места клика почти сразу (падает/копает/блуждает), клетка под
+      // курсором освобождается — и tickHold в тот же миг сажает туда
+      // СЛЕДУЮЩЕГО, и так далее, пока палец не отпустят. На глаз это и
+      // читалось как "прыгает на месте" — на самом деле на одном пятне
+      // сменяли друг друга всё новые колонисты, а не один и тот же дёргался.
+      if (writeEl === EL.COLONIST) return;
       const [brx, bry] = this.brushRadiusFor(writeEl);
       this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
     } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {
