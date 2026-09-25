@@ -72,13 +72,26 @@ class Renderer {
 
     const el = ELEMENTS[id];
     const s = sim.shade[i];
-    // Раствор и кислотный остаток красятся по СОСТОЯНИЮ клетки, а не по
-    // таблице элементов: у раствора цвет — смесь цветов его долей, у
-    // остатка — по уровню (см. solutionColor / residueColor).
-    const base = id === EL.SOLUTION ? this.solutionColor(i)
+    // Смеси и кислотный остаток красятся по СОСТОЯНИЮ клетки, а не по
+    // таблице элементов: у смеси цвет — смесь цветов её долей, у остатка —
+    // по уровню (см. partsColor / residueColor).
+    const base = (id === EL.SOLUTION || id === EL.VAPOR) ? this.partsColor(i)
       : id === EL.ACID_RESIDUE ? this.residueColor(i)
       : el.color;
     let r = clamp8(base[0] + s), g = clamp8(base[1] + s), b = clamp8(base[2] + s);
+    // Неполная клетка (часть долей — пустота, см. elements.js) показывается
+    // бледнее, тем ближе к фону, чем меньше в ней вещества. Без этого
+    // клетка с одной долей воды выглядела бы ровно как полная, и стягивание
+    // жидкости к целым клеткам было бы не разглядеть.
+    if (hasComposition(id)) {
+      const v = solGet(sim.sol[i], P_VOID);
+      if (v) {
+        const k = 1 - (v / SOL_PARTS) * 0.75;
+        r = clamp8(14 + (r - 14) * k);
+        g = clamp8(14 + (g - 14) * k);
+        b = clamp8(18 + (b - 18) * k);
+      }
+    }
     if (id === EL.FIRE) {
       const flick = (sim.life[i] * 37 + i * 13) % 46;
       r = clamp8(r + flick);
@@ -104,18 +117,25 @@ class Renderer {
     return [r, g, b];
   }
 
-  // Цвет раствора — средневзвешенная смесь цветов его долей (кислота,
-  // вода, растворённое вещество = камень, реагент), см. elements.js,
-  // блок "раствор". Раствор 5/5 кислоты и воды — ровно посередине между
-  // зелёным и синим; по мере растворения зеленеет всё слабее и тянется к
-  // цвету реагента.
-  solutionColor(i) {
-    const comp = this.sim.sol[i] || SOL_PURE_WATER;
-    const a = solGet(comp, SOL_ACID), w = solGet(comp, SOL_WATER), s = solGet(comp, SOL_STONE), r = solGet(comp, SOL_REAGENT);
-    const ca = ELEMENTS[EL.ACID].color, cw = ELEMENTS[EL.WATER].color, cs = ELEMENTS[EL.STONE].color, cr = ELEMENTS[EL.REAGENT].color;
-    const out = [0, 0, 0];
-    for (let k = 0; k < 3; k++) out[k] = (ca[k] * a + cw[k] * w + cs[k] * s + cr[k] * r) / SOL_PARTS;
-    return out;
+  // Цвет смеси (жидкой или газовой) — средневзвешенная смесь цветов её
+  // ВЕЩЕСТВЕННЫХ долей (PART_COLOR в elements.js). Делится на количество
+  // вещества, а не на все 10 долей: пустота не имеет своего цвета, она
+  // делает клетку бледнее (это применяется отдельно, в baseColor), а не
+  // темнее по составу. Раствор 5/5 кислоты и воды — ровно посередине
+  // между зелёным и синим; по мере растворения зеленеет всё слабее и
+  // тянется к цвету реагента.
+  partsColor(i) {
+    const comp = this.sim.sol[i];
+    const matter = solMatter(comp);
+    if (matter <= 0) return [14, 14, 18];
+    let r = 0, g = 0, b = 0;
+    for (let k = 1; k < P_COUNT; k++) {
+      const c = solGet(comp, k);
+      if (!c) continue;
+      const col = PART_COLOR[k];
+      r += col[0] * c; g += col[1] * c; b += col[2] * c;
+    }
+    return [r / matter, g / matter, b / matter];
   }
 
   // Кислотный остаток: уровень 1 — почти камень с зеленцой, уровень 4 —
