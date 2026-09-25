@@ -42,10 +42,31 @@
 // async = false обязателен: у скрипта, созданного из JS, async по
 // умолчанию ВКЛЮЧЁН, и файлы выполнились бы в случайном порядке — кто
 // раньше скачался. Явное false возвращает выполнение строго в порядке
-// добавления, как у обычных тегов: elements.js определяет таблицу
-// элементов, sim.js опирается на неё, main.js — на всё остальное.
+// добавления, как у обычных тегов: data/ определяет таблицы элементов,
+// sim/core.js объявляет Sim, остальные sim/*.js дописывают в него методы
+// (extendSim), main.js опирается на всё остальное.
 (function () {
-  var files = ['js/elements.js', 'js/sim.js', 'js/render.js', 'js/input.js', 'js/main.js'];
+  var files = [
+    'js/data/elements.js',
+    'js/data/composition.js',
+    'js/data/oxides.js',
+    'js/sim/core.js',
+    'js/sim/stability.js',
+    'js/sim/wind.js',
+    'js/sim/heat.js',
+    'js/sim/movement.js',
+    'js/sim/reactions.js',
+    'js/sim/composition.js',
+    'js/sim/chemistry.js',
+    'js/sim/oxides.js',
+    'js/sim/human.js',
+    'js/sim/colonist.js',
+    'js/sim/painting.js',
+    'js/sim/persistence.js',
+    'js/render.js',
+    'js/input.js',
+    'js/main.js'
+  ];
   var v = Date.now();
   for (var i = 0; i < files.length; i++) {
     var s = document.createElement('script');
