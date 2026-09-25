@@ -37,6 +37,8 @@ const EL = {
   METAL_OXIDE: 32,
   METAL_OXIDE_LOOSE: 33,
   EARTH_OXIDE: 34,
+  ACID_ICE: 35,
+  REAGENT_ICE: 36,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -64,7 +66,7 @@ const ELEMENTS = {
   [EL.OIL]:   { id: EL.OIL,   name: 'Масло',   cat: CAT.LIQUID, color: [107, 88, 38],   density: 6,  flammable: true, burnChance: 0.55, burnLife: 16, dispersion: 4 },
   [EL.LAVA]:  { id: EL.LAVA,  name: 'Лава',    cat: CAT.LIQUID, color: [232, 92, 20],   density: 30, flammable: false, dispersion: 1, heatSource: 1800 },
   [EL.ACID]:  { id: EL.ACID,  name: 'Кислота', cat: CAT.LIQUID, color: [130, 224, 60],  density: 11, flammable: false, dispersion: 5, boilPoint: 60 },
-  [EL.ICE]:   { id: EL.ICE,   name: 'Лёд',     cat: CAT.SOLID,  color: [186, 232, 240], density: 40, flammable: false, maxStability: 3, toughness: 3 },
+  [EL.ICE]:   { id: EL.ICE,   name: 'Лёд',     cat: CAT.SOLID,  color: [186, 232, 240], density: 40, flammable: false, maxStability: 3, toughness: 3, baseTemp: -20 },
   [EL.STEAM]: { id: EL.STEAM, name: 'Пар',     cat: CAT.GAS,    color: [214, 214, 224], density: 2,  flammable: false },
   [EL.SMOKE]: { id: EL.SMOKE, name: 'Дым',     cat: CAT.GAS,    color: [72, 70, 76],    density: 1,  flammable: false },
   [EL.FIRE]:  { id: EL.FIRE,  name: 'Огонь',   cat: CAT.SPECIAL, color: [255, 148, 24], density: 3,  flammable: false, heatSource: 1590 },
@@ -157,6 +159,12 @@ const ELEMENTS = {
   // последнюю — см. OXIDE_LINE_EARTH ниже. Кислоте перестаёт поддаваться
   // с девятой стадии.
   [EL.EARTH_OXIDE]: { id: EL.EARTH_OXIDE, name: 'Земляной окисел', cat: CAT.POWDER, color: [82, 56, 34], density: 15, flammable: false },
+  // Замёрзшие кислота и реагент — твёрдая фаза этих жидкостей, такая же,
+  // как лёд для воды. Держатся и тают по своим точкам замерзания (-30 и
+  // -60, см. PART_FREEZE), возвращаясь ровно в своё вещество, а не в
+  // воду — поэтому это отдельные элементы, а не общий лёд.
+  [EL.ACID_ICE]: { id: EL.ACID_ICE, name: 'Замёрзшая кислота', cat: CAT.SOLID, color: [96, 178, 74], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -40 },
+  [EL.REAGENT_ICE]: { id: EL.REAGENT_ICE, name: 'Замёрзший реагент', cat: CAT.SOLID, color: [150, 122, 60], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -70 },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -169,6 +177,7 @@ const ELEMENT_ORDER = [
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
   // газов, а увидеть их полезно все сразу).
   EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
+  EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
@@ -176,6 +185,14 @@ const ELEMENT_ORDER = [
 // земля), но их место среди технологий, не среди сырых материалов (см.
 // materialCategoryKey в main.js).
 const TECH_ELEMENTS = new Set([EL.BEAM, EL.COLONIST]);
+
+// Собственная температура свежей частицы, если у элемента не задана своя
+// (baseTemp). Спавн ПРИБАВЛЯЕТ её к температуре места, а не заменяет ею:
+// вещество приносит с собой своё тепло или холод, а не мгновенно
+// принимает температуру фона. Комнатные 20 градусов — для всего обычного;
+// у льда и замёрзших жидкостей стоят свои минусовые значения, у лавы и
+// огня работает прежний heatSource.
+const DEFAULT_BASE_TEMP = 20;
 
 function isMovable(cat) {
   return cat === CAT.POWDER || cat === CAT.LIQUID || cat === CAT.GAS;
@@ -197,6 +214,11 @@ function isStructural(id) {
 // Sim.oxideStage, основа — в OXIDE_BASE ниже).
 function isOxide(id) {
   return id === EL.OXIDE || id === EL.OXIDE_LOOSE || id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE || id === EL.EARTH_OXIDE;
+}
+
+// Твёрдая фаза жидкости (лёд и его сородичи) — её тает обратно tickPhase.
+function isFrozenLiquid(id) {
+  return id === EL.ICE || id === EL.ACID_ICE || id === EL.REAGENT_ICE;
 }
 function isMetalOxide(id) {
   return id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
@@ -337,6 +359,15 @@ const P_COUNT = 6;
 // — только жидкостью. Infinity = "по температуре не переходит вовсе"
 // (пустота и растворённое вещество — никогда; масло — по таймеру).
 const PART_BOIL = [Infinity, 100, 60, 250, Infinity, Infinity];
+// Точка ЗАМЕРЗАНИЯ каждого вида: ниже неё вид существует только твёрдым.
+// -Infinity = не замерзает вовсе (пустота, масло, растворённое вещество).
+// Вода застывает при нуле, кислота при -30, реагент при -60 — поэтому при
+// охлаждении раствора первой выпадает вода, и только потом остальное.
+const PART_FREEZE = [-Infinity, 0, -30, -60, -Infinity, -Infinity];
+// Самая высокая точка замерзания среди всех видов: жидкость теплее неё
+// заведомо ничем не застынет, и это отсеивается одним сравнением в
+// tickPhase, не разбирая состав (та же уловка, что и с PART_BOIL_MIN).
+const PART_FREEZE_MAX = 0;
 // Самая низкая и самая высокая температура перехода среди ВСЕХ видов.
 // Нужны для дешёвого отсева в Sim.tickPhase: жидкость холоднее
 // PART_BOIL_MIN не может кипеть ничем, газ горячее PART_BOIL_MAX не может
@@ -386,6 +417,13 @@ const SOL_PURE_OIL = solPure(P_OIL);
 // газ показывается общим EL.VAPOR.
 const PART_LIQUID = [EL.EMPTY, EL.WATER, EL.ACID, EL.REAGENT, EL.OIL, EL.EMPTY];
 const PART_GAS = [EL.EMPTY, EL.STEAM, EL.ACID_GAS, EL.VAPOR, EL.VAPOR, EL.VAPOR];
+// Твёрдая фаза вида (во что он застывает и из чего тает обратно).
+const PART_SOLID = [EL.EMPTY, EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.EMPTY, EL.EMPTY];
+// Обратное соответствие: какой вид оттаивает из этого твёрдого элемента.
+const SOLID_PART = [];
+SOLID_PART[EL.ICE] = P_WATER;
+SOLID_PART[EL.ACID_ICE] = P_ACID;
+SOLID_PART[EL.REAGENT_ICE] = P_REAGENT;
 
 // Состав, который получает СВЕЖАЯ частица этого элемента (Sim.spawn):
 // всегда полные 10 долей своего вещества, без пустоты. Смеси

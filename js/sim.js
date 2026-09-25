@@ -40,6 +40,10 @@ const WATER_RUST_SLOWER = 5;
 // дешевле, чем проверять всем: на глаз ржавчина всё равно ползёт
 // медленно, а лишняя работа уходит.
 const RUST_TICK_CHANCE = 0.25;
+// Замерзание и таяние — с броском, как и конденсация: переход должен
+// занимать заметное время, а не срабатывать в первый же кадр за порогом.
+const FREEZE_CHANCE = 0.02;
+const MELT_CHANCE = 0.02;
 // Реагент, попав на дерево, поджигает его.
 const REAGENT_IGNITE_WOOD = 0.08;
 // Насколько градусов выше точки кипения рождается газ. Без этого запаса
@@ -306,6 +310,17 @@ class Sim {
     // кадр (см. комментарий в updateTemp про прежний баг с термостатом), и
     // переезжает вместе с клеткой при движении (см. swap()).
     const el = ELEMENTS[id];
+    // Свежая частица приносит СВОЮ температуру, прибавляя её к температуре
+    // места, а не принимая температуру фона целиком. Раньше нарисованный в
+    // раскалённой зоне лёд оказывался сразу раскалённым, а вылитая туда же
+    // вода — кипящей, хотя ни лёд, ни вода своего холода никуда не девали.
+    // Знак берётся сам собой: у обычных веществ комнатные +20, у льда и
+    // замёрзших жидкостей — минус, так что место остывает.
+    // Источники тепла (лава, огонь) и газы сюда не попадают: у первых свой
+    // heatSource ниже, у вторых — gasSpawnTemp.
+    if (el && !el.heatSource && el.cat !== CAT.GAS) {
+      this.temp[i] += (el.baseTemp !== undefined) ? el.baseTemp : DEFAULT_BASE_TEMP;
+    }
     if (seedHeat && el && el.heatSource && this.temp[i] < el.heatSource) this.temp[i] = el.heatSource;
     // Пар не бывает холоднее точки кипения в момент появления — иначе пар
     // из воды, вскипевшей от касания лавы (сама вода при этом могла быть
@@ -356,6 +371,15 @@ class Sim {
     this.moved.fill(0);
     this.windVX.fill(0);
     this.windVY.fill(0);
+    // Снимок ветра на кадр и кэш ветра для обломков — тоже часть потоков.
+    // Без них "Очистить" на паузе оставляло на экране прежние течения: сам
+    // windVX обнулялся, но читают-то все getWindVX/getWindVY, а те смотрят
+    // в снимок, который обновляется только в step() — то есть никогда,
+    // пока стоит пауза.
+    this.windVXFrame.fill(0);
+    this.windVYFrame.fill(0);
+    this._debrisWindVX.fill(0);
+    this._windRoll = 1;
     this.temp.fill(0);
     this.moisture.fill(0);
     this.sol.fill(0);
@@ -477,7 +501,7 @@ class Sim {
     const el2 = ELEMENTS[id2];
     // windScale=0 у обычного сыпучего (песок и т.п.) — оно и так тяжёлое и
     // осознанно оставлено ветром не сносимым (см. updatePowder).
-    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0);
+    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0.12);
     else if (el2.cat === CAT.LIQUID) this.updateLiquid(x, y, i, el2);
     else if (el2.cat === CAT.GAS) this.updateGas(x, y, i, el2);
     else if (id2 === EL.FIRE) this.updateFireMovement(x, y, i);
@@ -489,7 +513,7 @@ class Sim {
     // В отличие от обычного песка, ветер ЗАМЕТНО меняет её траекторию
     // падения (windScale>0) — обломки лёгкие и рыхлые в сравнении с целым,
     // ещё держащимся телом.
-    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.06);
+    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.25);
   }
 
   // ---- структурная устойчивость твёрдых тел ----
@@ -1090,31 +1114,58 @@ class Sim {
   // этом кадре — долгосрочная частота срабатывания (в среднем по многим
   // кадрам) при этом не меняется, просто перестаёт быть независимой по
   // каждой клетке.
+  // Толчок ветром. Поток не просто подкручивает вероятность обычного
+  // движения, а РАЗДВИГАЕТ вещество: нагнетённое в озере давление
+  // расшвыривает воду во все стороны, а поданное под падающий камень —
+  // подкидывает его вверх.
+  //
+  // Раньше учитывалась только горизонтальная составляющая, и вертикальный
+  // поток не двигал ничего вовсе: сколько ни дуй снизу, объект продолжал
+  // спокойно падать. Теперь берутся обе оси, и толчок пробуется сначала
+  // вдоль сильнейшей из них, а если там занято — вдоль второй.
+  //
+  // Движение ВВЕРХ передаётся в attemptSwapOrMove как подъём (rising),
+  // иначе тяжёлое не смогло бы обменяться с более лёгким над собой и
+  // поток снизу упирался бы в собственную воду.
   tryWindPush(x, y, i, el, windScale, maxChance, rising) {
     if (!windScale) return false;
-    const w = this.w;
     // Для клеток структурного мусора (stability===0) берём ЕДИНЫЙ на весь
     // связный кусок ветер из computeDebrisWindChance, а не локальный —
     // иначе даже с общим roll и заморозкой снимка разные клетки одной
     // цепочки могут со временем накопить разный локальный ветер (реальный
     // пространственный градиент вдоль широкого объекта) и разойтись.
-    const wind = (isStructural(this.type[i]) && this.stability[i] === 0) ? this._debrisWindVX[i] : this.getWindVX(x, y);
-    const chance = Math.min(maxChance, Math.abs(wind) * windScale);
+    const debris = isStructural(this.type[i]) && this.stability[i] === 0;
+    const vx = debris ? this._debrisWindVX[i] : this.getWindVX(x, y);
+    const vy = this.getWindVY(x, y);
+    const ax = Math.abs(vx), ay = Math.abs(vy);
+    if (ax === 0 && ay === 0) return false;
+    const chance = Math.min(maxChance, (ax + ay) * windScale);
     if (this._windRoll >= chance) return false;
-    const wdir = wind > 0 ? 1 : -1;
-    const nx = x + wdir;
-    if (nx < 0 || nx >= w) return false;
-    const ni = this.idx(nx, y);
-    // Соседняя клетка ТОГО ЖЕ материала, вытянутого вдоль направления
-    // толчка (например, горизонтальная палка, которую толкает ГОРИЗОНТАЛЬНО),
-    // ещё не сдвинулась в этом кадре и потому блокирует одиночный своп —
-    // а раз следующая клетка дальше по цепочке в СЛЕДУЮЩЕЙ итерации того же
-    // кадра решит толкнуться туда же (тот же общий бросок, тот же локальный
-    // ветер), одиночные свопы просто упирались бы друг в друга, и толкалась
-    // бы только передняя кромка, отрываясь от остального куска. Сдвигаем
-    // всю связную цепочку одним атомарным действием вместо этого.
-    if (this.type[ni] === this.type[i]) return this.shiftChain(x, y, wdir, el, rising);
-    return this.attemptSwapOrMove(i, ni, el, rising);
+    const horizFirst = ax >= ay;
+    for (let pass = 0; pass < 2; pass++) {
+      const horiz = pass === 0 ? horizFirst : !horizFirst;
+      let dx = 0, dy = 0;
+      if (horiz) { if (!ax) continue; dx = vx > 0 ? 1 : -1; }
+      else { if (!ay) continue; dy = vy > 0 ? 1 : -1; }
+      const nx = x + dx, ny = y + dy;
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      // Соседняя клетка ТОГО ЖЕ материала, вытянутого вдоль направления
+      // толчка (например, горизонтальная палка, которую толкает
+      // ГОРИЗОНТАЛЬНО), ещё не сдвинулась в этом кадре и потому блокирует
+      // одиночный своп — а раз следующая клетка дальше по цепочке в
+      // СЛЕДУЮЩЕЙ итерации того же кадра решит толкнуться туда же (тот же
+      // общий бросок, тот же локальный ветер), одиночные свопы просто
+      // упирались бы друг в друга, и толкалась бы только передняя кромка,
+      // отрываясь от остального куска. Сдвигаем всю связную цепочку одним
+      // атомарным действием вместо этого.
+      if (horiz && this.type[ni] === this.type[i]) {
+        if (this.shiftChain(x, y, dx, el, rising)) return true;
+        continue;
+      }
+      if (this.attemptSwapOrMove(i, ni, el, dy < 0 ? true : rising)) return true;
+    }
+    return false;
   }
 
   // Сдвигает связную цепочку клеток одного материала, начинающуюся в (x,y)
@@ -1189,7 +1240,7 @@ class Sim {
     const arx = Math.max(0.5, rx / this.airCell), ary = Math.max(0.5, ry / this.airCell);
     const ax0 = Math.max(0, Math.floor(acx - arx)), ax1 = Math.min(this.airW - 1, Math.ceil(acx + arx));
     const ay0 = Math.max(0, Math.floor(acy - ary)), ay1 = Math.min(this.airH - 1, Math.ceil(acy + ary));
-    const PUSH = 0.5;
+    const PUSH = 1.2;
     for (let ay = ay0; ay <= ay1; ay++) {
       for (let ax = ax0; ax <= ax1; ax++) {
         const nx = (ax - acx) / arx, ny = (ay - acy) / ary;
@@ -1214,7 +1265,8 @@ class Sim {
       case EL.GUNP: this.reactFlammable(x, y, i, id); break;
       case EL.FIRE: this.reactFire(x, y, i); break;
       case EL.LAVA: this.reactLava(x, y, i); break;
-      case EL.ICE: this.reactIce(x, y, i); break;
+      case EL.ICE: this.tickPhase(x, y, i); if (this.type[i] === EL.ICE) this.reactIce(x, y, i); break;
+      case EL.ACID_ICE: case EL.REAGENT_ICE: this.tickPhase(x, y, i); break;
       case EL.ACID: case EL.SOLUTION: case EL.REAGENT: this.reactSolutionLike(x, y, i); break;
       case EL.ACID_RESIDUE: this.reactAcidResidue(x, y, i); break;
       case EL.OXIDE: case EL.OXIDE_LOOSE: this.reactOxide(x, y, i); break;
@@ -1790,9 +1842,18 @@ class Sim {
   // Если переходит ВСЯ материя клетки, фаза меняется на месте: не нужно
   // ни искать свободную клетку, ни делить состав.
   tickPhase(x, y, i) {
-    const gas = isVaporFamily(this.type[i]);
+    const id = this.type[i];
+    // Твёрдая фаза (лёд, замёрзшие кислота и реагент) живёт своим,
+    // встречным переходом: оттаивает, когда стало теплее её точки
+    // замерзания. Состава у неё нет — это всегда одно чистое вещество.
+    if (isFrozenLiquid(id)) { this.tickThaw(i, id); return; }
+    const gas = isVaporFamily(id);
     const T = this.temp[i];
     const comp = this.sol[i];
+    // Замерзание проверяется до кипения и по той же схеме: сначала отсев
+    // одним сравнением (жидкость теплее самой высокой точки замерзания не
+    // застынет ничем), потом редкий бросок, и только потом разбор состава.
+    if (!gas && T <= PART_FREEZE_MAX && this.tickFreeze(x, y, i, T, comp)) return;
     let pick = -1;
     if (gas) {
       const oilDue = solGet(comp, P_OIL) > 0 && this.life[i] <= 0;
@@ -1840,6 +1901,63 @@ class Sim {
     }
     this.setComposition(target, solPure(pick, n), !gas);
     this.moved[target] = 1;
+  }
+
+  // Замерзание жидкости, по одному виду за раз. Из нескольких застывающих
+  // первым выпадает самый "тёплый" — тот, чья точка замерзания выше: при
+  // охлаждении раствора сперва выходит лёд, и только глубже по минусу
+  // кислота и реагент. Это зеркало кипения, где первым уходит самый
+  // летучий.
+  //
+  // Если застывает вся материя клетки, она просто становится твёрдой на
+  // месте. Если часть — твёрдое выпадает в соседнюю свободную клетку
+  // (ровно как просили: "если в растворе один компонент замерзает раньше
+  // другого, спавним лёд рядышком"), а в жидкости на его месте остаётся
+  // пустота, которую потом подберёт стягивание.
+  tickFreeze(x, y, i, T, comp) {
+    let pick = -1;
+    for (let k = 1; k < P_COUNT; k++) {
+      if (!solGet(comp, k)) continue;
+      if (T > PART_FREEZE[k]) continue;
+      if (!PART_SOLID[k]) continue;
+      if (pick < 0 || PART_FREEZE[k] > PART_FREEZE[pick]) pick = k;
+    }
+    if (pick < 0) return false;
+    if (Math.random() >= FREEZE_CHANCE) return false;
+    const n = solGet(comp, pick);
+    if (n === solMatter(comp)) {
+      this.type[i] = PART_SOLID[pick];
+      this.sol[i] = 0;
+      this.extra[i] = 0;
+      return true;
+    }
+    const target = this.freeNeighbour(x, y, false);
+    if (target < 0) return false;
+    let rest = solWith(comp, pick, 0);
+    rest = solWith(rest, P_VOID, solGet(rest, P_VOID) + n);
+    this.setComposition(i, rest, false);
+    this.life[target] = 0;
+    this.extra[target] = 0;
+    this.shade[target] = (Math.random() * 30 - 15) | 0;
+    this.temp[target] = T;
+    this.type[target] = PART_SOLID[pick];
+    this.sol[target] = 0;
+    this.moved[target] = 1;
+    return true;
+  }
+
+  // Оттаивание: твёрдая фаза возвращается в свою жидкость, когда стало
+  // теплее её точки замерзания. Лёд при этом получает полный состав воды,
+  // кислотный лёд — кислоты и так далее, так что вещество не подменяется
+  // (растаявшая кислота остаётся кислотой, а не превращается в воду).
+  tickThaw(i, id) {
+    const kind = SOLID_PART[id];
+    if (!kind) return;
+    if (this.temp[i] <= PART_FREEZE[kind]) return;
+    if (Math.random() >= MELT_CHANCE) return;
+    this.extra[i] = 0;
+    this.life[i] = 0;
+    this.setComposition(i, solPure(kind, SOL_PARTS), false);
   }
 
   // Стягивание: пустота уходит к соседу, у которого её больше.
@@ -2813,7 +2931,7 @@ class Sim {
     // смещать вероятность уже сработавшего растекания) — та же
     // "перебивающая" попытка, что и у газа/осыпавшихся тел, только слабее
     // (жидкость тяжелее, гравитацию перебивает не так легко).
-    if (this.tryWindPush(x, y, i, el, 0.08, 0.3, false)) return;
+    if (this.tryWindPush(x, y, i, el, 0.3, 0.8, false)) return;
     if (y + 1 < h) {
       const bi = this.idx(x, y + 1);
       if (this.attemptSwapOrMove(i, bi, el, false)) return;
@@ -2852,7 +2970,7 @@ class Sim {
     // Газ — самый лёгкий, ветер "перебивает" его обычное всплытие вверх
     // заметнее всего (у жидкости и осыпавшихся тел та же tryWindPush
     // работает с меньшим scale — см. их функции).
-    if (this.tryWindPush(x, y, i, el, 0.2, 0.6, true)) return;
+    if (this.tryWindPush(x, y, i, el, 0.4, 0.9, true)) return;
     if (y - 1 >= 0) {
       const ai = this.idx(x, y - 1);
       if (this.attemptSwapOrMove(i, ai, el, true)) return;
