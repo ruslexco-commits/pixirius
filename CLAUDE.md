@@ -9,6 +9,7 @@
 - `node tools/compare.js [ref] [шагов]` — побайтное сравнение поведения рабочей копии с коммитом (по умолчанию `HEAD`): одно и то же зерно `Math.random`, одна и та же сцена. **После рефакторинга обязан выдать OK.** При намеренной смене поведения он показывает, с какого шага и в каких полях началось расхождение.
 - Стенд (`tools/harness.js`) грузит все скрипты из массива `files` в `index.html` до `js/render.js`. Сцена и воздействия заданы в `buildScene`/`poke`. Новую механику стоит добавить в сцену, чтобы `compare`/`check` её покрывали.
 - Изменение, заметное глазу (рендер, UI, ввод), проверяй ещё и в браузере.
+- Поле рисует видеокарта (`js/render-gl.js`). `?cpu` в адресе включает прежний путь на CPU (`Renderer.cellColor`): он же служит запасным, если WebGL2 нет или контекст потерян. `renderer.gpuDiff()` в консоли сверяет GPU с CPU на текущем кадре: норма — `maxDelta` 0 или 1.
 
 ## Устройство
 
@@ -34,7 +35,8 @@ js/sim/human.js         человек: обзор, страх, память з�
 js/sim/colonist.js      колонист (в палитре нет, оставлен ради старых сохранений)
 js/sim/painting.js      setCell / stampBrush / stampLine / floodFill
 js/sim/persistence.js   snapshot/restore (отмена) и serialize/deserialize (файл .pixsav)
-js/render.js            Renderer: цвет клетки, отладочные режимы 1/2/3, лупа, контур кисти
+js/render.js            Renderer: цвет клетки на CPU (cellColor), отладочные режимы 1/2/3, лупа, контур кисти
+js/render-gl.js         GpuCellPainter: тот же цвет клетки во фрагментном шейдере WebGL2 (основной путь)
 js/input.js             InputController: мышь/клавиши, режимы кисти, undo/redo
 js/main.js              создание Sim/Renderer/Input, панель и палитра, игровой цикл (timeScale)
 ```
@@ -78,7 +80,7 @@ js/main.js              создание Sim/Renderer/Input, панель и п�
 3. Если он нужен в палитре — в `ELEMENT_ORDER`. Если это техника — ещё и в `TECH_ELEMENTS`.
 4. Предикаты по смыслу: `isStructural`, `isAnchor`, `isAirtight`, `isHeatInsulator`, семейства долей в `data/composition.js`, реакции людей `humanDeadly`/`humanDanger`.
 5. Своё поведение: метод в файле подсистемы плюс `case` в `Sim.react()` (core.js). Начальные `life/extra` — в `spawn()`.
-6. Если цвет зависит от состояния, а не только от `ELEMENTS[id].color`, — `Renderer.cellColor`.
+6. Если цвет зависит от состояния, а не только от `ELEMENTS[id].color`, — `Renderer.cellColor` **и** шейдер в `js/render-gl.js` (поле, от которого зависит цвет, — ещё и текстурой в `GpuCellPainter`). Затем `renderer.gpuDiff()` в браузере.
 7. Добавить в сцену `tools/harness.js`, затем `node tools/check.js`.
 
 **Новое поле клетки**

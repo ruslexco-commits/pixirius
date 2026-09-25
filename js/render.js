@@ -17,6 +17,17 @@ function blendColor(r, g, b, tint, weight) {
   ];
 }
 
+// Множитель насыщенности окисла для клетки i (см. Renderer.oxideColor).
+// Берётся из индекса клетки, а не из Math.random(): он должен быть у
+// клетки постоянным, иначе пиксель мерцал бы каждый кадр. Общий для CPU и
+// GPU (render-gl.js заливает его в текстуру один раз) — формула нарочно
+// одна: умножение здесь в double, и повторить его в шейдере побитно нельзя.
+function oxideSaturation(i) {
+  let v = (i * 2654435761) >>> 0;
+  v ^= v >>> 15;
+  return 0.7 + ((v * 2246822519) >>> 0) / 4294967296 * 0.65;
+}
+
 function hsvToRgb(h, s, v) {
   const i = Math.floor(h * 6);
   const f = h * 6 - i;
@@ -36,7 +47,9 @@ function hsvToRgb(h, s, v) {
 }
 
 class Renderer {
-  constructor(sim, canvas, zoom) {
+  // options.gpu — рисовать поле на видеокарте (render-gl.js), если она
+  // доступна; иначе и при false — прежним путём на CPU (buildImage).
+  constructor(sim, canvas, zoom, options = {}) {
     this.sim = sim;
     this.zoom = zoom;
     this.canvas = canvas;
@@ -48,6 +61,10 @@ class Renderer {
     this.off.height = sim.h;
     this.offCtx = this.off.getContext('2d');
     this.imageData = this.offCtx.createImageData(sim.w, sim.h);
+    this.gpu = options.gpu === false ? null : GpuCellPainter.create(sim);
+    // Канвас w x h с картинкой последнего кадра (GPU или CPU) — из него
+    // растягивается основной канвас и берёт увеличение лупа.
+    this.frameSource = this.off;
 
     this.zoomBoxCorner = 'br';
     // Окно лупы — квадрат площадью в четверть площади канваса.
@@ -175,17 +192,15 @@ class Renderer {
   // плоской заливкой: у ржавчины и окалины вся выразительность как раз в
   // том, что соседние пятна разной густоты.
   //
-  // Множитель берётся не из Math.random(), а из индекса клетки: он должен
-  // быть у клетки постоянным, иначе пиксель мерцал бы каждый кадр.
+  // Множитель берётся не из Math.random(), а из индекса клетки (см.
+  // oxideSaturation).
   oxideColor(i) {
     const sim = this.sim;
     const line = OXIDE_LINE[sim.type[i]];
     if (!line) return ELEMENTS[sim.type[i]].color;
     const stage = Math.max(0, Math.min(line.maxStage, sim.oxideStage(i)));
     const c = line.colors[stage];
-    let v = (i * 2654435761) >>> 0;
-    v ^= v >>> 15;
-    const sat = 0.7 + ((v * 2246822519) >>> 0) / 4294967296 * 0.65;
+    const sat = oxideSaturation(i);
     const mid = (c[0] + c[1] + c[2]) / 3;
     return [mid + (c[0] - mid) * sat, mid + (c[1] - mid) * sat, mid + (c[2] - mid) * sat];
   }
@@ -282,12 +297,45 @@ class Renderer {
     }
   }
 
+  debugFlags() {
+    return { stability: this.debugStability, wind: this.debugWind, therm: this.debugTherm };
+  }
+
   drawFrame() {
-    this.buildImage();
-    this.offCtx.putImageData(this.imageData, 0, 0);
+    if (this.gpu && this.gpu.paint(this.debugFlags())) {
+      this.frameSource = this.gpu.canvas;
+    } else {
+      // Нет видеокарты или потерян контекст — рисуем на CPU. Потерянный
+      // контекст сам не вернётся, поэтому GPU-путь отключается совсем.
+      if (this.gpu) { console.warn('WebGL-контекст потерян, рисуем на CPU'); this.gpu = null; }
+      this.buildImage();
+      this.offCtx.putImageData(this.imageData, 0, 0);
+      this.frameSource = this.off;
+    }
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.drawImage(this.off, 0, 0, this.sim.w, this.sim.h, 0, 0, this.canvas.width, this.canvas.height);
+    ctx.drawImage(this.frameSource, 0, 0, this.sim.w, this.sim.h, 0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  // Сверка GPU-отрисовки с CPU-эталоном (cellColor) на текущем кадре и
+  // текущих отладочных режимах. Вызывать из консоли браузера:
+  // renderer.gpuDiff(). Норма — maxDelta 0 или 1: float в шейдере против
+  // double в JS иногда попадает по разные стороны границы округления. В
+  // обычном режиме таких пикселей единицы, а в режимах ветра и тепловизора
+  // (atan, деление, hsv) — сотни и тысячи, это тоже норма. maxDelta больше
+  // 1 — шейдер разошёлся с cellColor.
+  gpuDiff() {
+    if (!this.gpu) return 'GPU-отрисовка выключена';
+    this.gpu.paint(this.debugFlags());
+    const gpu = this.gpu.readPixels();
+    this.buildImage();
+    const cpu = this.imageData.data;
+    let differ = 0, maxDelta = 0, first = -1;
+    for (let o = 0; o < cpu.length; o += 4) {
+      const d = Math.max(Math.abs(cpu[o] - gpu[o]), Math.abs(cpu[o + 1] - gpu[o + 1]), Math.abs(cpu[o + 2] - gpu[o + 2]));
+      if (d) { differ++; if (d > maxDelta) maxDelta = d; if (first < 0) first = o / 4; }
+    }
+    return { differ, maxDelta, first: first < 0 ? null : { x: first % this.sim.w, y: (first / this.sim.w) | 0 } };
   }
 
   drawBrushOutline(gx, gy, shape, rx, ry) {
@@ -419,16 +467,19 @@ class Renderer {
     ctx.fillStyle = '#0a0a0d';
     ctx.fillRect(box.x, box.y, box.w, box.h);
 
-    for (let dy = -capRY; dy <= capRY; dy++) {
-      for (let dx = -capRX; dx <= capRX; dx++) {
-        const sx = gx + dx, sy = gy + dy;
-        let r, g, b;
-        if (sim.inBounds(sx, sy)) {
-          [r, g, b] = this.cellColor(sim.idx(sx, sy));
-        } else { r = 0; g = 0; b = 0; }
-        ctx.fillStyle = `rgb(${r},${g},${b})`;
-        ctx.fillRect(ox + (dx + capRX) * scale, oy + (dy + capRY) * scale, Math.ceil(scale), Math.ceil(scale));
-      }
+    // Увеличение — кусок уже готовой картинки кадра, растянутый без
+    // сглаживания (раньше лупа заново считала цвет каждой клетки и рисовала
+    // её отдельным fillRect — до 40 тыс. вызовов за кадр). Клетки за краем
+    // поля — чёрные: сперва вся область, поверх — то, что внутри поля.
+    ctx.fillStyle = '#000';
+    ctx.fillRect(ox, oy, drawW, drawH);
+    const sx0 = Math.max(0, gx - capRX), sx1 = Math.min(sim.w - 1, gx + capRX);
+    const sy0 = Math.max(0, gy - capRY), sy1 = Math.min(sim.h - 1, gy + capRY);
+    if (sx0 <= sx1 && sy0 <= sy1) {
+      const cw = sx1 - sx0 + 1, chh = sy1 - sy0 + 1;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(this.frameSource, sx0, sy0, cw, chh,
+        ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, cw * scale, chh * scale);
     }
 
     ctx.strokeStyle = pinned ? 'rgba(255, 200, 40, 0.95)' : 'rgba(255,255,255,0.9)';

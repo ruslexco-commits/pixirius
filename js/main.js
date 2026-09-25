@@ -24,7 +24,9 @@ function fitCanvas() {
 window.addEventListener('resize', fitCanvas);
 fitCanvas();
 
-const renderer = new Renderer(sim, canvas, ZOOM);
+// ?cpu в адресе — рисовать поле по-старому, на CPU (для сравнения и на
+// случай проблем с видеокартой).
+const renderer = new Renderer(sim, canvas, ZOOM, { gpu: !/[?&]cpu\b/.test(location.search) });
 const input = new InputController(sim, renderer, canvas, () => selectedElement);
 
 // ---- пиксельные SVG-иконки инструментов (только прямоугольники) ----
