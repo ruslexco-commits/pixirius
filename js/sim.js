@@ -73,6 +73,18 @@ const HUMAN_BAN_LIMIT = 96;
 // далеко в стороны уходить, спасаясь от кислотной тучи.
 const HUMAN_ROOF_HEIGHT = 24;
 const HUMAN_SHELTER_RANGE = 30;
+// Порог, ниже которого поток вещество не двигает вовсе.
+//
+// Без него получалась самоподдерживающаяся карусель: каждое движение
+// частицы слегка толкает воздух (disturbWind), этого хватало, чтобы
+// сдвинуть соседнюю частицу, та толкала воздух дальше — и всё, что игрок
+// ни поставит, медленно уносило «как пыль» в поток, который никогда не
+// затихал, потому что сам себя и подпитывал.
+//
+// Теперь фоновая рябь от падающих капель и осыпающегося песка честно
+// остаётся рябью: двигает вещество только поток, заметно превосходящий
+// её — то есть нагнетённый кистью давления или поднятый взрывом.
+const WIND_PUSH_MIN = 0.45;
 const FREEZE_CHANCE = 0.02;
 const MELT_CHANCE = 0.02;
 // Реагент, попав на дерево, поджигает его.
@@ -524,7 +536,10 @@ class Sim {
     const dx = xj - xi, dy = yj - yi;
     if (dx === 0 && dy === 0) return;
     const ai = this.airIdx(xi, yi);
-    const DISTURB = 0.03;
+    // Возмущение воздуха от одного шага частицы. Втрое слабее прежнего:
+    // именно сумма этих толчков от всего падающего и текущего на карте и
+    // раскручивала тот самый вечный поток.
+    const DISTURB = 0.01;
     this.windVX[ai] += dx * DISTURB;
     this.windVY[ai] += dy * DISTURB;
   }
@@ -578,7 +593,7 @@ class Sim {
     const el2 = ELEMENTS[id2];
     // windScale=0 у обычного сыпучего (песок и т.п.) — оно и так тяжёлое и
     // осознанно оставлено ветром не сносимым (см. updatePowder).
-    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0.12);
+    if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0.05);
     else if (el2.cat === CAT.LIQUID) this.updateLiquid(x, y, i, el2);
     else if (el2.cat === CAT.GAS) this.updateGas(x, y, i, el2);
     else if (id2 === EL.FIRE) this.updateFireMovement(x, y, i);
@@ -590,7 +605,7 @@ class Sim {
     // В отличие от обычного песка, ветер ЗАМЕТНО меняет её траекторию
     // падения (windScale>0) — обломки лёгкие и рыхлые в сравнении с целым,
     // ещё держащимся телом.
-    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.25);
+    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.12);
   }
 
   // ---- структурная устойчивость твёрдых тел ----
@@ -913,7 +928,9 @@ class Sim {
     const aw = this.airW, ah = this.airH, an = aw * ah;
     this.computeAirBlock();
     const open = this.airOpen;
-    const DECAY = 0.997;
+    // Трение воздуха. Усилено (0.997 -> 0.992): поток должен затихать за
+    // считанные секунды, если его перестали подпитывать, а не жить минуту.
+    const DECAY = 0.992;
     const DIFFUSE_BASE = 0.15;
     const DIFFUSE_GAIN = 0.6;
     const DIFFUSE_MAX = 0.5;
@@ -1217,8 +1234,12 @@ class Sim {
     const vx = debris ? this._debrisWindVX[i] : this.getWindVX(x, y);
     const vy = this.getWindVY(x, y);
     const ax = Math.abs(vx), ay = Math.abs(vy);
-    if (ax === 0 && ay === 0) return false;
-    const chance = Math.min(maxChance, (ax + ay) * windScale);
+    const mag = ax + ay;
+    // Слабее порога — это фоновая рябь, а не ветер (см. WIND_PUSH_MIN).
+    // Считаем силу толчка от ИЗБЫТКА над порогом, иначе у самой границы
+    // поток дёргал бы вещество рывками.
+    if (mag <= WIND_PUSH_MIN) return false;
+    const chance = Math.min(maxChance, (mag - WIND_PUSH_MIN) * windScale);
     if (this._windRoll >= chance) return false;
     const horizFirst = ax >= ay;
     for (let pass = 0; pass < 2; pass++) {
@@ -1319,7 +1340,12 @@ class Sim {
     const arx = Math.max(0.5, rx / this.airCell), ary = Math.max(0.5, ry / this.airCell);
     const ax0 = Math.max(0, Math.floor(acx - arx)), ax1 = Math.min(this.airW - 1, Math.ceil(acx + arx));
     const ay0 = Math.max(0, Math.floor(acy - ary)), ay1 = Math.min(this.airH - 1, Math.ceil(acy + ary));
-    const PUSH = 1.2;
+    // Кисть бьёт заметно сильнее фоновой ряби — иначе после введения
+    // порога WIND_PUSH_MIN от неё почти ничего не оставалось: она сама
+    // еле переваливала за порог, и от нагнетённого давления озеро только
+    // морщилось. Фон при этом на порядок слабее и порога по-прежнему не
+    // достаёт.
+    const PUSH = 1.6;
     for (let ay = ay0; ay <= ay1; ay++) {
       for (let ax = ax0; ax <= ax1; ax++) {
         const nx = (ax - acx) / arx, ny = (ay - acy) / ary;
@@ -3271,7 +3297,7 @@ class Sim {
     // смещать вероятность уже сработавшего растекания) — та же
     // "перебивающая" попытка, что и у газа/осыпавшихся тел, только слабее
     // (жидкость тяжелее, гравитацию перебивает не так легко).
-    if (this.tryWindPush(x, y, i, el, 0.3, 0.8, false)) return;
+    if (this.tryWindPush(x, y, i, el, 0.16, 0.5, false)) return;
     if (y + 1 < h) {
       const bi = this.idx(x, y + 1);
       if (this.attemptSwapOrMove(i, bi, el, false)) return;
@@ -3310,7 +3336,7 @@ class Sim {
     // Газ — самый лёгкий, ветер "перебивает" его обычное всплытие вверх
     // заметнее всего (у жидкости и осыпавшихся тел та же tryWindPush
     // работает с меньшим scale — см. их функции).
-    if (this.tryWindPush(x, y, i, el, 0.4, 0.9, true)) return;
+    if (this.tryWindPush(x, y, i, el, 0.25, 0.7, true)) return;
     if (y - 1 >= 0) {
       const ai = this.idx(x, y - 1);
       if (this.attemptSwapOrMove(i, ai, el, true)) return;
