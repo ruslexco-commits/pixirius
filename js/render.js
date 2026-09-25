@@ -70,6 +70,14 @@ class Renderer {
       // здесь по-прежнему показывается чисто, как и раньше.
       if (this.debugTherm) { const tc = this.thermalColor(x, y); if (tc) return tc; }
       else if (this.debugWind) { const wc = this.windColor(x, y); if (wc) return wc; }
+      // Балка лежит во втором слое и рисуется ЗАДНИМ планом: её видно
+      // только там, где перед ней ничего нет. Цвет приглушён до фонового,
+      // чтобы она читалась как конструкция позади, а не как материал, по
+      // которому что-то ходит или течёт.
+      if (sim.beam[i]) {
+        const bc = ELEMENTS[EL.BEAM].color, sh = sim.shade[i];
+        return [clamp8(14 + (bc[0] - 14) * 0.42 + sh), clamp8(14 + (bc[1] - 14) * 0.42 + sh), clamp8(18 + (bc[2] - 18) * 0.42 + sh)];
+      }
       return [14, 14, 18];
     }
 

@@ -286,6 +286,24 @@ class Sim {
     this._humans = new Map();
     this._humanSeq = 0;
 
+    // ВТОРОЙ СЛОЙ: балки. Балки нет в this.type вовсе — она лежит здесь,
+    // отдельно, и взаимодействует только с твёрдыми телами (держит их в
+    // расчёте устойчивости, см. stabId). Для жидкостей, газов, сыпучего и
+    // людей её попросту не существует: они ходят по клетке с балкой так
+    // же, как по пустой, и ни одна строчка их кода о балке не знает.
+    //
+    // Раньше балка лежала в общем массиве веществ, и «проходимость»
+    // изображалась подменой цели движения — частица телепортировалась
+    // сквозь неё на первую свободную клетку. Это и было тем, что не
+    // устраивало: на жидкость такой перескок влиял (менял, куда она
+    // попадёт), да и перескоком он оставался.
+    //
+    // Значение — маска направлений (биты по индексам DX4), где на момент
+    // установки стояла опора; 0 означает «балки здесь нет». Балку без
+    // единой опоры ставить некуда — она сразу становится обычным камнем
+    // (см. placeBeam), поэтому ноль никогда не бывает валидной маской.
+    this.beam = new Uint8Array(n);
+
     this.paused = false;
     this.frame = 0;
   }
@@ -389,23 +407,34 @@ class Sim {
     if (id === EL.OXIDE || id === EL.METAL_OXIDE) this.extra[i] = 1;
     else if (id === EL.OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.OXIDE_LOOSE].maxStage;
     else if (id === EL.METAL_OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.METAL_OXIDE_LOOSE].maxStage;
-    // Балка запоминает связь с опорой РОВНО в момент появления, а не позже
-    // (см. reactBeam) — битовая маска направлений (по индексам DX4/DY4:
-    // 1=вправо, 2=влево, 4=вниз, 8=вверх), где на момент спавна стоял
-    // структурный материал или якорь. Если тогда рядом не было НИ ОДНОГО
-    // такого соседа — связи не было и не будет: reactBeam увидит mask===0
-    // и сразу превратит клетку в обычный камень.
-    if (id === EL.BEAM) {
-      const w = this.w, x = i % w, y = (i / w) | 0;
-      let mask = 0;
-      for (let k = 0; k < 4; k++) {
-        const nx = x + DX4[k], ny = y + DY4[k];
-        if (!this.inBounds(nx, ny)) continue;
-        const nt = this.type[this.idx(nx, ny)];
-        if (isStructural(nt) || isAnchor(nt)) mask |= (1 << k);
-      }
-      this.extra[i] = mask;
+  }
+
+  // Поставить балку во второй слой. Связь с опорой запоминается РОВНО в
+  // момент установки и больше не пересчитывается (см. updateBeams) —
+  // битовая маска направлений по индексам DX4. Если опоры рядом не было
+  // вовсе, балке не за что держаться: в этом случае на клетку кладётся
+  // обычный камень, как и раньше.
+  placeBeam(i) {
+    const w = this.w, x = i % w, y = (i / w) | 0;
+    let mask = 0;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      if (this.beam[this.idx(nx, ny)]) { mask |= (1 << k); continue; }
+      const nt = this.type[this.idx(nx, ny)];
+      if (isStructural(nt) || isAnchor(nt)) mask |= (1 << k);
     }
+    if (!mask) { this.spawn(i, EL.STONE); return; }
+    this.beam[i] = mask;
+  }
+
+  // "Структурный" элемент клетки с учётом второго слоя: сначала вещество,
+  // и только если оно несущим быть не может — балка под ним. Всё, что
+  // считает устойчивость, смотрит сюда, а не в type напрямую.
+  stabId(i) {
+    const t = this.type[i];
+    if (isStructural(t) || isAnchor(t)) return t;
+    return this.beam[i] ? EL.BEAM : t;
   }
 
   clear() {
@@ -431,6 +460,7 @@ class Sim {
     this.colonistHomeX.fill(-1);
     this.colonistHomeY.fill(-1);
     this._humans.clear();
+    this.beam.fill(0);
   }
 
   // Единая точка входа для ВСЕГО движения частиц: обмен содержимым двух
@@ -506,6 +536,7 @@ class Sim {
     this.frame++;
     this.moved.fill(0);
     this.computeStability();
+    this.updateBeams();
     this.updateWind();
     this.updateTemp();
     this.windVXFrame.set(this.windVX);
@@ -598,7 +629,8 @@ class Sim {
     };
     for (let x = 0; x < w; x++) {
       const i = this.idx(x, h - 1);
-      if (isStructural(this.type[i])) seed(i, this.type[i]);
+      const id = this.stabId(i);
+      if (isStructural(id)) seed(i, id);
     }
     for (let i = 0; i < n; i++) {
       if (!isAnchor(this.type[i])) continue;
@@ -607,7 +639,8 @@ class Sim {
         const nx = x + DX4[k], ny = y + DY4[k];
         if (!this.inBounds(nx, ny)) continue;
         const ni = this.idx(nx, ny);
-        if (isStructural(this.type[ni])) seed(ni, this.type[ni]);
+        const nid = this.stabId(ni);
+        if (isStructural(nid)) seed(ni, nid);
       }
     }
 
@@ -626,7 +659,7 @@ class Sim {
           const nx = x + dx, ny = y + dy;
           if (!this.inBounds(nx, ny)) continue;
           const ni = this.idx(nx, ny);
-          const nid = this.type[ni];
+          const nid = this.stabId(ni);
           if (!isStructural(nid)) continue;
           if (nid === EL.OILFILM && this.extra[ni] !== oilOppositeDir(oilDirCode(dx, dy))) continue;
           let newStab, newSideC;
@@ -1329,7 +1362,6 @@ class Sim {
         this.tickMoisture(x, y, i, EL.WET_EARTH);
         this.tryEvaporateMoisture(x, y, i);
         break;
-      case EL.BEAM: this.reactBeam(x, y, i); break;
       case EL.COLONIST: this.reactColonist(x, y, i); break;
       case EL.HUMAN: this.reactHuman(x, y, i); break;
     }
@@ -1463,7 +1495,7 @@ class Sim {
 
   // Проходима ли клетка для человека: пусто или балка (она для всего
   // нетвёрдого прозрачна, см. attemptSwapOrMove).
-  humanPassable(t) { return t === EL.EMPTY || t === EL.BEAM; }
+  humanPassable(t) { return t === EL.EMPTY; }
 
   // Держит ли клетка человека на себе. Балка НЕ держит: он проваливается
   // сквозь неё, как и любое сыпучее. Жидкости и газы тоже не опора — в
@@ -1501,15 +1533,15 @@ class Sim {
   humanStep(x, y, i, dir, mind) {
     if (this.humanCanStand(x + dir, y, mind)) {
       const ni = this.idx(x + dir, y);
-      this.swap(i, ni); this.moved[ni] = 1; return true;
+      this.swapFields(i, ni); this.moved[ni] = 1; return true;
     }
     if (y - 1 >= 0 && this.humanCanStand(x + dir, y - 1, mind) && this.humanPassable(this.type[this.idx(x, y - 1)])) {
       const ni = this.idx(x + dir, y - 1);
-      this.swap(i, ni); this.moved[ni] = 1; return true;
+      this.swapFields(i, ni); this.moved[ni] = 1; return true;
     }
     if (y + 1 < this.h && this.humanCanStand(x + dir, y + 1, mind) && this.humanPassable(this.type[this.idx(x + dir, y)])) {
       const ni = this.idx(x + dir, y + 1);
-      this.swap(i, ni); this.moved[ni] = 1; return true;
+      this.swapFields(i, ni); this.moved[ni] = 1; return true;
     }
     return false;
   }
@@ -1831,19 +1863,46 @@ class Sim {
   // выполняется уже на следующий кадр как для STONE, отдельно вызывать не
   // нужно. Пока связь цела — ведёт себя как STONE и в остальном (плавление
   // через reactMelt).
-  reactBeam(x, y, i) {
-    const mask = this.extra[i];
-    let broken = mask === 0;
-    if (!broken) {
+  // Раз в кадр по всему второму слою: балка, потерявшая ту самую опору, с
+  // которой была связана при установке, осыпается обычным камнем — и
+  // дальше падает как любой обломок. Балка, нагретая до точки плавления,
+  // плавится так же, как плавился бы камень на её месте.
+  //
+  // Отдельный проход нужен потому, что в общем обходе клеток балки больше
+  // нет: там перебирается this.type, а балки в нём не бывает. Проход
+  // дешёвый — одно сравнение с нулём на клетку, ветка выполняется только
+  // там, где балка действительно стоит.
+  updateBeams() {
+    const w = this.w, h = this.h, n = w * h;
+    const beam = this.beam;
+    for (let i = 0; i < n; i++) {
+      const mask = beam[i];
+      if (!mask) continue;
+      const x = i % w, y = (i / w) | 0;
+      let broken = false;
       for (let k = 0; k < 4; k++) {
         if (!(mask & (1 << k))) continue;
         const nx = x + DX4[k], ny = y + DY4[k];
-        const nt = this.inBounds(nx, ny) ? this.type[this.idx(nx, ny)] : EL.EMPTY;
+        if (!this.inBounds(nx, ny)) { broken = true; break; }
+        const ni = this.idx(nx, ny);
+        if (beam[ni]) continue;
+        const nt = this.type[ni];
         if (!isStructural(nt) && !isAnchor(nt)) { broken = true; break; }
       }
+      if (broken) {
+        beam[i] = 0;
+        // Осыпавшаяся балка становится камнем — но только если клетка
+        // свободна. Занятую (водой, газом) не трогаем: балка исчезает,
+        // ничего никуда не вытесняя.
+        if (this.type[i] === EL.EMPTY) this.spawn(i, EL.STONE);
+        continue;
+      }
+      if (this.type[i] === EL.EMPTY && this.temp[i] >= ELEMENTS[EL.BEAM].meltPoint
+          && Math.random() < ELEMENTS[EL.BEAM].meltChance) {
+        beam[i] = 0;
+        this.spawn(i, EL.LAVA, false);
+      }
     }
-    if (broken) { this.spawn(i, EL.STONE); return; }
-    this.reactMelt(x, y, i, EL.BEAM);
   }
 
   reactFlammable(x, y, i, id) {
@@ -2944,31 +3003,6 @@ class Sim {
 
   attemptSwapOrMove(i, ni, el, rising) {
     const nt = this.type[ni];
-    // Балка не задерживает падающее/сыпучее/текучее (rising=false — газ,
-    // единственный, кто зовёт с rising=true, сквозь неё по-прежнему не
-    // проходит, ведёт себя как обычный камень) — ищем первую НЕ-балочную
-    // клетку в том же направлении движения (сквозь несколько балок подряд
-    // разом, если они есть) и адресуем всю обычную проверку ЕЙ, как будто
-    // балки на пути вовсе не было. Сама балка при этом никуда не сдвигается
-    // и остаётся собой — это не своп с ней, а взгляд СКВОЗЬ.
-    // Балка лежит как бы на отдельном слое: для всего нетвёрдого её
-    // попросту нет. Сквозь неё одинаково проходят и падающее вниз, и
-    // всплывающее вверх (rising) — газ, жидкость, сыпучее, человек. При
-    // этом сама балка остаётся на месте и продолжает держать постройку:
-    // в расчёте устойчивости она обычное твёрдое тело.
-    // Раньше проход работал только вниз, и поднимающийся газ упирался в
-    // балку, как в камень.
-    if (nt === EL.BEAM) {
-      const w = this.w;
-      const dx = (ni % w) - (i % w), dy = ((ni / w) | 0) - ((i / w) | 0);
-      let cx = ni % w, cy = (ni / w) | 0, ti = ni;
-      while (this.type[ti] === EL.BEAM) {
-        cx += dx; cy += dy;
-        if (cx < 0 || cx >= w || cy < 0 || cy >= this.h) return false;
-        ti = this.idx(cx, cy);
-      }
-      return this.attemptSwapOrMove(i, ti, el, rising);
-    }
     if (nt === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
     const nEl = ELEMENTS[nt];
     if (!nEl || !isMovable(nEl.cat)) return false;
@@ -3304,8 +3338,15 @@ class Sim {
   setCell(x, y, elementId, onlyEmpty) {
     if (!this.inBounds(x, y)) return;
     const i = this.idx(x, y);
-    if (onlyEmpty && this.type[i] !== EL.EMPTY) return;
-    if (elementId === EL.EMPTY) this.clearCell(i);
+    // Балка живёт во втором слое и кладётся независимо от того, что в
+    // клетке: она ничему не мешает и ничего не вытесняет.
+    if (elementId === EL.BEAM) {
+      if (onlyEmpty && this.beam[i]) return;
+      this.placeBeam(i);
+      return;
+    }
+    if (onlyEmpty && (this.type[i] !== EL.EMPTY || this.beam[i])) return;
+    if (elementId === EL.EMPTY) { this.clearCell(i); this.beam[i] = 0; }
     else this.spawn(i, elementId);
   }
 
@@ -3384,6 +3425,7 @@ class Sim {
       temp: this.temp.slice(),
       moisture: this.moisture.slice(),
       sol: this.sol.slice(),
+      beam: this.beam.slice(),
       colonistHomeX: this.colonistHomeX.slice(),
       colonistHomeY: this.colonistHomeY.slice(),
     };
@@ -3399,6 +3441,8 @@ class Sim {
     else this.moisture.fill(0);
     if (snap.sol) this.sol.set(snap.sol);
     else this.sol.fill(0);
+    if (snap.beam) this.beam.set(snap.beam);
+    else this.beam.fill(0);
     if (snap.colonistHomeX) this.colonistHomeX.set(snap.colonistHomeX);
     else this.colonistHomeX.fill(-1);
     if (snap.colonistHomeY) this.colonistHomeY.set(snap.colonistHomeY);
@@ -3422,6 +3466,7 @@ class Sim {
       // прошлого формата просто теряют состав (см. deserialize) — это
       // честнее, чем молча истолковать чужие биты.
       sol32: bufToB64(this.sol.buffer),
+      beam: bufToB64(this.beam.buffer),
       colonistHomeX: bufToB64(this.colonistHomeX.buffer),
       colonistHomeY: bufToB64(this.colonistHomeY.buffer),
     };
@@ -3445,6 +3490,8 @@ class Sim {
     else this.moisture.fill(0);
     if (obj.sol32) this.sol.set(new Uint32Array(b64ToBuf(obj.sol32)));
     else this.sol.fill(0);
+    if (obj.beam) this.beam.set(new Uint8Array(b64ToBuf(obj.beam)));
+    else this.beam.fill(0);
     // Состава могло не быть вовсе (старый файл) или он мог быть старого
     // формата — тогда клетки семейства долей остались бы с нулевым
     // составом, то есть "целиком пустыми", и растворились бы в воздухе на
