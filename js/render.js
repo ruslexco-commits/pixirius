@@ -72,7 +72,13 @@ class Renderer {
 
     const el = ELEMENTS[id];
     const s = sim.shade[i];
-    let r = clamp8(el.color[0] + s), g = clamp8(el.color[1] + s), b = clamp8(el.color[2] + s);
+    // Раствор и кислотный остаток красятся по СОСТОЯНИЮ клетки, а не по
+    // таблице элементов: у раствора цвет — смесь цветов его долей, у
+    // остатка — по уровню (см. solutionColor / residueColor).
+    const base = id === EL.SOLUTION ? this.solutionColor(i)
+      : id === EL.ACID_RESIDUE ? this.residueColor(i)
+      : el.color;
+    let r = clamp8(base[0] + s), g = clamp8(base[1] + s), b = clamp8(base[2] + s);
     if (id === EL.FIRE) {
       const flick = (sim.life[i] * 37 + i * 13) % 46;
       r = clamp8(r + flick);
@@ -96,6 +102,29 @@ class Renderer {
       if (wc) return blendColor(r, g, b, wc, 0.55);
     }
     return [r, g, b];
+  }
+
+  // Цвет раствора — средневзвешенная смесь цветов его долей (кислота,
+  // вода, растворённое вещество = камень, реагент), см. elements.js,
+  // блок "раствор". Раствор 5/5 кислоты и воды — ровно посередине между
+  // зелёным и синим; по мере растворения зеленеет всё слабее и тянется к
+  // цвету реагента.
+  solutionColor(i) {
+    const comp = this.sim.sol[i] || SOL_PURE_WATER;
+    const a = solGet(comp, SOL_ACID), w = solGet(comp, SOL_WATER), s = solGet(comp, SOL_STONE), r = solGet(comp, SOL_REAGENT);
+    const ca = ELEMENTS[EL.ACID].color, cw = ELEMENTS[EL.WATER].color, cs = ELEMENTS[EL.STONE].color, cr = ELEMENTS[EL.REAGENT].color;
+    const out = [0, 0, 0];
+    for (let k = 0; k < 3; k++) out[k] = (ca[k] * a + cw[k] * w + cs[k] * s + cr[k] * r) / SOL_PARTS;
+    return out;
+  }
+
+  // Кислотный остаток: уровень 1 — почти камень с зеленцой, уровень 4 —
+  // густой тёмно-зелёный (с пятого он уже реагент, см. reactAcidResidue).
+  residueColor(i) {
+    const level = Math.max(1, Math.min(4, this.sim.extra[i] || 1));
+    const t = (level - 1) / 3;
+    const c0 = [118, 124, 118], c1 = [36, 78, 40];
+    return [c0[0] + (c1[0] - c0[0]) * t, c0[1] + (c1[1] - c0[1]) * t, c0[2] + (c1[2] - c0[2]) * t];
   }
 
   // Плавящиеся материалы (meltPoint на элементе) постепенно краснеют по

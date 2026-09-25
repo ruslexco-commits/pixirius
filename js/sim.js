@@ -160,6 +160,10 @@ class Sim {
     // от типа клетки счётчик, который переживает переход земля<->мокрая
     // земля (spawn() его не трогает и не обнуляет, в отличие от extra/life).
     this.moisture = new Uint8Array(n);
+    // Состав раствора (см. блок "раствор" в elements.js) — 10 долей, по 4
+    // бита на каждый из четырёх видов. Осмысленно только у EL.SOLUTION;
+    // чистые вода/кислота/реагент его не читают (liquidParts).
+    this.sol = new Uint16Array(n);
     // Общая скорость течения времени — 100 = обычная (см. ползунок
     // "Течение времени" во вкладке "Разное"). Сама Sim о ней ничего не
     // знает: она читается СНАРУЖИ, в игровом цикле main.js, который решает,
@@ -197,6 +201,7 @@ class Sim {
     this.life[i] = 0;
     this.extra[i] = 0;
     this.shade[i] = 0;
+    this.sol[i] = 0;
   }
 
   // seedHeat=false — используется РОВНО одним вызывающим (reactMelt): когда
@@ -216,8 +221,16 @@ class Sim {
     this.shade[i] = (Math.random() * 30 - 15) | 0;
     this.extra[i] = 0;
     switch (id) {
-      case EL.ACID: this.life[i] = 50 + (Math.random() * 40 | 0); break;
-      case EL.STEAM: this.life[i] = 90 + (Math.random() * 60 | 0); break;
+      // Кислота больше не имеет "жизни" в кадрах — её ресурс это доли
+      // кислоты в составе раствора (см. elements.js, блок "раствор").
+      // Пар: раньше жил 90-150 кадров и вдобавок каждый кадр с шансом 1%
+      // конденсировался — в среднем ~70 кадров, т.е. в поле высотой в
+      // сотни клеток он выпадал дождём, не долетев и до середины. Теперь
+      // 15-30 с (900-1800 кадров): успевает подняться к потолку, собраться
+      // там в облако и лишь потом, по одной клетке в разное время,
+      // выпасть обратно (см. reactSteam — плюс конденсация от холода).
+      case EL.STEAM: this.life[i] = 900 + (Math.random() * 900 | 0); break;
+      case EL.ACID_GAS: this.life[i] = 300 + (Math.random() * 300 | 0); break;
       case EL.SMOKE: this.life[i] = 50 + (Math.random() * 40 | 0); break;
       case EL.FIRE: this.life[i] = 18 + (Math.random() * 14 | 0); break;
       default: this.life[i] = 0;
@@ -232,6 +245,16 @@ class Sim {
     // переезжает вместе с клеткой при движении (см. swap()).
     const el = ELEMENTS[id];
     if (seedHeat && el && el.heatSource && this.temp[i] < el.heatSource) this.temp[i] = el.heatSource;
+    // Пар не бывает холоднее точки кипения в момент появления — иначе пар
+    // из воды, вскипевшей от касания лавы (сама вода при этом могла быть
+    // ещё холодной), тут же сконденсировался бы обратно по холоду (см.
+    // reactSteam). Дальше остывает по общим правилам updateTemp.
+    if (id === EL.STEAM) {
+      const bp = ELEMENTS[EL.WATER].boilPoint;
+      if (this.temp[i] < bp) this.temp[i] = bp;
+    }
+    // Кислотный остаток появляется первого уровня (см. reactAcidResidue).
+    if (id === EL.ACID_RESIDUE) this.extra[i] = 1;
     // Балка запоминает связь с опорой РОВНО в момент появления, а не позже
     // (см. reactBeam) — битовая маска направлений (по индексам DX4/DY4:
     // 1=вправо, 2=влево, 4=вниз, 8=вверх), где на момент спавна стоял
@@ -261,6 +284,7 @@ class Sim {
     this.windVY.fill(0);
     this.temp.fill(0);
     this.moisture.fill(0);
+    this.sol.fill(0);
     this.colonistHomeX.fill(-1);
     this.colonistHomeY.fill(-1);
   }
@@ -310,6 +334,8 @@ class Sim {
     // блок камня, входя в воду, "расслаивался": разные ряды тонули в
     // разные кадры и между ними вклинивалась вода.
     t = this._liquidEscape[i]; this._liquidEscape[i] = this._liquidEscape[j]; this._liquidEscape[j] = t;
+    // Состав раствора — тоже свойство частицы, а не точки (как temp).
+    t = this.sol[i]; this.sol[i] = this.sol[j]; this.sol[j] = t;
   }
 
   // Любое реальное перемещение частицы (через swap — единая точка входа для
@@ -577,6 +603,9 @@ class Sim {
       const t = type[i];
       const el = ELEMENTS[t];
       if (!el || el.cat !== CAT.LIQUID) continue;
+      // Связность — по "фазе" (LIQUID_PHASE в elements.js): всё семейство
+      // растворов (вода/кислота/реагент/раствор) — одна жидкость.
+      const ph = LIQUID_PHASE[t];
       stack.length = 0; stack.push(i);
       comp.length = 0; comp.push(i);
       let hasEscape = false;
@@ -586,22 +615,22 @@ class Sim {
         if (cx > 0) {
           const ni = ci - 1;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
         }
         if (cx < w - 1) {
           const ni = ci + 1;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
         }
         if (cy > 0) {
           const ni = ci - w;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
         }
         if (cy < h - 1) {
           const ni = ci + w;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && type[ni] === t) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
         }
       }
       const val = hasEscape ? 1 : 0;
@@ -1093,7 +1122,10 @@ class Sim {
       case EL.FIRE: this.reactFire(x, y, i); break;
       case EL.LAVA: this.reactLava(x, y, i); break;
       case EL.ICE: this.reactIce(x, y, i); break;
-      case EL.ACID: this.reactAcid(x, y, i); break;
+      case EL.ACID: this.reactAcidic(x, y, i); break;
+      case EL.SOLUTION: this.reactSolution(x, y, i); break;
+      case EL.ACID_RESIDUE: this.reactAcidResidue(x, y, i); break;
+      case EL.ACID_GAS: this.reactAcidGas(x, y, i); break;
       case EL.STEAM: this.reactSteam(x, y, i); break;
       case EL.SMOKE: this.reactSmoke(x, y, i); break;
       case EL.SAND: this.reactSand(x, y, i); break;
@@ -1527,27 +1559,225 @@ class Sim {
     }
   }
 
-  reactAcid(x, y, i) {
-    for (let k = 0; k < 4; k++) {
+  // ---- химия кислоты: раствор, растворение, остаток, газ ----
+  //
+  // Общая картина (подробности про доли — в elements.js, блок "раствор"):
+  //  - Чистая кислота (EL.ACID) = раствор из 10 долей кислоты. Разъедает
+  //    соседей; каждое растворение тратит одну долю кислоты и превращает
+  //    её в долю "растворённого вещества". Со второго растворения та
+  //    доля вещества становится долей реагента, а на месте растворённой
+  //    клетки остаётся кислотный остаток (сыпучее). Так за кислотой
+  //    тянется след остатка, а сама она беднеет кислотой, пока не станет
+  //    чистым химическим реагентом (EL.REAGENT).
+  //  - Кислота с водой не "растворяет" воду, а разбавляется ею: раствор
+  //    (EL.SOLUTION) со смешанным составом; действует как кислота,
+  //    ослабленная пропорционально доле кислоты.
+  //  - Раствор постоянно хаотично перемешивается с соседними жидкостями
+  //    семейства (mixWithNeighbour), обмениваясь по одной доле за раз.
+  //  - С шансом 20% каждое растворение выделяет кислотный газ.
+
+  // Состав клетки-жидкости семейства растворов (упакованный, см. solPack).
+  // Для чистых элементов состав подразумевается и Sim.sol не читается.
+  liquidParts(i) {
+    switch (this.type[i]) {
+      case EL.WATER: return SOL_PURE_WATER;
+      case EL.ACID: return SOL_PURE_ACID;
+      case EL.REAGENT: return SOL_PURE_REAGENT;
+      case EL.SOLUTION: return this.sol[i] || SOL_PURE_WATER;
+      default: return 0;
+    }
+  }
+
+  // Записывает состав в клетку-жидкость: чистый состав — снова чистый
+  // элемент (вода/кислота/реагент), любая смесь — EL.SOLUTION. Тип
+  // ставится напрямую, а не через spawn(): температура, оттенок и прочие
+  // поля частицы при смене состава не меняются — это та же капля.
+  setLiquidComposition(i, comp) {
+    let id;
+    if (comp === SOL_PURE_WATER) id = EL.WATER;
+    else if (comp === SOL_PURE_ACID) id = EL.ACID;
+    else if (comp === SOL_PURE_REAGENT) id = EL.REAGENT;
+    else id = EL.SOLUTION;
+    this.type[i] = id;
+    this.sol[i] = comp;
+  }
+
+  // Случайная доля из состава (индекс вида, взвешенный по числу долей).
+  randomPart(comp) {
+    let r = (Math.random() * SOL_PARTS) | 0;
+    for (let slot = 0; slot < 4; slot++) {
+      const c = solGet(comp, slot);
+      if (r < c) return slot;
+      r -= c;
+    }
+    return SOL_WATER;
+  }
+
+  // Переложить одну долю вида slot из состава: -1 в from, +1 в to.
+  static solMove(comp, from, to) {
+    return comp - (1 << (from * 4)) + (1 << (to * 4));
+  }
+
+  // Хаотичное перемешивание: клетка i (раствор или чистая кислота) берёт
+  // одного случайного соседа по 4-соседству и, если он из семейства
+  // растворов, обменивается с ним одной случайной долей. Две чистые
+  // жидкости так друг в друга не лезут (реагент и вода рядом остаются
+  // собой) — инициатор всегда либо смесь, либо кислота. Особый случай:
+  // чистая кислота и чистая вода при касании сразу дают ПОРОВНУ —
+  // 5 долей кислоты + 5 воды в каждой из двух клеток.
+  mixWithNeighbour(x, y, i) {
+    const k = (Math.random() * 4) | 0;
+    const nx = x + DX4[k], ny = y + DY4[k];
+    if (!this.inBounds(nx, ny)) return;
+    const ni = this.idx(nx, ny);
+    const t = this.type[i], nt = this.type[ni];
+    if (!isSolutionFamily(nt)) return;
+    if (t === EL.ACID && nt === EL.WATER) {
+      const half = solPack(SOL_PARTS / 2, SOL_PARTS / 2, 0, 0);
+      this.setLiquidComposition(i, half);
+      this.setLiquidComposition(ni, half);
+      return;
+    }
+    if (t === EL.ACID && nt === EL.ACID) return;
+    const MIX_CHANCE = 0.5;
+    if (Math.random() >= MIX_CHANCE) return;
+    let a = this.liquidParts(i), b = this.liquidParts(ni);
+    const pa = this.randomPart(a), pb = this.randomPart(b);
+    if (pa === pb) return;
+    a = Sim.solMove(a, pa, pb);
+    b = Sim.solMove(b, pb, pa);
+    this.setLiquidComposition(i, a);
+    this.setLiquidComposition(ni, b);
+  }
+
+  // Чистая кислота: перемешивание с соседями + растворение.
+  reactAcidic(x, y, i) {
+    this.mixWithNeighbour(x, y, i);
+    if (this.type[i] === EL.ACID || this.type[i] === EL.SOLUTION) this.dissolveNeighbours(x, y, i);
+  }
+
+  // Раствор: то же самое; растворяет только если в нём есть кислота.
+  reactSolution(x, y, i) {
+    this.mixWithNeighbour(x, y, i);
+    if (this.type[i] === EL.SOLUTION && solGet(this.sol[i], SOL_ACID) > 0) this.dissolveNeighbours(x, y, i);
+  }
+
+  // Разъедание соседей клеткой i с долей кислоты acid/10. Шанс на клетку
+  // в кадр — как у прежней чистой кислоты (0.06, для acidSlow 0.015),
+  // умноженный на долю кислоты: раствор с одной долей разъедает в 10 раз
+  // реже и, поскольку у него ровно одна доля на трату, "живёт" в 10 раз
+  // меньше — ровно как просили. Не разъедаются: пустота, всё семейство
+  // растворов, кислотный газ и остаток, acidImmune (стена, стекло).
+  dissolveNeighbours(x, y, i) {
+    let comp = this.liquidParts(i);
+    let acid = solGet(comp, SOL_ACID);
+    for (let k = 0; k < 4 && acid > 0; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
       const ni = this.idx(nx, ny);
       const nt = this.type[ni];
-      if (nt === EL.EMPTY || nt === EL.ACID) continue;
+      if (nt === EL.EMPTY || isSolutionFamily(nt) || nt === EL.ACID_GAS || nt === EL.ACID_RESIDUE) continue;
       const nel = ELEMENTS[nt];
-      if (nel.acidImmune) continue;
-      const chance = nel.acidSlow ? 0.015 : 0.06;
+      if (!nel || nel.acidImmune) continue;
+      const chance = (nel.acidSlow ? 0.015 : 0.06) * acid / SOL_PARTS;
       if (Math.random() < chance) {
-        this.clearCell(ni);
-        this.life[i] -= 3;
+        comp = this.dissolveInto(x, y, i, ni, comp);
+        acid = solGet(comp, SOL_ACID);
       }
     }
+    this.setLiquidComposition(i, comp);
+  }
+
+  // Один акт растворения клетки ni кислотным раствором i с составом comp.
+  // Возвращает новый состав (в клетку его пишет вызывающий).
+  //  1. Одна доля кислоты тратится.
+  //  2. Если доли растворённого вещества (SOL_STONE) ещё не было — она
+  //     появляется вместо потраченной кислоты, а растворённая клетка
+  //     просто исчезает (первое растворение "съедает" вещество целиком).
+  //     Если уже была — прежняя доля вещества становится долей реагента,
+  //     новая доля вещества встаёт на её место, а растворённая клетка
+  //     превращается в кислотный остаток первого уровня: так кислота
+  //     оставляет за собой след остатка на каждом следующем растворении.
+  //  3. Когда кислоты не остаётся, последняя доля вещества тоже
+  //     становится реагентом — раствор без кислоты это вода + реагент,
+  //     а без воды — чистый химический реагент.
+  //  4. С шансом 20% в случайную пустую клетку рядом с кислотой (или на
+  //     место только что растворённой, если оно опустело) выделяется
+  //     кислотный газ.
+  dissolveInto(x, y, i, ni, comp) {
+    const hadStone = solGet(comp, SOL_STONE) > 0;
+    if (hadStone) {
+      comp = Sim.solMove(comp, SOL_ACID, SOL_REAGENT);
+      this.spawn(ni, EL.ACID_RESIDUE);
+    } else {
+      comp = Sim.solMove(comp, SOL_ACID, SOL_STONE);
+      this.clearCell(ni);
+    }
+    if (solGet(comp, SOL_ACID) === 0) {
+      const s = solGet(comp, SOL_STONE);
+      for (let k = 0; k < s; k++) comp = Sim.solMove(comp, SOL_STONE, SOL_REAGENT);
+    }
+    const GAS_CHANCE = 0.2;
+    if (Math.random() < GAS_CHANCE) {
+      const opts = [];
+      for (let k = 0; k < 4; k++) {
+        const ox = x + DX4[k], oy = y + DY4[k];
+        if (!this.inBounds(ox, oy)) continue;
+        const oi = this.idx(ox, oy);
+        if (this.type[oi] === EL.EMPTY) opts.push(oi);
+      }
+      if (opts.length) this.spawn(opts[(Math.random() * opts.length) | 0], EL.ACID_GAS);
+    }
+    return comp;
+  }
+
+  // Кислотный остаток (сыпучее, extra = уровень 1..4). Смотрит только на
+  // клетку НАД собой:
+  //  - там кислота (чистая или раствор с долей кислоты) — меняется с ней
+  //    местами, пропуская её вниз: остаток не должен ложиться плёнкой
+  //    между кислотой и тем, что она разъедает;
+  //  - там такой же остаток — сливаются в один: уровни складываются
+  //    (остаток становится темнее и менее похожим на камень, см.
+  //    render.js), с пятого уровня остаток превращается в химический
+  //    реагент.
+  // Обход поля идёт снизу вверх, поэтому из двух остатков друг на друге
+  // первым обрабатывается нижний — он и поглощает верхний.
+  reactAcidResidue(x, y, i) {
+    if (y === 0) return;
+    const ai = this.idx(x, y - 1);
+    const at = this.type[ai];
+    if (at === EL.ACID_RESIDUE) {
+      this.extra[i] = Math.min(255, this.extra[i] + this.extra[ai]);
+      this.clearCell(ai);
+      if (this.extra[i] >= 5) this.spawn(i, EL.REAGENT);
+      return;
+    }
+    if (at === EL.ACID || (at === EL.SOLUTION && solGet(this.sol[ai], SOL_ACID) > 0)) {
+      this.swap(i, ai); this.moved[ai] = 1;
+    }
+  }
+
+  // Кислотный газ: просто рассеивается со временем (life задаётся в spawn).
+  reactAcidGas(x, y, i) {
+    this.life[i]--;
     if (this.life[i] <= 0) this.clearCell(i);
   }
 
+  // Пар живёт долго (см. spawn) и выпадает водой, когда вышел срок ИЛИ
+  // когда остыл ниже COND_TEMP — холод (инструмент "Температура",
+  // соседство со льдом) осаждает облако раньше срока. Прежний ежекадровый
+  // шанс 1% на конденсацию убран: он и делал пар слишком короткоживущим.
+  // Выпавшая капля не должна быть горячее точки кипения — иначе она
+  // тут же вскипела бы снова (см. reactWater), и пар "мерцал" бы на
+  // месте вместо того, чтобы упасть дождём.
   reactSteam(x, y, i) {
     this.life[i]--;
-    if (this.life[i] <= 0 || Math.random() < 0.01) this.spawn(i, EL.WATER);
+    const COND_TEMP = 10;
+    if (this.life[i] <= 0 || this.temp[i] < COND_TEMP) {
+      this.spawn(i, EL.WATER);
+      const bp = ELEMENTS[EL.WATER].boilPoint;
+      if (this.temp[i] > bp - 6) this.temp[i] = bp - 6;
+    }
   }
 
   reactSmoke(x, y, i) {
@@ -1602,7 +1832,17 @@ class Sim {
     }
   }
 
+  // Вода тушит огонь и кипит: если ЛОКАЛЬНАЯ температура (updateTemp)
+  // достигла boilPoint — с небольшим шансом в кадр становится паром (тем
+  // же, что и от касания лавы в reactLava). Раньше по температуре вода не
+  // кипела вовсе — только от прямого контакта с лавой; нагрев инструментом
+  // "Температура" ничего не давал.
   reactWater(x, y, i) {
+    const BOIL_CHANCE = 0.05;
+    if (this.temp[i] >= ELEMENTS[EL.WATER].boilPoint && Math.random() < BOIL_CHANCE) {
+      this.spawn(i, EL.STEAM);
+      return;
+    }
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
@@ -1896,7 +2136,10 @@ class Sim {
   displaceLiquidThroughBody(start) {
     const w = this.w, h = this.h;
     const type = this.type;
-    const t = type[start];
+    // Путь ищется по "фазе" жидкости (см. LIQUID_PHASE): раствор и вода —
+    // одна лужа, вытесняемая вода вольна выйти на поверхность сквозь
+    // кислоту и наоборот.
+    const ph = LIQUID_PHASE[type[start]];
     const visited = this._dispVisited;
     const parent = this._dispParent;
     const queue = this._dispQueue;
@@ -1932,7 +2175,7 @@ class Sim {
           if (stopDepth < 0) stopDepth = depth + EXTRA_LEVELS;
           continue;
         }
-        if (nt !== t || visited[ni] === gen) continue;
+        if (LIQUID_PHASE[nt] !== ph || visited[ni] === gen) continue;
         visited[ni] = gen; parent[ni] = c; dist[ni] = depth + 1; queue[tail++] = ni;
       }
     }
@@ -2191,6 +2434,7 @@ class Sim {
       shade: this.shade.slice(),
       temp: this.temp.slice(),
       moisture: this.moisture.slice(),
+      sol: this.sol.slice(),
       colonistHomeX: this.colonistHomeX.slice(),
       colonistHomeY: this.colonistHomeY.slice(),
     };
@@ -2204,6 +2448,8 @@ class Sim {
     this.temp.set(snap.temp);
     if (snap.moisture) this.moisture.set(snap.moisture);
     else this.moisture.fill(0);
+    if (snap.sol) this.sol.set(snap.sol);
+    else this.sol.fill(0);
     if (snap.colonistHomeX) this.colonistHomeX.set(snap.colonistHomeX);
     else this.colonistHomeX.fill(-1);
     if (snap.colonistHomeY) this.colonistHomeY.set(snap.colonistHomeY);
@@ -2222,6 +2468,7 @@ class Sim {
       shade: bufToB64(this.shade.buffer),
       temp: bufToB64(this.temp.buffer),
       moisture: bufToB64(this.moisture.buffer),
+      sol: bufToB64(this.sol.buffer),
       colonistHomeX: bufToB64(this.colonistHomeX.buffer),
       colonistHomeY: bufToB64(this.colonistHomeY.buffer),
     };
@@ -2243,6 +2490,8 @@ class Sim {
     else this.temp.fill(0);
     if (obj.moisture) this.moisture.set(new Uint8Array(b64ToBuf(obj.moisture)));
     else this.moisture.fill(0);
+    if (obj.sol) this.sol.set(new Uint16Array(b64ToBuf(obj.sol)));
+    else this.sol.fill(0);
     if (obj.colonistHomeX) this.colonistHomeX.set(new Int16Array(b64ToBuf(obj.colonistHomeX)));
     else this.colonistHomeX.fill(-1);
     if (obj.colonistHomeY) this.colonistHomeY.set(new Int16Array(b64ToBuf(obj.colonistHomeY)));
