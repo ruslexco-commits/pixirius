@@ -60,6 +60,11 @@ const HUMAN_DROWN_FRAMES = 180;
 // другую сторону.
 const HUMAN_STEP_CHANCE = 0.25;
 const HUMAN_TURN_CHANCE = 0.02;
+// Сколько кадров подряд человек убегает после того, как увидел опасность.
+// Бежит он КАЖДЫЙ кадр, а не по броску HUMAN_STEP_CHANCE: спокойный шаг
+// вчетверо медленнее, чем растекается кислота, и человек, заметив лужу,
+// исправно разворачивался — но она его догоняла, и он гиб на месте.
+const HUMAN_FLEE_FRAMES = 40;
 // Сколько клеток человек помнит как запретные. Память не бесконечная:
 // самые старые записи вытесняются, иначе за долгую игру список разрастётся
 // и осмотр начнёт упираться в него, а не в мир.
@@ -377,7 +382,7 @@ class Sim {
     if (id === EL.HUMAN) {
       this.life[i] = ++this._humanSeq;
       this.extra[i] = 0;
-      this._humans.set(this.life[i], { bans: new Set(), banOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0 });
+      this._humans.set(this.life[i], { bans: new Set(), banOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0, flee: 0 });
     }
     // Окисел без явно заданной стадии — первой (см. setOxideStage), а
     // рыхлый окисел — сразу последней в своей линейке.
@@ -1346,7 +1351,7 @@ class Sim {
     const id = this.life[i];
     let mind = this._humans.get(id);
     if (!mind) {
-      mind = { bans: new Set(), banOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0 };
+      mind = { bans: new Set(), banOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0, flee: 0 };
       this._humans.set(id, mind);
     }
     return mind;
@@ -1456,27 +1461,54 @@ class Sim {
     return flee;
   }
 
-  // Можно ли встать в клетку (nx,ny): она свободна, не опасна и не
-  // занесена в личный список запретов.
+  // Проходима ли клетка для человека: пусто или балка (она для всего
+  // нетвёрдого прозрачна, см. attemptSwapOrMove).
+  humanPassable(t) { return t === EL.EMPTY || t === EL.BEAM; }
+
+  // Держит ли клетка человека на себе. Балка НЕ держит: он проваливается
+  // сквозь неё, как и любое сыпучее. Жидкости и газы тоже не опора — в
+  // воде он тонет, а не идёт по ней.
+  humanSupports(nx, ny) {
+    if (ny >= this.h) return true; // дно мира
+    const t = this.type[this.idx(nx, ny)];
+    if (this.humanPassable(t)) return false;
+    const el = ELEMENTS[t];
+    if (!el) return false;
+    return el.cat !== CAT.LIQUID && el.cat !== CAT.GAS;
+  }
+
+  // Можно ли встать в клетку (nx,ny): она проходима, под ней есть опора,
+  // она не опасна и не занесена в личный список запретов.
+  //
+  // Проверка опоры — то, чего здесь не хватало: без неё человек в панике
+  // преспокойно убегал ПО ВОЗДУХУ, потому что шаг в пустоту ничем не
+  // отличался от шага по земле, а падал он только в следующем кадре, к
+  // началу которого успевал сделать ещё шаг.
   humanCanStand(nx, ny, mind) {
     if (!this.inBounds(nx, ny)) return false;
     const ci = ny * this.w + nx;
-    const t = this.type[ci];
-    if (t !== EL.EMPTY) return false;
+    if (!this.humanPassable(this.type[ci])) return false;
     if (mind.bans.has(ci)) return false;
-    // под ногами не должно быть смертельного
+    if (!this.humanSupports(nx, ny + 1)) return false;
     if (ny + 1 < this.h && this.humanDeadly(this.type[ci + this.w])) return false;
     return true;
   }
 
-  // Шаг в сторону dir: прямо, либо на ступеньку вверх, если прямо занято.
+  // Шаг в сторону dir: прямо, на ступеньку вверх или на ступеньку вниз.
+  // Спуск нужен, чтобы человек мог сойти с уступа, а не топтаться на
+  // краю: без него требование опоры под ногами заперло бы его на любой
+  // площадке, откуда некуда шагнуть по ровному.
   humanStep(x, y, i, dir, mind) {
     if (this.humanCanStand(x + dir, y, mind)) {
       const ni = this.idx(x + dir, y);
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
-    if (y - 1 >= 0 && this.humanCanStand(x + dir, y - 1, mind) && this.type[this.idx(x, y - 1)] === EL.EMPTY) {
+    if (y - 1 >= 0 && this.humanCanStand(x + dir, y - 1, mind) && this.humanPassable(this.type[this.idx(x, y - 1)])) {
       const ni = this.idx(x + dir, y - 1);
+      this.swap(i, ni); this.moved[ni] = 1; return true;
+    }
+    if (y + 1 < this.h && this.humanCanStand(x + dir, y + 1, mind) && this.humanPassable(this.type[this.idx(x + dir, y)])) {
+      const ni = this.idx(x + dir, y + 1);
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
     return false;
@@ -1529,13 +1561,20 @@ class Sim {
     // 4. Осмотр окрестностей — не каждый кадр (см. HUMAN_SCAN_PERIOD).
     if ((this.frame + this.life[i]) % HUMAN_SCAN_PERIOD === 0) {
       const flee = this.humanLookAround(x, y, mind);
-      if (flee) {
-        mind.dir = flee;
-        if (this.humanStep(x, y, i, flee, mind)) return;
-      }
+      if (flee) { mind.dir = flee; mind.flee = HUMAN_FLEE_FRAMES; }
     }
 
-    // 5. Спокойная ходьба.
+    // 5. Паника: бежим каждый кадр, пока не отпустит. Если в выбранную
+    //    сторону хода нет — пробуем противоположную, а не стоим на месте.
+    if (mind.flee > 0) {
+      mind.flee--;
+      if (this.humanStep(x, y, i, mind.dir, mind)) return;
+      mind.dir = -mind.dir;
+      if (this.humanStep(x, y, i, mind.dir, mind)) return;
+      return;
+    }
+
+    // 6. Спокойная ходьба.
     if (Math.random() < HUMAN_TURN_CHANCE) mind.dir = -mind.dir;
     if (Math.random() >= HUMAN_STEP_CHANCE) return;
     if (!this.humanStep(x, y, i, mind.dir, mind)) mind.dir = -mind.dir;
@@ -2912,7 +2951,14 @@ class Sim {
     // разом, если они есть) и адресуем всю обычную проверку ЕЙ, как будто
     // балки на пути вовсе не было. Сама балка при этом никуда не сдвигается
     // и остаётся собой — это не своп с ней, а взгляд СКВОЗЬ.
-    if (!rising && nt === EL.BEAM) {
+    // Балка лежит как бы на отдельном слое: для всего нетвёрдого её
+    // попросту нет. Сквозь неё одинаково проходят и падающее вниз, и
+    // всплывающее вверх (rising) — газ, жидкость, сыпучее, человек. При
+    // этом сама балка остаётся на месте и продолжает держать постройку:
+    // в расчёте устойчивости она обычное твёрдое тело.
+    // Раньше проход работал только вниз, и поднимающийся газ упирался в
+    // балку, как в камень.
+    if (nt === EL.BEAM) {
       const w = this.w;
       const dx = (ni % w) - (i % w), dy = ((ni / w) | 0) - ((i / w) | 0);
       let cx = ni % w, cy = (ni / w) | 0, ti = ni;
