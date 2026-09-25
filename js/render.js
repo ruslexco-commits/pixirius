@@ -78,6 +78,9 @@ class Renderer {
     const base = (id === EL.SOLUTION || id === EL.VAPOR) ? this.partsColor(i)
       : id === EL.ACID_RESIDUE ? this.residueColor(i)
       : isOxide(id) ? this.oxideColor(i)
+      // Мёртвый человек темнеет — самый заметный признак, что он больше
+      // не ходит (extra=1, см. Sim.humanDie).
+      : (id === EL.HUMAN && sim.extra[i]) ? [58, 52, 48]
       : el.color;
     let r = clamp8(base[0] + s), g = clamp8(base[1] + s), b = clamp8(base[2] + s);
     // Неполная клетка (часть долей — пустота, см. elements.js) показывается

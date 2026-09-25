@@ -96,7 +96,9 @@ class InputController {
   // радиус кисти принудительно 0 — один клик/клетка мазка — один колонист,
   // независимо от текущего размера кисти для остальных материалов.
   brushRadiusFor(writeElementId) {
-    return writeElementId === EL.COLONIST ? [0, 0] : [this.brushRX, this.brushRY];
+    // Человек и колонист — не заливочный материал, а отдельные существа:
+    // кисть для них всегда в одну клетку, каким бы ни был её размер.
+    return (writeElementId === EL.COLONIST || writeElementId === EL.HUMAN) ? [0, 0] : [this.brushRX, this.brushRY];
   }
 
   toGrid(clientX, clientY) {

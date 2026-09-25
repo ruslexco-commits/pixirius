@@ -39,6 +39,7 @@ const EL = {
   EARTH_OXIDE: 34,
   ACID_ICE: 35,
   REAGENT_ICE: 36,
+  HUMAN: 37,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -164,6 +165,17 @@ const ELEMENTS = {
   // -60, см. PART_FREEZE), возвращаясь ровно в своё вещество, а не в
   // воду — поэтому это отдельные элементы, а не общий лёд.
   [EL.ACID_ICE]: { id: EL.ACID_ICE, name: 'Замёрзшая кислота', cat: CAT.SOLID, color: [96, 178, 74], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -40 },
+  // Человек — единственный житель мира: ходит сам, боится опасного и
+  // запоминает, куда ходить не стоит (см. Sim.reactHuman). Физика как у
+  // сыпучего (падает), всё остальное — своя реакция.
+  // life[i] — личный номер (по нему в Sim._humans лежит его память:
+  // запреты, направление, счётчик мокрой головы), extra[i] — 1, если
+  // мёртв. Плотность как у земли, чтобы не тонуть в ней и не расталкивать.
+  // acidImmune не про стойкость, а про то, ЧТО с ним происходит: кислота
+  // не должна растворять человека в никуда — он от неё умирает и остаётся
+  // лежать (см. Sim.reactHuman). Без этого людей рядом с лужей просто
+  // не досчитывались, вместо того чтобы видеть потемневшие тела.
+  [EL.HUMAN]: { id: EL.HUMAN, name: 'Человек', cat: CAT.POWDER, color: [236, 226, 210], density: 15, flammable: false, acidImmune: true },
   [EL.REAGENT_ICE]: { id: EL.REAGENT_ICE, name: 'Замёрзший реагент', cat: CAT.SOLID, color: [150, 122, 60], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -70 },
 };
 
@@ -172,7 +184,7 @@ const ELEMENTS = {
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.COLONIST,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.HUMAN,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
   // газов, а увидеть их полезно все сразу).
@@ -184,7 +196,7 @@ const ELEMENT_ORDER = [
 // (балка — обычное CAT.SOLID, как камень; колонист — CAT.POWDER, как
 // земля), но их место среди технологий, не среди сырых материалов (см.
 // materialCategoryKey в main.js).
-const TECH_ELEMENTS = new Set([EL.BEAM, EL.COLONIST]);
+const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN]);
 
 // Собственная температура свежей частицы, если у элемента не задана своя
 // (baseTemp). Спавн ПРИБАВЛЯЕТ её к температуре места, а не заменяет ею:
