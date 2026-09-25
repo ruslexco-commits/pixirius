@@ -21,6 +21,29 @@ const COND_CHANCE = 0.0025;
 const OIL_GAS_LIFE_MIN = 3600, OIL_GAS_LIFE_MAX = 10800;
 // Температура газа, выделяющегося при растворении (реагент/масло).
 const HOT_GAS_TEMP = 300;
+// Окисление камня реагентом идёт в OXIDISE_SLOWER раз медленнее, чем
+// растворение кислотой, и лишь в OXIDISE_COST случаев стоит реагенту доли
+// — в отличие от кислоты, которая тратит долю на каждое растворение.
+const OXIDISE_SLOWER = 5;
+const OXIDISE_COST = 0.5;
+// Кислота, встретив металл, с этим шансом не растворяет его, а окисляет —
+// и в любом случае тратит на это свою долю.
+const ACID_OXIDISE_METAL = 0.5;
+// С этой стадии окисленный металл кислоте уже не поддаётся.
+const METAL_ACID_PROOF_STAGE = 4;
+// Насколько градусов выше точки кипения рождается газ. Без этого запаса
+// свежий газ стоит ровно на границе перехода и норовит сконденсироваться
+// в первые же кадры, не успев никуда подняться.
+const GAS_SPAWN_MARGIN = 100;
+// Шанс в кадр, с которым окисел делится стадией с соседом (см.
+// reactOxide). Не каждый кадр: иначе слой прорастал бы вглубь камня
+// мгновенно, а он должен именно нарастать на глазах.
+const OXIDE_SPREAD_CHANCE = 0.05;
+// Реагент и вода в одной клетке гасят друг друга: пара долей уходит в
+// пустоту, клетка нагревается. Шанс в кадр — чтобы реакция была видимой
+// вспышкой, а не мгновенным исчезновением смеси.
+const REAGENT_WATER_CHANCE = 0.25;
+const REAGENT_WATER_HEAT = 100;
 // Порядок обхода соседей при поиске свободной клетки: пара смещений на
 // направление. Вверх — для испарения (газ идёт наверх), вниз — для
 // конденсации (капля падает). Плоские массивы, чтобы не создавать мусор
@@ -277,12 +300,24 @@ class Sim {
     // из воды, вскипевшей от касания лавы (сама вода при этом могла быть
     // ещё холодной), тут же начал бы конденсироваться обратно (tickPhase).
     // Дальше остывает по общим правилам updateTemp.
+    // Свежий газ рождается с запасом над своей точкой кипения (см.
+    // gasSpawnTemp): ровно на границе он сконденсировался бы обратно в
+    // первые же кадры, не успев подняться. Касается и пара от лавы, и
+    // кислотного газа.
     if (id === EL.STEAM) {
-      const bp = ELEMENTS[EL.WATER].boilPoint;
-      if (this.temp[i] < bp) this.temp[i] = bp;
+      const want = this.gasSpawnTemp(P_WATER);
+      if (this.temp[i] < want) this.temp[i] = want;
+    } else if (id === EL.ACID_GAS) {
+      const want = this.gasSpawnTemp(P_ACID);
+      if (this.temp[i] < want) this.temp[i] = want;
     }
     // Кислотный остаток появляется первого уровня (см. reactAcidResidue).
     if (id === EL.ACID_RESIDUE) this.extra[i] = 1;
+    // Окисел без явно заданной стадии — первой (см. setOxideStage), а
+    // рыхлый окисел — сразу последней в своей линейке.
+    if (id === EL.OXIDE || id === EL.METAL_OXIDE) this.extra[i] = 1;
+    else if (id === EL.OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.OXIDE_LOOSE].maxStage;
+    else if (id === EL.METAL_OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.METAL_OXIDE_LOOSE].maxStage;
     // Балка запоминает связь с опорой РОВНО в момент появления, а не позже
     // (см. reactBeam) — битовая маска направлений (по индексам DX4/DY4:
     // 1=вправо, 2=влево, 4=вниз, 8=вверх), где на момент спавна стоял
@@ -1169,8 +1204,9 @@ class Sim {
       case EL.FIRE: this.reactFire(x, y, i); break;
       case EL.LAVA: this.reactLava(x, y, i); break;
       case EL.ICE: this.reactIce(x, y, i); break;
-      case EL.ACID: case EL.SOLUTION: this.reactSolutionLike(x, y, i); break;
+      case EL.ACID: case EL.SOLUTION: case EL.REAGENT: this.reactSolutionLike(x, y, i); break;
       case EL.ACID_RESIDUE: this.reactAcidResidue(x, y, i); break;
+      case EL.OXIDE: case EL.OXIDE_LOOSE: this.reactOxide(x, y, i); break;
       case EL.ACID_GAS: case EL.STEAM: case EL.VAPOR: this.reactVapor(x, y, i); break;
       case EL.SMOKE: this.reactSmoke(x, y, i); break;
       case EL.SAND: this.reactSand(x, y, i); break;
@@ -1693,9 +1729,29 @@ class Sim {
   // стягивание пустоты. Между ними проверка типа: переход мог увести
   // клетку из системы долей (например, испариться целиком).
   tickComposition(x, y, i) {
+    this.quenchReagentWater(i);
+    if (!this.hasParts(i)) return;
     this.tickPhase(x, y, i);
     if (!this.hasParts(i)) return;
     this.tickCompaction(x, y, i);
+  }
+
+  // Реагент и вода, оказавшись долями ОДНОЙ клетки, гасят друг друга:
+  // пара долей (одна реагента, одна воды) уходит в пустоту, а клетка
+  // разогревается на REAGENT_WATER_HEAT градусов. Пара за раз, а не весь
+  // состав сразу — реакция должна читаться как вспышка с закипанием
+  // (нагрев легко переваливает за точку кипения воды), а не как молчаливое
+  // исчезновение смеси. Клетка, где от пары долей ничего не осталось,
+  // исчезнет обычным порядком — через стягивание пустоты.
+  quenchReagentWater(i) {
+    const comp = this.sol[i];
+    if (solGet(comp, P_REAGENT) === 0 || solGet(comp, P_WATER) === 0) return;
+    if (Math.random() >= REAGENT_WATER_CHANCE) return;
+    let next = solWith(comp, P_REAGENT, solGet(comp, P_REAGENT) - 1);
+    next = solWith(next, P_WATER, solGet(next, P_WATER) - 1);
+    next = solWith(next, P_VOID, solGet(next, P_VOID) + 2);
+    this.temp[i] += REAGENT_WATER_HEAT;
+    this.setComposition(i, next, isVaporFamily(this.type[i]));
   }
 
   // Фазовый переход одного вида за тик.
@@ -1763,6 +1819,14 @@ class Sim {
     this.extra[target] = 0;
     this.shade[target] = (Math.random() * 30 - 15) | 0;
     this.temp[target] = T;
+    // Свежий пар выходит с запасом над точкой кипения (см. gasSpawnTemp):
+    // иначе он рождается ровно на границе и норовит выпасть обратно
+    // раньше, чем успеет подняться. Капля, наоборот, никакого запаса не
+    // получает — она уже холодная, на то и сконденсировалась.
+    if (!gas) {
+      const want = this.gasSpawnTemp(pick);
+      if (this.temp[target] < want) this.temp[target] = want;
+    }
     this.setComposition(target, solPure(pick, n), !gas);
     this.moved[target] = 1;
   }
@@ -1847,9 +1911,140 @@ class Sim {
   reactSolutionLike(x, y, i) {
     this.mixParts(x, y, i);
     this.tickComposition(x, y, i);
+    // Чистый реагент сюда тоже попадает: он не разъедает (доли кислоты в
+    // нём нет), но окисляет камень — см. oxidiseNeighbours ниже.
     const t = this.type[i];
-    if (t !== EL.ACID && t !== EL.SOLUTION) return;
+    if (t !== EL.ACID && t !== EL.SOLUTION && t !== EL.REAGENT) return;
     if (solGet(this.sol[i], P_ACID) > 0) this.dissolveNeighbours(x, y, i);
+    if (this.hasParts(i) && solGet(this.sol[i], P_REAGENT) > 0) this.oxidiseNeighbours(x, y, i);
+  }
+
+  // Окисление камня химическим реагентом. Похоже на разъедание кислотой,
+  // но с тремя отличиями, заданными в постановке:
+  //  - окисляемая клетка НЕ исчезает, а поднимается на стадию окисла
+  //    (камень -> окисел 1 -> 2 -> 3, выше не растёт);
+  //  - идёт в OXIDISE_SLOWER раз медленнее разъедания;
+  //  - реагенту это стоит доли лишь в OXIDISE_COST случаев, а не всегда,
+  //    поэтому одна капля успевает окислить многое, прежде чем выдохнется.
+  // Потраченная доля уходит в пустоту: реагент израсходован, и клетка
+  // становится неполной — дальше её подберёт стягивание.
+  oxidiseNeighbours(x, y, i) {
+    let comp = this.sol[i];
+    let reagent = solGet(comp, P_REAGENT);
+    for (let k = 0; k < 4 && reagent > 0; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      const nt = this.type[ni];
+      const chance = 0.06 / OXIDISE_SLOWER * reagent / SOL_PARTS;
+      // Кислотный остаток реагент не окисляет по стадиям, а сразу
+      // переводит в окисел металла первой стадии: осадок это уже не
+      // порода, а продукт реакции, и дальше он живёт по линейке металла.
+      if (nt === EL.ACID_RESIDUE) {
+        if (Math.random() >= chance) continue;
+        this.setOxideStage(ni, 1, OXIDE_LINE[EL.METAL]);
+        if (Math.random() < OXIDISE_COST) {
+          comp = solWith(comp, P_REAGENT, reagent - 1);
+          comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+          reagent = solGet(comp, P_REAGENT);
+        }
+        continue;
+      }
+      const line = OXIDE_LINE[nt];
+      if (!line) continue;
+      const stage = this.oxideStage(ni);
+      if (stage < 0 || stage >= line.maxStage) continue;
+      if (Math.random() >= chance) continue;
+      this.setOxideStage(ni, stage + 1, line);
+      if (Math.random() < OXIDISE_COST) {
+        comp = solWith(comp, P_REAGENT, reagent - 1);
+        comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+        reagent = solGet(comp, P_REAGENT);
+      }
+    }
+    this.setComposition(i, comp, false);
+  }
+
+  // Линейка окисления, к которой принадлежит клетка (камень или металл,
+  // см. OXIDE_LINE в elements.js), либо undefined — клетка не окисляется.
+  oxideLine(i) { return OXIDE_LINE[this.type[i]]; }
+
+  // Стадия окисла в своей линейке. Исходный материал (камень, металл) —
+  // это стадия 0, "нулевой окисел": именно поэтому правила передачи
+  // стадии работают с ним теми же формулами, что и с настоящим окислом.
+  // Промежуточные стадии лежат в extra, последняя (всегда сыпучая) задана
+  // самим типом. Всё, что вне линеек, даёт -1.
+  oxideStage(i) {
+    const t = this.type[i];
+    const line = OXIDE_LINE[t];
+    if (!line) return -1;
+    if (t === line.base) return 0;
+    if (t === line.loose) return line.maxStage;
+    return this.extra[i] || 1;
+  }
+
+  // Ставит клетке стадию в её линейке: последняя — рыхлый (сыпучий)
+  // элемент, промежуточные — твёрдый, ноль — снова исходный материал.
+  // line можно передать явно, когда клетка ещё не принадлежит линейке
+  // (например, кислотный остаток, который становится окислом металла).
+  // Тип ставится напрямую, мимо spawn: температура и оттенок принадлежат
+  // той же клетке и при окислении меняться не должны.
+  setOxideStage(i, stage, line) {
+    const L = line || OXIDE_LINE[this.type[i]];
+    if (!L) return;
+    if (stage <= 0) { this.type[i] = L.base; this.extra[i] = 0; return; }
+    if (stage >= L.maxStage) { this.type[i] = L.loose; this.extra[i] = L.maxStage; return; }
+    this.type[i] = L.solid;
+    this.extra[i] = stage;
+  }
+
+  // Кислота не берёт окисленный металл начиная с METAL_ACID_PROOF_STAGE:
+  // плотная окалина защищает то, что под ней. До этой стадии металл
+  // разъедается как обычно (медленно — у него acidSlow).
+  acidProof(ni) {
+    const t = this.type[ni];
+    if (!isMetalOxide(t)) return false;
+    return this.oxideStage(ni) >= METAL_ACID_PROOF_STAGE;
+  }
+
+  // Окисел делится стадией с соседями, и именно это наращивает вокруг
+  // озера реагента слой глубиной в три клетки.
+  //
+  // Правило из постановки: окисел стадии 2 или 3 отдаёт соседу с меньшей
+  // стадией одну свою стадию — но только пока после передачи он не
+  // окажется НИЖЕ того, кому отдал. Это ровно условие S - T >= 2:
+  //   3 и 1  ->  2 и 2   (пример из задания: два окисла второй стадии);
+  //   2 и 0  ->  1 и 1   (соседний камень становится окислом);
+  //   3 и 0  ->  2 и 1, и на этом всё: из 2 и 1 передавать уже нельзя.
+  // Камень считается соседом со стадией 0 (см. oxideStage), поэтому
+  // отдельного правила "окислить соседний камень" не нужно.
+  //
+  // За кадр отдаётся не больше одной стадии, и то по броску
+  // OXIDE_SPREAD_CHANCE: слой должен нарастать на глазах, а не возникать
+  // мгновенно. Получатель выбирается с наименьшей стадией — так фронт
+  // идёт вглубь ровно, а не выедает один случайный ход.
+  reactOxide(x, y, i) {
+    const line = this.oxideLine(i);
+    // Металл стадиями не делится: ржавчина на нём остаётся там, где
+    // возникла, и не проедает деталь вглубь сама по себе. Вглубь металл
+    // окисляется только там, где до него добралась жидкость.
+    if (!line || line.base !== EL.STONE) return;
+    const stage = this.oxideStage(i);
+    if (stage < 2) return;
+    if (Math.random() >= OXIDE_SPREAD_CHANCE) return;
+    let best = -1, bestStage = 99;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      if (this.oxideLine(ni) !== line) continue;
+      const t = this.oxideStage(ni);
+      if (t < 0 || stage - t < 2) continue;
+      if (t < bestStage) { bestStage = t; best = ni; }
+    }
+    if (best < 0) return;
+    this.setOxideStage(i, stage - 1);
+    this.setOxideStage(best, bestStage + 1);
   }
 
   // Разъедание соседей клеткой с долей кислоты acid/10. Шанс на клетку в
@@ -1868,12 +2063,24 @@ class Sim {
       const nt = this.type[ni];
       if (nt === EL.EMPTY || isSolutionFamily(nt) || isVaporFamily(nt) || nt === EL.ACID_RESIDUE) continue;
       const nel = ELEMENTS[nt];
-      if (!nel || nel.acidImmune) continue;
+      if (!nel || nel.acidImmune || this.acidProof(ni)) continue;
       const chance = (nel.acidSlow ? 0.015 : 0.06) * acid / SOL_PARTS;
-      if (Math.random() < chance) {
-        comp = this.dissolveInto(x, y, ni, comp);
+      if (Math.random() >= chance) continue;
+      // Металл кислота с равным шансом либо разъедает, либо окисляет на
+      // стадию. Доля кислоты тратится в обоих случаях: на окисление она
+      // уходит целиком в пустоту (израсходована), а при растворении —
+      // обычным порядком, в растворённое вещество (см. dissolveInto).
+      const line = OXIDE_LINE[nt];
+      if (line && line.base === EL.METAL && Math.random() < ACID_OXIDISE_METAL) {
+        const stage = this.oxideStage(ni);
+        if (stage >= 0 && stage < line.maxStage) this.setOxideStage(ni, stage + 1, line);
+        comp = solWith(comp, P_ACID, acid - 1);
+        comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
         acid = solGet(comp, P_ACID);
+        continue;
       }
+      comp = this.dissolveInto(x, y, ni, comp, line && line.base === EL.METAL);
+      acid = solGet(comp, P_ACID);
     }
     this.setComposition(i, comp, false);
   }
@@ -1889,7 +2096,7 @@ class Sim {
   //  3. Когда кислоты не осталось, последняя доля вещества тоже
   //     становится реагентом.
   //  4. С шансом 20% выделяется газ (см. ventGas).
-  dissolveInto(x, y, ni, comp) {
+  dissolveInto(x, y, ni, comp, fromMetal) {
     const hadStone = solGet(comp, P_STONE) > 0;
     if (hadStone) {
       comp = solMove(comp, P_ACID, P_REAGENT);
@@ -1903,7 +2110,7 @@ class Sim {
       for (let k = 0; k < st; k++) comp = solMove(comp, P_STONE, P_REAGENT);
     }
     const GAS_CHANCE = 0.2;
-    if (Math.random() < GAS_CHANCE) this.ventGas(x, y);
+    if (Math.random() < GAS_CHANCE) this.ventGas(x, y, fromMetal);
     return comp;
   }
 
@@ -1913,24 +2120,40 @@ class Sim {
   // пустота, и такие клетки потом стягиваются между собой), и оба выходят
   // горячими, на 300 градусах. Масло вдобавок получает свой срок: оно
   // единственное выпадает не по остыванию, а по таймеру на 1-3 минуты.
-  ventGas(x, y) {
+  ventGas(x, y, fromMetal) {
     const target = this.freeNeighbour(x, y, true);
     if (target < 0) return;
     const r = Math.random();
     let kind = P_ACID, n = SOL_PARTS, hot = false, life = 0;
-    if (r >= 0.5 && r < 0.75) {
-      kind = P_REAGENT; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
-    } else if (r >= 0.75) {
-      kind = P_OIL; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
-      life = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0);
+    // Из металла выходит только кислотный газ: органики в нём нет, и
+    // ни реагентом, ни маслом травление металла не пахнет.
+    if (!fromMetal) {
+      if (r >= 0.5 && r < 0.75) {
+        kind = P_REAGENT; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
+      } else if (r >= 0.75) {
+        kind = P_OIL; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
+        life = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0);
+      }
     }
     if (n > SOL_PARTS) n = SOL_PARTS;
     this.extra[target] = 0;
     this.shade[target] = (Math.random() * 30 - 15) | 0;
     this.setComposition(target, solPure(kind, n), true);
     this.life[target] = life;
-    if (hot && this.temp[target] < HOT_GAS_TEMP) this.temp[target] = HOT_GAS_TEMP;
+    const want = hot ? HOT_GAS_TEMP : this.gasSpawnTemp(kind);
+    if (this.temp[target] < want) this.temp[target] = want;
     this.moved[target] = 1;
+  }
+
+  // Температура, с которой рождается газ данного вида: на
+  // GAS_SPAWN_MARGIN выше точки кипения этого же вещества. Без запаса
+  // свежий газ стоит ровно на границе перехода, и первый же бросок
+  // конденсации возвращает его обратно в жидкость, не дав никуда
+  // подняться. Для того, что по температуре не кипит вовсе (масло), берём
+  // общую температуру горячего выхлопа.
+  gasSpawnTemp(kind) {
+    const boil = PART_BOIL[kind];
+    return boil === Infinity ? HOT_GAS_TEMP : boil + GAS_SPAWN_MARGIN;
   }
 
   // Любой газ системы долей: считает свой срок (он есть только у

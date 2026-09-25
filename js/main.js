@@ -244,7 +244,11 @@ function addTimeScaleControl() {
 // по одному и тому же принципу ЛКМ добавляет/ПКМ убавляет). "Технологии"
 // пока пуста — пользователь наполнит её позже, отдельно от "Разное".
 const CATEGORIES = [
-  { key: 'gas', label: 'Газ' },
+  // "Все" вместо прежней вкладки "Газ": газов стало достаточно, чтобы они
+  // жили среди прочих веществ, а отдельная вкладка со всем сразу нужнее —
+  // в ней видно и окислы, и газы, которые по своей категории иначе
+  // пришлось бы искать по разным вкладкам.
+  { key: 'all', label: 'Все' },
   { key: 'solid', label: 'Тела' },
   { key: 'powder', label: 'Сыпучее' },
   { key: 'liquid', label: 'Жидкости' },
@@ -297,7 +301,7 @@ function buildPaletteGrid() {
     addTimeScaleControl();
   } else {
     for (const id of ELEMENT_ORDER) {
-      if (materialCategoryKey(id) === activeCategory) addPaletteButton(id);
+      if (activeCategory === 'all' || materialCategoryKey(id) === activeCategory) addPaletteButton(id);
     }
   }
 }

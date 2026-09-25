@@ -32,6 +32,10 @@ const EL = {
   ACID_RESIDUE: 27,
   ACID_GAS: 28,
   VAPOR: 29,
+  OXIDE: 30,
+  OXIDE_LOOSE: 31,
+  METAL_OXIDE: 32,
+  METAL_OXIDE_LOOSE: 33,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -123,6 +127,28 @@ const ELEMENTS = {
   // смеси, газообразный реагент и газообразное масло — этим. Цвет считается
   // из состава (render.js, vaporColor). В палитре не показывается.
   [EL.VAPOR]: { id: EL.VAPOR, name: 'Смешанный газ', cat: CAT.GAS, color: [150, 150, 160], density: 2, flammable: false, acidImmune: true },
+  // Окисел — во что химический реагент превращает камень (см.
+  // Sim.oxidiseNeighbours). Стадия 1..3 лежит в extra, и чем она выше, тем
+  // желтее клетка (цвет считается в render.js, oxideColor).
+  //
+  // Стадии 1 и 2 — обычное твёрдое тело, держится как камень. Стадия 3
+  // сыпучая, и это ОТДЕЛЬНЫЙ элемент, а не флаг: категория (CAT) и
+  // структурность читаются по типу в десятке мест (computeStability,
+  // updateCell, вытеснение жидкостей), и один элемент с "иногда сыпучим"
+  // поведением пришлось бы отдельно оговаривать в каждом из них.
+  // Стадия при этом остаётся единым понятием — см. Sim.oxideStage.
+  //
+  // Кислота окисел не берёт (acidImmune): по заданию он ею не растворяется.
+  [EL.OXIDE]: { id: EL.OXIDE, name: 'Окисел', cat: CAT.SOLID, color: [104, 98, 74], density: 40, flammable: false, acidImmune: true, maxStability: 4, toughness: 3 },
+  [EL.OXIDE_LOOSE]: { id: EL.OXIDE_LOOSE, name: 'Рыхлый окисел', cat: CAT.POWDER, color: [148, 132, 40], density: 16, flammable: false, acidImmune: true },
+  // Окисел МЕТАЛЛА — своя, отдельная от каменной линейка: семь стадий
+  // вместо трёх, цвет уходит в коричневый, и стадиями с соседями он НЕ
+  // делится (см. Sim.reactOxide — ржавчина расползается по поверхности
+  // сама, а не проедает металл вглубь, как окисел камень).
+  // Кислота берёт его только до третьей стадии включительно; с четвёртой
+  // окисленный металл ей уже не по зубам (см. Sim.acidImmuneAt).
+  [EL.METAL_OXIDE]: { id: EL.METAL_OXIDE, name: 'Окисел металла', cat: CAT.SOLID, color: [146, 130, 114], density: 40, flammable: false, acidSlow: true, maxStability: 8, toughness: 4 },
+  [EL.METAL_OXIDE_LOOSE]: { id: EL.METAL_OXIDE_LOOSE, name: 'Рыхлый окисел металла', cat: CAT.POWDER, color: [78, 50, 28], density: 16, flammable: false, acidImmune: true },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -131,6 +157,10 @@ const ELEMENTS = {
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
   EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.COLONIST,
+  // Окислы и остальные газы — их место во вкладке "Все" (по своей
+  // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
+  // газов, а увидеть их полезно все сразу).
+  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.ACID_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
@@ -152,8 +182,55 @@ function isMovable(cat) {
 // и никогда не передаёт её дальше — не может служить мостом между
 // двумя разными объектами.
 function isStructural(id) {
-  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH || id === EL.BEAM;
+  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH || id === EL.BEAM || id === EL.OXIDE || id === EL.METAL_OXIDE;
 }
+
+// Окисел любой стадии и любого металла-основы (число стадии — в
+// Sim.oxideStage, основа — в OXIDE_BASE ниже).
+function isOxide(id) {
+  return id === EL.OXIDE || id === EL.OXIDE_LOOSE || id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
+}
+function isMetalOxide(id) {
+  return id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
+}
+
+// Линейка окисления: из какого материала, сколько стадий, какие элементы
+// отвечают за твёрдые стадии и за последнюю (сыпучую), и цвета стадий.
+// Камень окисляется в три стадии, металл — в семь; общее у них только то,
+// что последняя стадия всегда сыпучая.
+//
+// Цвета заметно темнее прежних (просьба "сделай окислы более тёмными") и
+// в render.js дополнительно расходятся по яркости и насыщенности от
+// клетки к клетке, как у обычных материалов.
+const OXIDE_STONE_COLOR = [
+  [122, 122, 130],
+  [104, 98, 74],
+  [126, 114, 52],
+  [148, 132, 40],
+];
+const OXIDE_METAL_COLOR = [
+  [182, 184, 194],
+  [160, 150, 142],
+  [146, 130, 114],
+  [132, 110, 88],
+  [118, 92, 66],
+  [104, 76, 50],
+  [90, 62, 38],
+  [78, 50, 28],
+];
+
+// Описание линейки по id элемента-основы или любого её окисла.
+// maxStage — последняя стадия (она же сыпучая), solid/loose — элементы,
+// base — исходный материал, colors — цвета по стадиям.
+const OXIDE_LINE_STONE = { base: EL.STONE, maxStage: 3, solid: EL.OXIDE, loose: EL.OXIDE_LOOSE, colors: OXIDE_STONE_COLOR };
+const OXIDE_LINE_METAL = { base: EL.METAL, maxStage: 7, solid: EL.METAL_OXIDE, loose: EL.METAL_OXIDE_LOOSE, colors: OXIDE_METAL_COLOR };
+const OXIDE_LINE = [];
+OXIDE_LINE[EL.STONE] = OXIDE_LINE_STONE;
+OXIDE_LINE[EL.OXIDE] = OXIDE_LINE_STONE;
+OXIDE_LINE[EL.OXIDE_LOOSE] = OXIDE_LINE_STONE;
+OXIDE_LINE[EL.METAL] = OXIDE_LINE_METAL;
+OXIDE_LINE[EL.METAL_OXIDE] = OXIDE_LINE_METAL;
+OXIDE_LINE[EL.METAL_OXIDE_LOOSE] = OXIDE_LINE_METAL;
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
 function isAnchor(id) {
