@@ -29,8 +29,19 @@ const OXIDISE_COST = 0.5;
 // Кислота, встретив металл, с этим шансом не растворяет его, а окисляет —
 // и в любом случае тратит на это свою долю.
 const ACID_OXIDISE_METAL = 0.5;
-// С этой стадии окисленный металл кислоте уже не поддаётся.
-const METAL_ACID_PROOF_STAGE = 4;
+// Вода тоже ржавит металл — медленно, но каждая удавшаяся попытка
+// гарантированно съедает её долю (в отличие от реагента, который платит
+// через раз).
+const WATER_RUST_SLOWER = 5;
+// Ржавление проверяется не каждый кадр, а по этому броску. Причина
+// чисто вычислительная: клеток воды на карте бывают десятки тысяч, и
+// обход четырёх соседей у каждой из них в каждом кадре стоил дороже, чем
+// вся остальная химия вместе (замер: кадр 16 -> 29 мс). Реже проверять
+// дешевле, чем проверять всем: на глаз ржавчина всё равно ползёт
+// медленно, а лишняя работа уходит.
+const RUST_TICK_CHANCE = 0.25;
+// Реагент, попав на дерево, поджигает его.
+const REAGENT_IGNITE_WOOD = 0.08;
 // Насколько градусов выше точки кипения рождается газ. Без этого запаса
 // свежий газ стоит ровно на границе перехода и норовит сконденсироваться
 // в первые же кадры, не успев никуда подняться.
@@ -512,7 +523,7 @@ class Sim {
     for (let lvl = 0; lvl <= maxLevel; lvl++) buckets[lvl].length = 0;
 
     const seed = (i, id) => {
-      const s = Math.min(ELEMENTS[id].maxStability || 0, maxLevel);
+      const s = Math.min(this.cellStability(i, id), maxLevel);
       if (s > stab[i]) { stab[i] = s; sideC[i] = 0; buckets[s].push(i); }
     };
     for (let x = 0; x < w; x++) {
@@ -553,7 +564,7 @@ class Sim {
             newStab = stab[i];
             newSideC = sideC[i];
           } else {
-            const X = ELEMENTS[nid].toughness || 1;
+            const X = this.cellToughness(ni, nid);
             // Угол/стык (клетка того же материала, подпёртая ещё и с ДРУГОЙ
             // стороны, не только оттуда, откуда пришло это распространение)
             // держится крепче прямого участка — вдвое дешевле по счётчику.
@@ -1917,6 +1928,34 @@ class Sim {
     if (t !== EL.ACID && t !== EL.SOLUTION && t !== EL.REAGENT) return;
     if (solGet(this.sol[i], P_ACID) > 0) this.dissolveNeighbours(x, y, i);
     if (this.hasParts(i) && solGet(this.sol[i], P_REAGENT) > 0) this.oxidiseNeighbours(x, y, i);
+    if (this.hasParts(i) && Math.random() < RUST_TICK_CHANCE && solGet(this.sol[i], P_WATER) > 0) this.rustNeighbours(x, y, i);
+  }
+
+  // Вода ржавит металл. Медленнее кислоты (WATER_RUST_SLOWER) и только
+  // металлическую линейку — камень и землю вода не трогает. В отличие от
+  // реагента, который платит долей через раз, здесь каждая удавшаяся
+  // попытка ГАРАНТИРОВАННО съедает долю воды: она уходит в пустоту,
+  // связанная ржавчиной. Лужа поэтому мелеет на глазах, пока ржавеет
+  // деталь под ней.
+  rustNeighbours(x, y, i) {
+    let comp = this.sol[i];
+    let water = solGet(comp, P_WATER);
+    for (let k = 0; k < 4 && water > 0; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      const line = OXIDE_LINE[this.type[ni]];
+      if (!line || line.base !== EL.METAL) continue;
+      const stage = this.oxideStage(ni);
+      if (stage < 0 || stage >= line.maxStage) continue;
+      const chance = 0.06 / WATER_RUST_SLOWER * water / SOL_PARTS;
+      if (Math.random() >= chance) continue;
+      this.setOxideStage(ni, stage + 1, line);
+      comp = solWith(comp, P_WATER, water - 1);
+      comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+      water = solGet(comp, P_WATER);
+    }
+    this.setComposition(i, comp, false);
   }
 
   // Окисление камня химическим реагентом. Похоже на разъедание кислотой,
@@ -1943,6 +1982,20 @@ class Sim {
       if (nt === EL.ACID_RESIDUE) {
         if (Math.random() >= chance) continue;
         this.setOxideStage(ni, 1, OXIDE_LINE[EL.METAL]);
+        if (Math.random() < OXIDISE_COST) {
+          comp = solWith(comp, P_REAGENT, reagent - 1);
+          comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+          reagent = solGet(comp, P_REAGENT);
+        }
+        continue;
+      }
+      // Дерево реагент не окисляет, а поджигает.
+      if (nt === EL.WOOD) {
+        if (Math.random() >= chance * REAGENT_IGNITE_WOOD / 0.012) continue;
+        const el = ELEMENTS[EL.WOOD];
+        this.spawn(ni, EL.FIRE);
+        this.life[ni] = el.burnLife + (Math.random() * 10 | 0);
+        this.extra[ni] = 1;
         if (Math.random() < OXIDISE_COST) {
           comp = solWith(comp, P_REAGENT, reagent - 1);
           comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
@@ -1979,7 +2032,10 @@ class Sim {
     const line = OXIDE_LINE[t];
     if (!line) return -1;
     if (t === line.base) return 0;
-    if (t === line.loose) return line.maxStage;
+    // У линейки, сыпучей на всех стадиях (земля), один и тот же элемент
+    // отвечает и за промежуточные стадии, и за последнюю, поэтому тип
+    // ничего не говорит о стадии — она всегда в extra.
+    if (t === line.loose && !line.allLoose) return line.maxStage;
     return this.extra[i] || 1;
   }
 
@@ -1998,13 +2054,34 @@ class Sim {
     this.extra[i] = stage;
   }
 
-  // Кислота не берёт окисленный металл начиная с METAL_ACID_PROOF_STAGE:
-  // плотная окалина защищает то, что под ней. До этой стадии металл
-  // разъедается как обычно (медленно — у него acidSlow).
+  // Хрупок ли окисел в этой клетке: начиная со своей frailStage он
+  // держится как дерево, а не как исходный камень или металл — окалина и
+  // ржавчина рыхлые, навес из них не построить. Проверка идёт по плоской
+  // таблице OXIDE_FRAIL_FROM, а не по линейке: её зовёт computeStability
+  // для каждой клетки каждого кадра.
+  oxideFrail(i) {
+    const fr = OXIDE_FRAIL_FROM[this.type[i]];
+    if (!fr) return false;
+    return fr < 0 || this.extra[i] >= fr;
+  }
+
+  // maxStability/toughness клетки с поправкой на стадию окисления.
+  cellStability(i, id) {
+    if (this.oxideFrail(i)) return OXIDE_FRAIL_STABILITY;
+    return ELEMENTS[id].maxStability || 0;
+  }
+  cellToughness(i, id) {
+    if (this.oxideFrail(i)) return OXIDE_FRAIL_TOUGHNESS;
+    return ELEMENTS[id].toughness || 1;
+  }
+
+  // Кислота не берёт окисел начиная с acidProofStage его линейки:
+  // плотная окалина защищает то, что под ней. У металла это четвёртая
+  // стадия, у земли девятая, у камня такой защиты нет вовсе.
   acidProof(ni) {
-    const t = this.type[ni];
-    if (!isMetalOxide(t)) return false;
-    return this.oxideStage(ni) >= METAL_ACID_PROOF_STAGE;
+    const line = OXIDE_LINE[this.type[ni]];
+    if (!line || !line.acidProofStage) return false;
+    return this.oxideStage(ni) >= line.acidProofStage;
   }
 
   // Окисел делится стадией с соседями, и именно это наращивает вокруг
@@ -2025,10 +2102,10 @@ class Sim {
   // идёт вглубь ровно, а не выедает один случайный ход.
   reactOxide(x, y, i) {
     const line = this.oxideLine(i);
-    // Металл стадиями не делится: ржавчина на нём остаётся там, где
-    // возникла, и не проедает деталь вглубь сама по себе. Вглубь металл
-    // окисляется только там, где до него добралась жидкость.
-    if (!line || line.base !== EL.STONE) return;
+    // Стадиями делится только камень: его окисел прорастает вглубь слоем.
+    // Ржавчина на металле и окисел земли остаются там, где возникли, и
+    // вглубь идут только вслед за жидкостью.
+    if (!line || !line.spreads) return;
     const stage = this.oxideStage(i);
     if (stage < 2) return;
     if (Math.random() >= OXIDE_SPREAD_CHANCE) return;
@@ -2079,7 +2156,7 @@ class Sim {
         acid = solGet(comp, P_ACID);
         continue;
       }
-      comp = this.dissolveInto(x, y, ni, comp, line && line.base === EL.METAL);
+      comp = this.dissolveInto(x, y, ni, comp, nt);
       acid = solGet(comp, P_ACID);
     }
     this.setComposition(i, comp, false);
@@ -2096,7 +2173,7 @@ class Sim {
   //  3. Когда кислоты не осталось, последняя доля вещества тоже
   //     становится реагентом.
   //  4. С шансом 20% выделяется газ (см. ventGas).
-  dissolveInto(x, y, ni, comp, fromMetal) {
+  dissolveInto(x, y, ni, comp, sourceId) {
     const hadStone = solGet(comp, P_STONE) > 0;
     if (hadStone) {
       comp = solMove(comp, P_ACID, P_REAGENT);
@@ -2110,7 +2187,7 @@ class Sim {
       for (let k = 0; k < st; k++) comp = solMove(comp, P_STONE, P_REAGENT);
     }
     const GAS_CHANCE = 0.2;
-    if (Math.random() < GAS_CHANCE) this.ventGas(x, y, fromMetal);
+    if (Math.random() < GAS_CHANCE) this.ventGas(x, y, sourceId);
     return comp;
   }
 
@@ -2120,29 +2197,63 @@ class Sim {
   // пустота, и такие клетки потом стягиваются между собой), и оба выходят
   // горячими, на 300 градусах. Масло вдобавок получает свой срок: оно
   // единственное выпадает не по остыванию, а по таймеру на 1-3 минуты.
-  ventGas(x, y, fromMetal) {
+  ventGas(x, y, sourceId) {
     const target = this.freeNeighbour(x, y, true);
     if (target < 0) return;
-    const r = Math.random();
-    let kind = P_ACID, n = SOL_PARTS, hot = false, life = 0;
-    // Из металла выходит только кислотный газ: органики в нём нет, и
-    // ни реагентом, ни маслом травление металла не пахнет.
-    if (!fromMetal) {
-      if (r >= 0.5 && r < 0.75) {
-        kind = P_REAGENT; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
-      } else if (r >= 0.75) {
-        kind = P_OIL; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true;
-        life = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0);
-      }
+    const line = OXIDE_LINE[sourceId];
+    const fromMetal = !!line && line.base === EL.METAL;
+    const fromWood = sourceId === EL.WOOD;
+    const fromEarth = !!line && line.base === EL.EARTH;
+    let comp = 0, hot = false, life = 0;
+    if (fromWood) {
+      // Дерево отдаёт летучую органику и влагу: смесь масла и воды в
+      // случайном соотношении.
+      comp = this.randomGasMix([P_OIL, P_WATER]);
+    } else if (fromEarth) {
+      // Земля богаче: масло, вода и кислота вперемешку, тоже случайно.
+      comp = this.randomGasMix([P_OIL, P_WATER, P_ACID]);
+    } else if (fromMetal) {
+      // Из металла выходит только кислотный газ: органики в нём нет.
+      comp = solPure(P_ACID, SOL_PARTS);
+    } else {
+      const r = Math.random();
+      let kind = P_ACID, n = SOL_PARTS;
+      if (r >= 0.5 && r < 0.75) { kind = P_REAGENT; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true; }
+      else if (r >= 0.75) { kind = P_OIL; n = 1 + (Math.random() * SOL_PARTS | 0); hot = true; }
+      comp = solPure(kind, n);
     }
-    if (n > SOL_PARTS) n = SOL_PARTS;
+    if (solGet(comp, P_OIL) > 0) {
+      life = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0);
+    }
+    if (solMatter(comp) === 0) return;
     this.extra[target] = 0;
     this.shade[target] = (Math.random() * 30 - 15) | 0;
-    this.setComposition(target, solPure(kind, n), true);
+    this.setComposition(target, comp, true);
     this.life[target] = life;
-    const want = hot ? HOT_GAS_TEMP : this.gasSpawnTemp(kind);
+    // Стартовая температура — по самому тугоплавкому из того, что внутри:
+    // иначе один компонент сконденсировался бы в первый же кадр.
+    let want = hot ? HOT_GAS_TEMP : 0;
+    for (let k = 1; k < P_COUNT; k++) {
+      if (!solGet(comp, k)) continue;
+      const t = this.gasSpawnTemp(k);
+      if (t > want) want = t;
+    }
     if (this.temp[target] < want) this.temp[target] = want;
     this.moved[target] = 1;
+  }
+
+  // Случайная газовая смесь из перечисленных видов: сколько всего долей и
+  // как они поделены между видами — оба раза случайно, поэтому один и тот
+  // же источник даёт то почти чистый газ, то ровную смесь.
+  randomGasMix(kinds) {
+    let n = 1 + (Math.random() * SOL_PARTS | 0);
+    if (n > SOL_PARTS) n = SOL_PARTS;
+    let comp = solWith(0, P_VOID, SOL_PARTS - n);
+    for (let left = n; left > 0; left--) {
+      const k = kinds[(Math.random() * kinds.length) | 0];
+      comp = solWith(comp, k, solGet(comp, k) + 1);
+    }
+    return comp;
   }
 
   // Температура, с которой рождается газ данного вида: на
@@ -2251,6 +2362,11 @@ class Sim {
   // вещества своя точка кипения (у воды — ровно 100).
   reactWater(x, y, i) {
     this.tickComposition(x, y, i);
+    if (!this.hasParts(i)) return;
+    // Чистая вода идёт своей веткой, мимо reactSolutionLike, поэтому
+    // ржавление металла вызывается здесь отдельно — иначе лужа обычной
+    // воды на металле не делала бы ровным счётом ничего.
+    if (Math.random() < RUST_TICK_CHANCE && solGet(this.sol[i], P_WATER) > 0) this.rustNeighbours(x, y, i);
     if (this.type[i] !== EL.WATER) return;
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];

@@ -261,6 +261,10 @@ function materialCategoryKey(id) {
   // и у камня), а про смысл: место среди построек/механизмов, а не сырых
   // материалов, поэтому проверяется до общего сопоставления по cat.
   if (TECH_ELEMENTS.has(id)) return 'tech';
+  // Окислы не показываются среди «Тел» и «Сыпучего»: это не сырьё, с
+  // которого начинают стройку, а то, во что материалы превращаются сами.
+  // Место им во вкладке «Все», где они и видны все разом.
+  if (isOxide(id)) return 'all';
   const cat = ELEMENTS[id].cat;
   if (cat === CAT.GAS) return 'gas';
   if (cat === CAT.LIQUID) return 'liquid';

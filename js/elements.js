@@ -36,6 +36,7 @@ const EL = {
   OXIDE_LOOSE: 31,
   METAL_OXIDE: 32,
   METAL_OXIDE_LOOSE: 33,
+  EARTH_OXIDE: 34,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -149,6 +150,13 @@ const ELEMENTS = {
   // окисленный металл ей уже не по зубам (см. Sim.acidImmuneAt).
   [EL.METAL_OXIDE]: { id: EL.METAL_OXIDE, name: 'Окисел металла', cat: CAT.SOLID, color: [146, 130, 114], density: 40, flammable: false, acidSlow: true, maxStability: 8, toughness: 4 },
   [EL.METAL_OXIDE_LOOSE]: { id: EL.METAL_OXIDE_LOOSE, name: 'Рыхлый окисел металла', cat: CAT.POWDER, color: [78, 50, 28], density: 16, flammable: false, acidImmune: true },
+  // Окисел ЗЕМЛИ — третья линейка: десять стадий, тёмно-коричневый, и в
+  // отличие от камня с металлом сыпучий НА ВСЕХ стадиях, а не только на
+  // последней (земля и так сыпучая, окисляясь плотнее она не становится).
+  // Поэтому у линейки один и тот же элемент и на "твёрдые" стадии, и на
+  // последнюю — см. OXIDE_LINE_EARTH ниже. Кислоте перестаёт поддаваться
+  // с девятой стадии.
+  [EL.EARTH_OXIDE]: { id: EL.EARTH_OXIDE, name: 'Земляной окисел', cat: CAT.POWDER, color: [82, 56, 34], density: 15, flammable: false },
 };
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
@@ -160,7 +168,7 @@ const ELEMENT_ORDER = [
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
   // газов, а увидеть их полезно все сразу).
-  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.ACID_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
+  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
@@ -188,7 +196,7 @@ function isStructural(id) {
 // Окисел любой стадии и любого металла-основы (число стадии — в
 // Sim.oxideStage, основа — в OXIDE_BASE ниже).
 function isOxide(id) {
-  return id === EL.OXIDE || id === EL.OXIDE_LOOSE || id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
+  return id === EL.OXIDE || id === EL.OXIDE_LOOSE || id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE || id === EL.EARTH_OXIDE;
 }
 function isMetalOxide(id) {
   return id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
@@ -204,9 +212,9 @@ function isMetalOxide(id) {
 // клетки к клетке, как у обычных материалов.
 const OXIDE_STONE_COLOR = [
   [122, 122, 130],
-  [104, 98, 74],
-  [126, 114, 52],
-  [148, 132, 40],
+  [84, 79, 58],
+  [100, 90, 40],
+  [118, 104, 30],
 ];
 const OXIDE_METAL_COLOR = [
   [182, 184, 194],
@@ -222,8 +230,29 @@ const OXIDE_METAL_COLOR = [
 // Описание линейки по id элемента-основы или любого её окисла.
 // maxStage — последняя стадия (она же сыпучая), solid/loose — элементы,
 // base — исходный материал, colors — цвета по стадиям.
-const OXIDE_LINE_STONE = { base: EL.STONE, maxStage: 3, solid: EL.OXIDE, loose: EL.OXIDE_LOOSE, colors: OXIDE_STONE_COLOR };
-const OXIDE_LINE_METAL = { base: EL.METAL, maxStage: 7, solid: EL.METAL_OXIDE, loose: EL.METAL_OXIDE_LOOSE, colors: OXIDE_METAL_COLOR };
+// Цвета земляного окисла: от цвета земли в густой тёмно-коричневый.
+const OXIDE_EARTH_COLOR = [
+  [150, 96, 58],
+  [140, 90, 54],
+  [130, 84, 50],
+  [121, 79, 47],
+  [112, 74, 44],
+  [103, 69, 41],
+  [95, 64, 39],
+  [88, 60, 37],
+  [82, 56, 34],
+  [74, 50, 31],
+  [64, 43, 26],
+];
+
+// spreads — делится ли окисел стадиями с соседями (камень делится и
+// прорастает вглубь слоем, металл и земля — нет).
+// acidProofStage — с какой стадии кислота его уже не берёт (0 = берёт
+// всегда, пока не кончится линейка).
+// allLoose — сыпучий на всех стадиях, а не только на последней.
+const OXIDE_LINE_STONE = { base: EL.STONE, maxStage: 3, solid: EL.OXIDE, loose: EL.OXIDE_LOOSE, colors: OXIDE_STONE_COLOR, spreads: true, acidProofStage: 0, allLoose: false, frailStage: 2 };
+const OXIDE_LINE_METAL = { base: EL.METAL, maxStage: 7, solid: EL.METAL_OXIDE, loose: EL.METAL_OXIDE_LOOSE, colors: OXIDE_METAL_COLOR, spreads: false, acidProofStage: 4, allLoose: false, frailStage: 5 };
+const OXIDE_LINE_EARTH = { base: EL.EARTH, maxStage: 10, solid: EL.EARTH_OXIDE, loose: EL.EARTH_OXIDE, colors: OXIDE_EARTH_COLOR, spreads: false, acidProofStage: 9, allLoose: true, frailStage: 0 };
 const OXIDE_LINE = [];
 OXIDE_LINE[EL.STONE] = OXIDE_LINE_STONE;
 OXIDE_LINE[EL.OXIDE] = OXIDE_LINE_STONE;
@@ -231,6 +260,25 @@ OXIDE_LINE[EL.OXIDE_LOOSE] = OXIDE_LINE_STONE;
 OXIDE_LINE[EL.METAL] = OXIDE_LINE_METAL;
 OXIDE_LINE[EL.METAL_OXIDE] = OXIDE_LINE_METAL;
 OXIDE_LINE[EL.METAL_OXIDE_LOOSE] = OXIDE_LINE_METAL;
+OXIDE_LINE[EL.EARTH] = OXIDE_LINE_EARTH;
+OXIDE_LINE[EL.EARTH_OXIDE] = OXIDE_LINE_EARTH;
+
+// Стойкость дерева — её получают окислы, начиная со своей frailStage:
+// окалина и ржавчина держат навес заметно хуже исходного камня или
+// металла (просьба "параметры стойкости как у дерева").
+const OXIDE_FRAIL_STABILITY = 3;
+const OXIDE_FRAIL_TOUGHNESS = 2;
+
+// С какой стадии окисел становится хрупким, разложено в таблицу по id —
+// computeStability читает её для КАЖДОЙ клетки поля каждый кадр, и там
+// недопустимо разбирать линейку и считать стадию через вызовы (замер:
+// это одно стоило 12 мс на кадр). 0 — не окисел, -1 — хрупкий всегда
+// (последняя, сыпучая стадия), больше нуля — сравнить со стадией в extra.
+const OXIDE_FRAIL_FROM = new Int8Array(64);
+OXIDE_FRAIL_FROM[EL.OXIDE] = OXIDE_LINE_STONE.frailStage;
+OXIDE_FRAIL_FROM[EL.OXIDE_LOOSE] = -1;
+OXIDE_FRAIL_FROM[EL.METAL_OXIDE] = OXIDE_LINE_METAL.frailStage;
+OXIDE_FRAIL_FROM[EL.METAL_OXIDE_LOOSE] = -1;
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
 function isAnchor(id) {
