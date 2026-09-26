@@ -34,7 +34,9 @@ precision highp isampler2D;
 uniform usampler2D uType;
 uniform usampler2D uExtra;
 uniform usampler2D uBeam;
+uniform usampler2D uBeamExtra;
 uniform usampler2D uSol;
+uniform usampler2D uSol2;
 uniform isampler2D uShade;
 uniform isampler2D uLife;
 uniform isampler2D uStab;
@@ -56,8 +58,6 @@ uniform ivec2 uAirSize;
 uniform bool uDebugStab;
 uniform bool uDebugTherm;
 uniform bool uDebugWind;
-uniform vec3 uPartColor[6];
-uniform vec3 uBeamColor;
 
 out vec4 outColor;
 
@@ -130,13 +130,44 @@ vec3 blendColor(vec3 c, vec3 tint, float weight) {
   return clamp8(jsRound(c + (tint - c) * weight));
 }
 
-// Renderer.partsColor.
-vec3 partsColor(uint comp) {
-  float matter = 10.0 - float(comp & 15u);
+// solColor (data/oxides.js): средний цвет вещественных долей, а чёрные
+// соли поверх тянут к цвету ржавчины (до SALT_RUST_AT долей) и дальше к
+// чёрному.
+const vec3 SALT_RUST = vec3(${SALT_RUST_COLOR.map((v) => v.toFixed(1)).join(', ')});
+const vec3 SALT_BLACK = vec3(${SALT_BLACK_COLOR.map((v) => v.toFixed(1)).join(', ')});
+// Ячейка состава s (см. data/composition.js): lo — ячейки 0..2, hi — 3..4.
+uint compSlot(uint lo, uint hi, int s) {
+  return s < 3 ? (lo >> uint(10 * s)) & 1023u : (hi >> uint(10 * (s - 3))) & 1023u;
+}
+float compMatter(uint lo, uint hi) {
+  float m = 0.0;
+  for (int s = 0; s < ${SOL_SLOTS}; s++) m += float(compSlot(lo, hi, s) >> 6);
+  return m;
+}
+vec3 partsColor(uint lo, uint hi) {
+  float matter = compMatter(lo, hi);
   if (matter <= 0.0) return BG;
-  vec3 acc = vec3(0.0);
-  for (int k = 1; k < 6; k++) acc += uPartColor[k] * float((comp >> uint(4 * k)) & 15u);
-  return acc / matter;
+  float s = 0.0;
+  for (int k = 0; k < ${SOL_SLOTS}; k++) {
+    uint slot = compSlot(lo, hi, k);
+    if (int(slot & 63u) == ${P_SALT}) s = float(slot >> 6);
+  }
+  float other = matter - s;
+  vec3 base = SALT_RUST;
+  if (other > 0.0) {
+    vec3 acc = vec3(0.0);
+    for (int k = 0; k < ${SOL_SLOTS}; k++) {
+      uint slot = compSlot(lo, hi, k);
+      if (slot == 0u) break;
+      int id = int(slot & 63u);
+      if (id == ${P_SALT}) continue;
+      acc += texelFetch(uElem, ivec2(id, 0), 0).rgb * float(slot >> 6);
+    }
+    base = acc / other;
+  }
+  if (s == 0.0) return base;
+  if (s <= ${SALT_RUST_AT.toFixed(1)}) return base + (SALT_RUST - base) * (s / ${SALT_RUST_AT.toFixed(1)});
+  return SALT_RUST + (SALT_BLACK - SALT_RUST) * ((s - ${SALT_RUST_AT.toFixed(1)}) / ${(SOL_PARTS - SALT_RUST_AT).toFixed(1)});
 }
 
 // Renderer.residueColor.
@@ -159,6 +190,17 @@ vec3 oxideColor(int id, uint extra, ivec2 p) {
   return mid + (c - mid) * sat;
 }
 
+// Renderer.beamColor: цвет материала балки (у окисла — цвет стадии).
+vec3 beamColor(int mat, uint extra) {
+  vec4 e0 = texelFetch(uElem, ivec2(mat, 0), 0);
+  if (int(e0.w + 0.5) == KIND_OXIDE) {
+    int maxStage = int(texelFetch(uElem, ivec2(mat, 2), 0).x + 0.5);
+    int stage = clamp(extra == 0u ? 1 : int(extra), 0, maxStage);
+    return texelFetch(uElem, ivec2(mat, 3 + stage), 0).rgb;
+  }
+  return e0.rgb;
+}
+
 void emit(vec3 c) { outColor = vec4(roundEven(clamp8(c)) / 255.0, 1.0); }
 
 void main() {
@@ -177,9 +219,11 @@ void main() {
   if (id == 0) {
     if (uDebugTherm) { if (thermalColor(texelFetch(uTemp, p, 0).r, tint)) { emit(tint); return; } }
     else if (uDebugWind) { if (windColor(p, tint)) { emit(tint); return; } }
-    if (texelFetch(uBeam, p, 0).r != 0u) {
+    uint bm = texelFetch(uBeam, p, 0).r;
+    if (bm != 0u) {
       float sh = float(texelFetch(uShade, p, 0).r);
-      emit(clamp8(BG + (uBeamColor - BG) * 0.42 + sh));
+      vec3 bc = beamColor(int(bm), texelFetch(uBeamExtra, p, 0).r);
+      emit(clamp8(BG + (bc - BG) * 0.42 + sh));
     } else {
       emit(BG);
     }
@@ -188,18 +232,22 @@ void main() {
 
   int kind = int(e0.w + 0.5);
   uint extra = texelFetch(uExtra, p, 0).r;
+  uint solLo = texelFetch(uSol, p, 0).r, solHi = texelFetch(uSol2, p, 0).r;
+  // Несколько веществ в клетке (занята вторая ячейка) — цвет по составу.
+  bool mixed = solHi != 0u || solLo >= 1024u;
   vec3 base;
-  if (kind == KIND_PARTS) base = partsColor(texelFetch(uSol, p, 0).r);
+  if (mixed || kind == KIND_PARTS) base = partsColor(solLo, solHi);
   else if (kind == KIND_RESIDUE) base = residueColor(extra);
   else if (kind == KIND_OXIDE) base = oxideColor(id, extra, p);
   else if (kind == KIND_HUMAN && extra != 0u) base = vec3(58.0, 52.0, 48.0);
   else base = e0.rgb;
   vec3 c = clamp8(base + float(texelFetch(uShade, p, 0).r));
 
-  if (e1.w > 0.5) {
-    uint v = texelFetch(uSol, p, 0).r & 15u;
-    if (v != 0u) {
-      float k = 1.0 - (float(v) / 10.0) * 0.75;
+  // Пустота в составе — прозрачность (у любой клетки, см. cellColor).
+  if (solLo != 0u || solHi != 0u) {
+    float v = 10.0 - compMatter(solLo, solHi);
+    if (v > 0.0) {
+      float k = 1.0 - (v / 10.0) * 0.75;
       c = clamp8(BG + (c - BG) * k);
     }
   }
@@ -264,7 +312,9 @@ class GpuCellPainter {
       uType: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uExtra: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uBeam: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
+      uBeamExtra: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uSol: [I.R32UI, I.RED_INTEGER, I.UNSIGNED_INT, w, h],
+      uSol2: [I.R32UI, I.RED_INTEGER, I.UNSIGNED_INT, w, h],
       uShade: [I.R8I, I.RED_INTEGER, I.BYTE, w, h],
       uLife: [I.R16I, I.RED_INTEGER, I.SHORT, w, h],
       uStab: [I.R16I, I.RED_INTEGER, I.SHORT, w, h],
@@ -297,8 +347,6 @@ class GpuCellPainter {
     gl.uniform2i(u('uSize'), w, h);
     gl.uniform1i(u('uAirCell'), sim.airCell);
     gl.uniform2i(u('uAirSize'), sim.airW, sim.airH);
-    gl.uniform3fv(u('uPartColor'), new Float32Array(PART_COLOR.flat()));
-    gl.uniform3fv(u('uBeamColor'), new Float32Array(ELEMENTS[EL.BEAM].color));
     this.uDebugStab = u('uDebugStab');
     this.uDebugTherm = u('uDebugTherm');
     this.uDebugWind = u('uDebugWind');
@@ -323,6 +371,14 @@ class GpuCellPainter {
 
   upload(name, data) {
     const gl = this.gl, t = this.tex[name];
+    // При многопоточной симуляции (sim/threads.js) поля мира лежат в общей
+    // памяти, а WebGL такие массивы не принимает ("must not be shared").
+    // Копия в свой обычный массив — доли миллисекунды на кадр.
+    if (typeof SharedArrayBuffer !== 'undefined' && data.buffer instanceof SharedArrayBuffer) {
+      if (!t.stage || t.stage.length !== data.length || t.stage.constructor !== data.constructor) t.stage = new data.constructor(data.length);
+      t.stage.set(data);
+      data = t.stage;
+    }
     gl.activeTexture(gl.TEXTURE0 + t.unit);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, t.w, t.h, t.format, t.type, data);
   }
@@ -335,7 +391,9 @@ class GpuCellPainter {
     this.upload('uType', sim.type);
     this.upload('uExtra', sim.extra);
     this.upload('uBeam', sim.beam);
+    this.upload('uBeamExtra', sim.beamExtra);
     this.upload('uSol', sim.sol);
+    this.upload('uSol2', sim.sol2);
     this.upload('uShade', sim.shade);
     this.upload('uLife', sim.life);
     // sim.temp каждый кадр меняется местами с буфером (см. updateTemp) —
@@ -386,7 +444,7 @@ function buildElementTable() {
     const el = ELEMENTS[id];
     if (!el) continue;
     let kind = 0;
-    if (id === EL.SOLUTION || id === EL.VAPOR) kind = KIND_PARTS;
+    if (id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT) kind = KIND_PARTS;
     else if (id === EL.ACID_RESIDUE) kind = KIND_RESIDUE;
     else if (isOxide(id) && OXIDE_LINE[id]) kind = KIND_OXIDE;
     else if (id === EL.HUMAN) kind = KIND_HUMAN;

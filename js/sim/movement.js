@@ -27,46 +27,58 @@ class SimMovement {
     const visited = this._liquidVisited;
     visited.fill(0);
     const escape = this._liquidEscape;
-    const stack = this._liquidStack || (this._liquidStack = []);
-    const comp = this._liquidComp || (this._liquidComp = []);
+    // Стек и список клеток компоненты — typed-массивы на всё поле, а не
+    // JS-массивы с push/pop: каждая клетка попадает в них не больше раза
+    // за компоненту, так что переполниться им нечем.
+    const stack = this._liquidStack || (this._liquidStack = new Int32Array(n));
+    const comp = this._liquidComp || (this._liquidComp = new Int32Array(n));
     for (let i = 0; i < n; i++) {
+      // Сперва тип, потом visited: не-жидкость заливка ниже никогда не
+      // берёт (её LIQUID_PHASE не совпадёт ни с одной жидкостью), так что
+      // её флаг ни на что не влияет — проверка по таблице дешевле, чем
+      // писать флаг в каждую из 187 тыс. клеток.
+      const t = type[i];
+      if (IS_LIQUID[t] !== 1) continue;
       if (visited[i]) continue;
       visited[i] = 1;
-      const t = type[i];
-      const el = ELEMENTS[t];
-      if (!el || el.cat !== CAT.LIQUID) continue;
       // Связность — по "фазе" (LIQUID_PHASE в data/composition.js): всё семейство
       // растворов (вода/кислота/реагент/раствор) — одна жидкость.
       const ph = LIQUID_PHASE[t];
-      stack.length = 0; stack.push(i);
-      comp.length = 0; comp.push(i);
+      let sp = 0, cn = 0;
+      stack[sp++] = i;
+      comp[cn++] = i;
       let hasEscape = false;
-      while (stack.length) {
-        const ci = stack.pop();
-        const cx = ci % w, cy = (ci / w) | 0;
+      while (sp > 0) {
+        const ci = stack[--sp];
+        const cy = (ci / w) | 0, cx = ci - cy * w;
         if (cx > 0) {
           const ni = ci - 1;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack[sp++] = ni; comp[cn++] = ni; }
         }
         if (cx < w - 1) {
           const ni = ci + 1;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack[sp++] = ni; comp[cn++] = ni; }
         }
         if (cy > 0) {
           const ni = ci - w;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack[sp++] = ni; comp[cn++] = ni; }
         }
         if (cy < h - 1) {
           const ni = ci + w;
           if (type[ni] === EL.EMPTY) hasEscape = true;
-          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack.push(ni); comp.push(ni); }
+          else if (!visited[ni] && LIQUID_PHASE[type[ni]] === ph) { visited[ni] = 1; stack[sp++] = ni; comp[cn++] = ni; }
         }
       }
       const val = hasEscape ? 1 : 0;
-      for (let k = 0; k < comp.length; k++) escape[comp[k]] = val;
+      // Смена флага будит кусок (sim/sleep.js): тонущее тело над лужей,
+      // у которой только что появился выход, должно провалиться.
+      for (let k = 0; k < cn; k++) {
+        const j = comp[k];
+        if (escape[j] !== val) { escape[j] = val; this.markDirty(j); }
+      }
     }
   }
 
@@ -85,9 +97,9 @@ class SimMovement {
   attemptSwapOrMove(i, ni, el, rising) {
     const nt = this.type[ni];
     if (nt === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
-    const nEl = ELEMENTS[nt];
-    if (!nEl || !isMovable(nEl.cat)) return false;
-    if (rising ? (nEl.density > el.density) : (nEl.density < el.density)) {
+    if (IS_MOVABLE_ID[nt] !== 1) return false;
+    const nd = DENSITY[nt];
+    if (rising ? (nd > el.density) : (nd < el.density)) {
       // Тонущий тяжёлый материал (rising=false — обычное падение, не
       // всплытие пузыря) вытесняет жидкость к ближайшей свободной
       // поверхности самой лужи (см. sinkIntoLiquid /
@@ -97,7 +109,7 @@ class SimMovement {
       // кадром, пока объект тонет, это протаскивало бы вытесненную
       // жидкость сквозь всё тело наверх вместо того, чтобы она растекалась
       // вокруг, как в реальности.
-      if (!rising && nEl.cat === CAT.LIQUID) return this.sinkIntoLiquid(i, ni);
+      if (!rising && IS_LIQUID[nt] === 1) return this.sinkIntoLiquid(i, ni);
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
     return false;
@@ -227,8 +239,13 @@ class SimMovement {
       for (let k = 0; k < 4; k++) {
         const d = (k + rot) & 3;
         let ni;
-        if (d === 0) { if (cx === 0) continue; ni = c - 1; }
-        else if (d === 1) { if (cx === w - 1) continue; ni = c + 1; }
+        // По горизонтали — не дальше столбцов _colMin.._colMax: при
+        // параллельном обходе это своя полоса с запасом (sim/threads.js),
+        // без потоков — всё поле. По вертикали путь свободен: полоса
+        // занимает столбцы целиком, и путь к поверхности лужи прямо над
+        // тонущим телом всегда внутри неё.
+        if (d === 0) { if (cx <= this._colMin) continue; ni = c - 1; }
+        else if (d === 1) { if (cx >= this._colMax) continue; ni = c + 1; }
         else if (d === 2) { if (cy === 0) continue; ni = c - w; }
         else { if (cy === h - 1) continue; ni = c + w; }
         const nt = type[ni];
@@ -291,14 +308,13 @@ class SimMovement {
   attemptBuoyantRise(i, ni, el) {
     const nt = this.type[ni];
     if (nt === EL.EMPTY) return false;
-    const nEl = ELEMENTS[nt];
-    if (!nEl || !isMovable(nEl.cat)) return false;
-    if (nEl.density > el.density) {
+    if (IS_MOVABLE_ID[nt] !== 1) return false;
+    if (DENSITY[nt] > el.density) {
       // Сверху не жидкость, а тонущее тело/сыпучее — это то же самое
       // вытеснение, что и в attemptSwapOrMove, только увиденное снизу;
       // считаем его там же (sinkIntoLiquid), чтобы вода не просачивалась
       // сквозь тело своими собственными всплытиями по одной клетке.
-      if (nEl.cat !== CAT.LIQUID) return this.sinkIntoLiquid(ni, i);
+      if (IS_LIQUID[nt] !== 1) return this.sinkIntoLiquid(ni, i);
       if (!this._liquidEscape[i]) return false;
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
@@ -315,7 +331,11 @@ class SimMovement {
     const bi = this.idx(x, y + 1);
     if (this.attemptSwapOrMove(i, bi, el, false)) return;
     const dir = windScale ? this.windDir(x, y, windScale) : (Math.random() < 0.5 ? 1 : -1);
-    for (const dx of [dir, -dir]) {
+    // Сперва сторона dir, потом противоположная. Раньше здесь и ниже было
+    // for (const dx of [dir, -dir]) — новый массив на каждую частицу в
+    // каждом кадре; цикл на две итерации даёт тот же порядок без выделений.
+    for (let side = 0; side < 2; side++) {
+      const dx = side === 0 ? dir : -dir;
       const nx = x + dx;
       if (nx < 0 || nx >= w) continue;
       // Диагональ вниз-вбок запрещена, если "боковая" клетка (та же строка,
@@ -359,7 +379,8 @@ class SimMovement {
     }
     const dir = this.windDir(x, y, 0.05);
     if (y + 1 < h) {
-      for (const dx of [dir, -dir]) {
+      for (let side = 0; side < 2; side++) {
+        const dx = side === 0 ? dir : -dir;
         const nx = x + dx;
         if (nx < 0 || nx >= w) continue;
         const ni = this.idx(nx, y + 1);
@@ -367,7 +388,8 @@ class SimMovement {
       }
     }
     const disp = el.dispersion || 3;
-    for (const dx0 of [dir, -dir]) {
+    for (let side = 0; side < 2; side++) {
+      const dx0 = side === 0 ? dir : -dir;
       let targetStep = 0;
       for (let step = 1; step <= disp; step++) {
         const nx = x + dx0 * step;
@@ -398,7 +420,8 @@ class SimMovement {
     }
     const dir = this.windDir(x, y, 0.15);
     if (y - 1 >= 0) {
-      for (const dx of [dir, -dir]) {
+      for (let side = 0; side < 2; side++) {
+        const dx = side === 0 ? dir : -dir;
         const nx = x + dx;
         if (nx < 0 || nx >= w) continue;
         const ni = this.idx(nx, y - 1);

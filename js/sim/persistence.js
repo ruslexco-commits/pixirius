@@ -1,8 +1,9 @@
 'use strict';
 
 // Отмена (snapshot/restore) и сохранение в файл (serialize/deserialize).
-// Какие поля входят в оба — задаёт PARTICLE_FIELDS в core.js, а не эти
-// функции: новое поле клетки добавляется там один раз.
+// Какие поля клетки входят в оба — задаёт PARTICLE_FIELDS в core.js, а не
+// эти функции: новое поле клетки добавляется там один раз. Отмена сверх
+// того откатывает сетку ветра (UNDO_WIND_FIELDS ниже).
 //
 // Методы класса Sim, вынесенные в отдельный файл: класс ниже — только
 // контейнер, extendSim переносит его методы в Sim.prototype (см. core.js).
@@ -24,19 +25,28 @@ function b64ToBuf(b64) {
   return bytes.buffer;
 }
 
+// Поля сетки ветра, которые входят в снимок отмены (но не в сохранение).
+const UNDO_WIND_FIELDS = ['windVX', 'windVY'];
+
 class SimPersistence {
-  // temp — часть отменяемого состояния, в отличие от ветра (windVX/VY,
-  // см. комментарий в input.js про pressureInc/Dec): ветер — фоновое,
-  // самопроизвольно гуляющее состояние, которое ни от чего "не зависит"
-  // с точки зрения истории действий. Температура — иначе: она НАПРЯМУЮ
-  // определяет, расплавится ли материал (reactMelt), и это необратимое,
-  // "случившееся один раз" превращение. Без temp в снимке отмена вернёт
-  // камню его type=STONE, но клетка сетки тепла останется такой же
-  // горячей — и камень тут же расплавится заново на следующий же кадр,
-  // так что отмена выглядела бы так, будто она вообще не сработала.
+  // temp — часть отменяемого состояния: она НАПРЯМУЮ определяет,
+  // расплавится ли материал (reactMelt), и это необратимое, "случившееся
+  // один раз" превращение. Без temp в снимке отмена вернёт камню его
+  // type=STONE, но клетка останется такой же горячей — и камень тут же
+  // расплавится заново на следующий же кадр, так что отмена выглядела бы
+  // так, будто она вообще не сработала.
+  //
+  // Ветер (windVX/VY) тоже откатывается. Раньше он считался фоновым
+  // состоянием, которое "ни от чего не зависит", и в снимок не входил, —
+  // но он зависит: падающее тело и текущая вода сами гонят воздух (см.
+  // disturbWind). Пользователь отменял падение предмета, предмет
+  // возвращался на место, а поток воздуха, поднятый его падением,
+  // оставался — ветер от тела, которого уже не было. В файл сохранения
+  // ветер по-прежнему не пишется: загруженный мир начинает в штиле.
   snapshot() {
     const snap = {};
     for (const f of PARTICLE_FIELDS) snap[f.name] = this[f.name].slice();
+    for (const name of UNDO_WIND_FIELDS) snap[name] = this[name].slice();
     return snap;
   }
 
@@ -45,11 +55,23 @@ class SimPersistence {
       if (snap[f.name]) this[f.name].set(snap[f.name]);
       else this[f.name].fill(f.empty);
     }
+    for (const name of UNDO_WIND_FIELDS) {
+      if (snap[name]) this[name].set(snap[name]);
+      else this[name].fill(0);
+    }
+    // Снимок ветра на кадр (его показывает отладочный режим 2) — тот же,
+    // что и откатанный ветер, а не ветер отменённого будущего.
+    this.windVXFrame.set(this.windVX);
+    this.windVYFrame.set(this.windVY);
     this.moved.fill(0);
+    // Мир переписан целиком в обход обычных записей — будим все куски.
+    this.wakeAll();
   }
 
   serialize() {
-    const out = { v: 1, w: this.w, h: this.h };
+    // Версия 2: в beam материал балки, а не маска опор. Версия 3: состав у
+    // каждой клетки, доли — элементы (solLo/solHi). См. deserialize.
+    const out = { v: 3, w: this.w, h: this.h };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
     return out;
   }
@@ -71,17 +93,41 @@ class SimPersistence {
       if (data) arr.set(new arr.constructor(b64ToBuf(data)));
       else arr.fill(f.empty);
     }
-    // Состава могло не быть вовсе (старый файл) или он мог быть старого
-    // формата — тогда клетки семейства долей остались бы с нулевым
-    // составом, то есть "целиком пустыми", и растворились бы в воздухе на
-    // первом же кадре. Восстанавливаем им честный полный состав по типу.
-    if (!obj.sol32) {
+    // Файл до версии 3: состав был только у жидкостей и газов и хранился
+    // иначе (sol32 — семь фиксированных видов по 4 бита), а у остального
+    // его не было вовсе. Без перевода клетки остались бы с нулевым
+    // составом, то есть "целиком пустыми". Каждой клетке — честный состав
+    // по её типу, а жидкостям и газам — их прежние доли, переведённые в
+    // элементы (в газе — газовые: вода -> пар, кислота -> кислотный газ).
+    if (!obj.solLo) {
+      const old = obj.sol32 ? new Uint32Array(b64ToBuf(obj.sol32)) : null;
+      const LIQUID_KIND = [0, EL.WATER, EL.ACID, EL.REAGENT, EL.OIL, EL.STONE, EL.BLACK_SALT];
+      const GAS_KIND = [0, EL.STEAM, EL.ACID_GAS, EL.REAGENT_GAS, EL.OIL_GAS, EL.STONE, EL.BLACK_SALT];
       for (let i = 0; i < this.type.length; i++) {
-        const pure = PURE_COMP_BY_ELEMENT[this.type[i]];
-        if (pure) this.sol[i] = pure;
+        const t = this.type[i];
+        if (old && hasComposition(t) && old[i]) {
+          const kinds = isVaporFamily(t) ? GAS_KIND : LIQUID_KIND;
+          let comp = 0;
+          for (let k = 1; k < LIQUID_KIND.length; k++) {
+            const n = (old[i] >>> (k * 4)) & 15;
+            if (n) comp = solWith(comp, kinds[k], n);
+          }
+          this.setComposition(i, comp);
+        } else {
+          this.setComp(i, pureCompFor(t));
+        }
+      }
+    }
+    // До версии 2 в beam лежала маска направлений на опору (числа 1..15),
+    // а не материал; прочитанная как id элемента, она дала бы балки из
+    // случайных веществ. Балки тогда были только каменные.
+    if (!(obj.v >= 2)) {
+      for (let i = 0; i < this.beam.length; i++) {
+        if (this.beam[i]) { this.beam[i] = EL.STONE; this.beamExtra[i] = 0; }
       }
     }
     this.moved.fill(0);
+    this.wakeAll();
     return true;
   }
 }

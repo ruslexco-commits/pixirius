@@ -6,6 +6,11 @@
 // Методы класса Sim, вынесенные в отдельный файл: класс ниже — только
 // контейнер, extendSim переносит его методы в Sim.prototype (см. core.js).
 
+// Лава застывает в камень ниже этой температуры (см. reactLava). Порог
+// заметно ниже точки плавления камня — гистерезис, иначе клетка на
+// границе дёргалась бы между лавой и камнем каждый кадр.
+const LAVA_SOLIDIFY_TEMP = 30;
+
 class SimReactions {
   reactFlammable(x, y, i, id) {
     const el = ELEMENTS[id];
@@ -68,6 +73,9 @@ class SimReactions {
   // жизни огня, и часть пороха гаснет непровзорвавшейся. Взрывчатке нужен
   // надёжный мгновенный подрыв всего связного куска, а не вероятностная волна.
   detonateGunpowder(x0, y0) {
+    // Заливка всей массы пороха не помещается в полосу параллельного
+    // обхода — главный поток подорвёт её после (sim/threads.js).
+    if (this._inBand) { this.defer(DEFER_GUNPOWDER, this.idx(x0, y0)); return; }
     const w = this.w, h = this.h;
     const startI = this.idx(x0, y0);
     if (this.type[startI] !== EL.GUNP) return;
@@ -113,7 +121,7 @@ class SimReactions {
   // числа (гистерезис: плавится при 55+, застывает только при 30-, между
   // ними остаётся тем, чем уже является).
   reactLava(x, y, i) {
-    if (this.temp[i] < 30) { this.spawn(i, EL.STONE); return; }
+    if (this.temp[i] < LAVA_SOLIDIFY_TEMP) { this.spawn(i, EL.STONE); return; }
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
@@ -182,14 +190,23 @@ class SimReactions {
   // в лаву, плюс попутно замораживает воду рядом — отдельный, не сводимый
   // к простому "плавлению" механизм).
   reactMelt(x, y, i, id) {
-    const el = ELEMENTS[id];
-    if (this.temp[i] >= el.meltPoint && Math.random() < el.meltChance) {
+    if (this.meltRoll(i, id)) {
       // seedHeat=false — см. комментарий у spawn(): расплав сохраняет
       // свою уже-достаточную-для-плавления температуру, а не подскакивает
       // до полного heatSource лавы (иначе цепная реакция плавления не
       // затухает).
-      this.spawn(i, el.meltsInto, false);
+      this.spawn(i, ELEMENTS[id].meltsInto, false);
     }
+  }
+
+  // Пора ли клетке плавиться в этом кадре: температура дошла до meltPoint
+  // её элемента, и выпал шанс meltChance. Общая для всего, что плавится
+  // (камень, металл, стекло, кислотный остаток, окислы), чтобы правило
+  // было одно. Бросок делается только при достаточной температуре —
+  // холодная клетка случайное число не тратит.
+  meltRoll(i, id) {
+    const el = ELEMENTS[id];
+    return this.temp[i] >= el.meltPoint && Math.random() < el.meltChance;
   }
 
   reactSalt(x, y, i) {
@@ -212,7 +229,9 @@ class SimReactions {
     // Чистая вода идёт своей веткой, мимо reactSolutionLike, поэтому
     // ржавление металла вызывается здесь отдельно — иначе лужа обычной
     // воды на металле не делала бы ровным счётом ничего.
-    if (Math.random() < RUST_TICK_CHANCE && solGet(this.sol[i], P_WATER) > 0) this.rustNeighbours(x, y, i);
+    if (Math.random() < RUST_TICK_CHANCE && solGet(this.comp(i), P_WATER) > 0) this.rustNeighbours(x, y, i);
+    // Вода в клетке с металлической балкой ржавит и её (см. reactLiquidOnBeam).
+    if (this.beam[i] && IS_LIQUID[this.type[i]] === 1) this.reactLiquidOnBeam(x, y, i);
     if (this.type[i] !== EL.WATER) return;
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];

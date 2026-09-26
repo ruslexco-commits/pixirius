@@ -59,6 +59,9 @@
     'js/sim/composition.js',
     'js/sim/chemistry.js',
     'js/sim/oxides.js',
+    'js/sim/explosion.js',
+    'js/sim/sleep.js',
+    'js/sim/threads.js',
     'js/sim/human.js',
     'js/sim/colonist.js',
     'js/sim/painting.js',
@@ -66,9 +69,14 @@
     'js/render.js',
     'js/render-gl.js',
     'js/input.js',
+    'js/inspect.js',
     'js/main.js'
   ];
   var v = Date.now();
+  // Потокам симуляции (js/sim/worker.js) нужны те же скрипты с той же
+  // меткой: всё до рендера, см. main.js.
+  window.PIX_SCRIPTS = files;
+  window.PIX_V = v;
   for (var i = 0; i < files.length; i++) {
     var s = document.createElement('script');
     s.src = files[i] + '?v=' + v;

@@ -62,13 +62,16 @@ const PARTICLE_FIELDS = [
   { name: 'shade', empty: 0, required: true, moves: true },
   { name: 'temp', empty: 0, moves: true },
   { name: 'moisture', empty: 0, moves: true },
-  // Ключ именно sol32: формат состава сменился с Uint16/4 видов на
-  // Uint32/6 видов, и старый sol прочитать как новый нельзя. Файлы
-  // прошлого формата просто теряют состав (см. deserialize) — это
-  // честнее, чем молча истолковать чужие биты.
-  { name: 'sol', saveKey: 'sol32', empty: 0, moves: true },
+  // Состав клетки — две половины (см. data/composition.js). Ключи solLo /
+  // solHi новые: прежний формат (sol32 — семь фиксированных видов по 4
+  // бита) прочитать как новый нельзя, его переводит deserialize.
+  { name: 'sol', saveKey: 'solLo', empty: 0, moves: true },
+  { name: 'sol2', saveKey: 'solHi', empty: 0, moves: true },
   // Балка — второй слой, стоит на месте, частицы проходят сквозь неё.
+  // beam — материал балки (id элемента), beamExtra — стадия окисла этого
+  // материала (см. Sim.beamStage).
   { name: 'beam', empty: 0, moves: false },
+  { name: 'beamExtra', empty: 0, moves: false },
   // -1 = склад колониста ещё не выбран (0 — валидная координата).
   { name: 'colonistHomeX', empty: -1, moves: true },
   { name: 'colonistHomeY', empty: -1, moves: true },
@@ -94,6 +97,15 @@ class Sim {
     this.airCell = 4;
     this.airW = Math.ceil(w / this.airCell);
     this.airH = Math.ceil(h / this.airCell);
+    // airIdx(x, y) === _airRowOf[y] + _airColOf[x] для клетки внутри поля.
+    // Горячий путь (tryWindPush, windDir — на каждую частицу жидкости и
+    // газа) берёт индекс сетки ветра из этих таблиц, а не двумя делениями
+    // и Math.min в airIdx. Сам airIdx остаётся для координат за краем
+    // поля (отрисовка читает ветер под курсором).
+    this._airColOf = new Int32Array(w);
+    this._airRowOf = new Int32Array(h);
+    for (let x = 0; x < w; x++) this._airColOf[x] = Math.min(this.airW - 1, (x / this.airCell) | 0);
+    for (let y = 0; y < h; y++) this._airRowOf[y] = Math.min(this.airH - 1, (y / this.airCell) | 0) * this.airW;
     this.windVX = new Float32Array(this.airW * this.airH);
     this.windVY = new Float32Array(this.airW * this.airH);
     // Замороженный снимок ветра на начало кадра (см. step()) — то, что
@@ -114,6 +126,9 @@ class Sim {
     // Один "бросок" на весь кадр для ветро-зависимых решений (см. step()) —
     // не Math.random() отдельно на каждую клетку.
     this._windRoll = 0;
+    // Во всём снимке кадра нет ветра сильнее WIND_PUSH_MIN — tryWindPush
+    // заранее знает ответ "нет" (см. snapshotWindFrame).
+    this._windPushQuiet = false;
 
     // "Открытость" каждой клетки сетки ветра — 1 = воздух течёт свободно,
     // 0 = преграда (см. isAirtight и computeAirBlock). Клетка сетки ветра
@@ -143,16 +158,8 @@ class Sim {
     // кадра, до обхода клеток — этого достаточно.
     this.temp = new Float32Array(n);
     this._temp2 = new Float32Array(n);
-    // Вес клетки для диффузии тепла (см. computeHeatWeight/updateTemp):
-    // 0 = теплоизолятор (стена — настоящая преграда, полностью останавливает
-    // передачу), AIR_COND (малая доля) = открытый воздух — плохой проводник
-    // по сравнению с прямым контактом с веществом, 1 = любое вещество
-    // (включая металл: он блокирует ВОЗДУХ через isAirtight, но обязан
-    // проводить/принимать тепло, иначе никогда не смог бы нагреться выше 0
-    // и расплавиться). В отличие от ветра, здесь не нужна отдельная
-    // агрегация по грубому блоку — вес клетки определяется только ЕЮ САМОЙ,
-    // поэтому считается заново, но простым прямым проходом, без блоков.
-    this.heatWeight = new Float32Array(n).fill(1);
+    // Вес клетки для диффузии тепла зависит только от её типа — это
+    // таблица HEAT_WEIGHT в heat.js, отдельного поля на клетку нет.
 
     // Кэш "ветер на всю связную компоненту" для осыпавшихся структурных
     // обломков — см. computeDebrisWindChance(). Даже с заморозкой снимка
@@ -191,12 +198,12 @@ class Sim {
     // от типа клетки счётчик, который переживает переход земля<->мокрая
     // земля (spawn() его не трогает и не обнуляет, в отличие от extra/life).
     this.moisture = new Uint8Array(n);
-    // Состав клетки (см. блок "состав" в data/composition.js) — 10 долей, по 4
-    // бита на каждый из шести видов, включая пустоту. Есть у ЛЮБОЙ клетки
-    // семейства долей, а не только у смесей: клетка воды тоже может быть
-    // неполной (часть долей — пустота), и именно это делает жидкость
-    // стягивающейся к целым клеткам (см. tickCompaction).
+    // Состав клетки (см. data/composition.js) — 10 долей, до пяти разных
+    // веществ; есть у КАЖДОЙ непустой клетки мира (камень — это 10 долей
+    // камня). sol — ячейки 0..2, sol2 — ячейки 3..4; читать и писать одним
+    // числом — через comp(i) / setComp(i) или setComposition.
     this.sol = new Uint32Array(n);
+    this.sol2 = new Uint32Array(n);
     // Общая скорость течения времени — 100 = обычная (см. ползунок
     // "Течение времени" во вкладке "Разное"). Сама Sim о ней ничего не
     // знает: она читается СНАРУЖИ, в игровом цикле main.js, который решает,
@@ -236,14 +243,35 @@ class Sim {
     // устраивало: на жидкость такой перескок влиял (менял, куда она
     // попадёт), да и перескоком он оставался.
     //
-    // Значение — маска направлений (биты по индексам DX4), где на момент
-    // установки стояла опора; 0 означает «балки здесь нет». Балку без
-    // единой опоры ставить некуда — она сразу становится обычным камнем
-    // (см. placeBeam), поэтому ноль никогда не бывает валидной маской.
+    // Значение — МАТЕРИАЛ балки: id твёрдого элемента, от которого её
+    // провели (см. pickBeamMaterial), 0 — «балки здесь нет». От материала
+    // балка берёт цвет, устойчивость и стойкость, точку плавления и то,
+    // как с ней обходятся жидкости (кислота разъедает, реагент окисляет,
+    // вода ржавит металлическую, см. reactLiquidOnBeam). beamExtra — стадия
+    // окисла, если материал из линейки окисления.
+    //
+    // Раньше здесь лежала маска направлений на опору в момент установки —
+    // сохранения до версии 2 такие, и при загрузке их балки становятся
+    // каменными (см. deserialize).
     this.beam = new Uint8Array(n);
+    this.beamExtra = new Uint8Array(n);
+    // Материал для рисования балки: его выбирает ввод по клетке, с которой
+    // начали вести (pickBeamMaterial), рисование (setCell) берёт отсюда.
+    // Это состояние кисти, а не мира: в отмену и сохранение не входит.
+    this.beamPaintMaterial = EL.STONE;
+    this.beamPaintExtra = 0;
 
     this.paused = false;
     this.frame = 0;
+    // Параллельный обход (sim/threads.js): считается ли сейчас полоса (тогда
+    // дальнодействующее откладывается) и строки, дальше которых не заглядывают
+    // дальние поиски. Без потоков — всё поле.
+    this._inBand = false;
+    this._colMin = 0;
+    this._colMax = w - 1;
+    this._threadCount = 0;
+    // Сон покоящихся кусков поля (sim/sleep.js).
+    this.initSleep();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -262,6 +290,30 @@ class Sim {
     this.extra[i] = 0;
     this.shade[i] = 0;
     this.sol[i] = 0;
+    this.sol2[i] = 0;
+    this.markDirty(i);
+  }
+
+  // Состав клетки одним числом (см. data/composition.js) и запись его
+  // обратно в две половины. Тип при этом не меняется — чтобы он
+  // соответствовал составу, есть setComposition.
+  // Старшая половина почти всегда пуста (до трёх веществ в клетке) — тогда
+  // возвращается младшая как есть: малое целое, с которым V8 работает
+  // быстрее, чем с double из сложения (замер: comp() был 5% кадра).
+  comp(i) {
+    const hi = this.sol2[i];
+    return hi === 0 ? this.sol[i] : this.sol[i] + hi * SOL_HI;
+  }
+  // Смена состава будит кусок поля (sim/sleep.js). Именно смена, а не
+  // любая запись: химия записывает состав и тогда, когда ничего не
+  // произошло (rustNeighbours при каждом броске, даже если металла рядом
+  // нет), и стоячее озеро не засыпало бы никогда.
+  setComp(i, c) {
+    const lo = c % SOL_HI, hi = (c - lo) / SOL_HI;
+    if (this.sol[i] === lo && this.sol2[i] === hi) return;
+    this.sol[i] = lo;
+    this.sol2[i] = hi;
+    this.markDirty(i);
   }
 
   // seedHeat=false — используется РОВНО одним вызывающим (reactMelt): когда
@@ -278,15 +330,14 @@ class Sim {
   // него уже была на момент плавления, и дальше остывает как обычно.
   spawn(i, id, seedHeat = true) {
     this.type[i] = id;
+    this.markDirty(i);   // новая частица — кусок не спит
     this.shade[i] = (Math.random() * 30 - 15) | 0;
     this.extra[i] = 0;
     // Состав принадлежит той частице, что была здесь раньше, — новая о нём
     // знать не должна (та же причина, по которой обнуляется extra). Свежая
-    // частица из таблицы элементов всегда ПОЛНАЯ и чистая: 10 долей своего
-    // вещества, без пустоты. Смеси (EL.SOLUTION/EL.VAPOR) через spawn не
-    // создаются вовсе — только через setComposition, которому состав уже
-    // известен, поэтому их здесь нет и затирать нечего.
-    this.sol[i] = PURE_COMP_BY_ELEMENT[id] || 0;
+    // частица всегда ПОЛНАЯ и чистая: 10 долей своего вещества — у любого
+    // элемента, не только у жидкостей (см. pureCompFor).
+    this.setComp(i, pureCompFor(id));
     switch (id) {
       // Ни у кислоты, ни у пара, ни у кислотного газа нет срока жизни в
       // кадрах. Кислота расходуется долями состава (см. dissolveInto), а
@@ -326,11 +377,8 @@ class Sim {
     // gasSpawnTemp): ровно на границе он сконденсировался бы обратно в
     // первые же кадры, не успев подняться. Касается и пара от лавы, и
     // кислотного газа.
-    if (id === EL.STEAM) {
-      const want = this.gasSpawnTemp(P_WATER);
-      if (this.temp[i] < want) this.temp[i] = want;
-    } else if (id === EL.ACID_GAS) {
-      const want = this.gasSpawnTemp(P_ACID);
+    if (isVaporFamily(id) && id !== EL.VAPOR) {
+      const want = this.gasSpawnTemp(id);
       if (this.temp[i] < want) this.temp[i] = want;
     }
     // Кислотный остаток появляется первого уровня (см. reactAcidResidue).
@@ -363,6 +411,7 @@ class Sim {
     this._debrisWindVX.fill(0);
     this._windRoll = 1;
     this._humans.clear();
+    this.wakeAll();
   }
 
   // Единая точка входа для ВСЕГО движения частиц: обмен содержимым двух
@@ -415,6 +464,10 @@ class Sim {
     t = this._liquidEscape[i]; this._liquidEscape[i] = this._liquidEscape[j]; this._liquidEscape[j] = t;
     // Состав раствора — тоже свойство частицы, а не точки (как temp).
     t = this.sol[i]; this.sol[i] = this.sol[j]; this.sol[j] = t;
+    t = this.sol2[i]; this.sol2[i] = this.sol2[j]; this.sol2[j] = t;
+    // Движение будит оба куска поля (sim/sleep.js).
+    this.markDirty(i);
+    this.markDirty(j);
   }
 
   step() {
@@ -425,8 +478,7 @@ class Sim {
     this.updateBeams();
     this.updateWind();
     this.updateTemp();
-    this.windVXFrame.set(this.windVX);
-    this.windVYFrame.set(this.windVY);
+    this.snapshotWindFrame();
     // Один общий "бросок" на весь кадр для ветро-зависимых решений (см.
     // tryWindPush/windDir) — если бы каждая клетка бросала свой Math.random()
     // независимо, разные клетки ОДНОГО цельного куска (например, прямой
@@ -438,15 +490,65 @@ class Sim {
     // срабатывания (в среднем по многим кадрам) остаётся той же chance, что
     // и раньше, просто не независимой по каждой клетке.
     this._windRoll = Math.random();
-    this.computeDebrisWindChance();
     this.computeLiquidEscape();
-    const w = this.w, h = this.h;
+    // Какие куски поля считать в этом кадре (см. sim/sleep.js): покоящиеся
+    // спят, обход их клеток пропускает. Кэш ветра обломков — после: он
+    // считается только для кусков, идущих в обход.
+    this.updateSleep();
+    this.computeDebrisWindChance();
+    // Обход клеток — несколькими потоками, если они запущены и готовы
+    // (sim/threads.js), иначе одним.
+    if (this._threadCount > 0 && this.threadsReady()) this.updateParallel();
+    else this.updateRows(0, this.h);
+  }
+  // Столбцы x0..x1-1 (вертикальная полоса параллельного обхода, см.
+  // sim/threads.js) — строками снизу вверх, как updateRows, с тем же
+  // направлением строки по чётности кадра и пропуском спящих кусков.
+  // x0 кратно SLEEP_CHUNK, x1 — тоже или правый край поля.
+  updateCols(x0, x1) {
     const ltr = (this.frame & 1) === 0;
-    for (let y = h - 1; y >= 0; y--) {
+    const active = this._chunkActive, cw = this._chunkW;
+    const c0 = (x0 / SLEEP_CHUNK) | 0, c1 = Math.ceil(x1 / SLEEP_CHUNK);
+    for (let y = this.h - 1; y >= 0; y--) {
+      const rowChunk = ((y / SLEEP_CHUNK) | 0) * cw;
       if (ltr) {
-        for (let x = 0; x < w; x++) this.updateCell(x, y);
+        for (let cx = c0; cx < c1; cx++) {
+          if (!active[rowChunk + cx]) continue;
+          const xe = Math.min(x1, (cx + 1) * SLEEP_CHUNK);
+          for (let x = cx * SLEEP_CHUNK; x < xe; x++) this.updateCell(x, y);
+        }
       } else {
-        for (let x = w - 1; x >= 0; x--) this.updateCell(x, y);
+        for (let cx = c1 - 1; cx >= c0; cx--) {
+          if (!active[rowChunk + cx]) continue;
+          const xs = cx * SLEEP_CHUNK;
+          for (let x = Math.min(x1, xs + SLEEP_CHUNK) - 1; x >= xs; x--) this.updateCell(x, y);
+        }
+      }
+    }
+  }
+
+  // Обход клеток строк [y0, y1) — снизу вверх, направление строки чередуется
+  // по чётности кадра. Клетки спящих кусков (sim/sleep.js) пропускаются;
+  // порядок остальных — тот же, что и без сна. Отдельной функцией, потому
+  // что полосы поля можно считать и в разных потоках (sim/threads.js).
+  updateRows(y0, y1) {
+    const w = this.w;
+    const ltr = (this.frame & 1) === 0;
+    const active = this._chunkActive, cw = this._chunkW;
+    for (let y = y1 - 1; y >= y0; y--) {
+      const rowChunk = ((y / SLEEP_CHUNK) | 0) * cw;
+      if (ltr) {
+        for (let cx = 0; cx < cw; cx++) {
+          if (!active[rowChunk + cx]) continue;
+          const xe = Math.min(w, (cx + 1) * SLEEP_CHUNK);
+          for (let x = cx * SLEEP_CHUNK; x < xe; x++) this.updateCell(x, y);
+        }
+      } else {
+        for (let cx = cw - 1; cx >= 0; cx--) {
+          if (!active[rowChunk + cx]) continue;
+          const xs = cx * SLEEP_CHUNK;
+          for (let x = Math.min(w, xs + SLEEP_CHUNK) - 1; x >= xs; x--) this.updateCell(x, y);
+        }
       }
     }
   }
@@ -456,6 +558,13 @@ class Sim {
     if (this.moved[i]) return;
     const id = this.type[i];
     if (id === EL.EMPTY) return;
+    // В параллельной полосе (sim/threads.js) люди и колонисты
+    // откладываются на главный поток: их память — в Map главного потока.
+    // Туда же — клонер, который копирует человека.
+    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
+      this.defer(DEFER_UPDATE, i);
+      return;
+    }
 
     this.react(x, y, i, id);
 
@@ -488,18 +597,24 @@ class Sim {
       case EL.FIRE: this.reactFire(x, y, i); break;
       case EL.LAVA: this.reactLava(x, y, i); break;
       case EL.ICE: this.tickPhase(x, y, i); if (this.type[i] === EL.ICE) this.reactIce(x, y, i); break;
-      case EL.ACID_ICE: case EL.REAGENT_ICE: this.tickPhase(x, y, i); break;
+      // Замёрзший растворитель безопасен: только тает, ни с чем не смешиваясь.
+      case EL.ACID_ICE: case EL.REAGENT_ICE: case EL.DISSOLVER_ICE: this.tickPhase(x, y, i); break;
       case EL.ACID: case EL.SOLUTION: case EL.REAGENT: this.reactSolutionLike(x, y, i); break;
+      // Сыпучие чёрные соли живут по тем же правилам долей (перемешивание,
+      // стягивание, выкипание воды), что и растворы, а сухие — взрываются.
+      case EL.BLACK_SALT: this.reactBlackSalt(x, y, i); break;
       case EL.ACID_RESIDUE: this.reactAcidResidue(x, y, i); break;
       case EL.OXIDE: case EL.OXIDE_LOOSE: this.reactOxide(x, y, i); break;
-      case EL.ACID_GAS: case EL.STEAM: case EL.VAPOR: this.reactVapor(x, y, i); break;
+      case EL.METAL_OXIDE: case EL.METAL_OXIDE_LOOSE: this.reactRust(x, y, i); break;
+      case EL.ACID_GAS: case EL.STEAM: case EL.VAPOR: case EL.REAGENT_GAS: case EL.OIL_GAS: case EL.DISSOLVER_GAS: this.reactVapor(x, y, i); break;
+      case EL.DISSOLVER: this.reactDissolver(x, y, i); break;
       case EL.SMOKE: this.reactSmoke(x, y, i); break;
       case EL.SAND: this.reactSand(x, y, i); break;
       case EL.SALT: this.reactSalt(x, y, i); break;
       case EL.WATER: this.reactWater(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
-      case EL.STONE: case EL.METAL: case EL.GLASS: this.reactMelt(x, y, i, id); break;
+      case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS: this.reactMelt(x, y, i, id); break;
       case EL.EARTH: this.tickMoisture(x, y, i, EL.EARTH); break;
       case EL.WET_EARTH:
         this.tickMoisture(x, y, i, EL.WET_EARTH);

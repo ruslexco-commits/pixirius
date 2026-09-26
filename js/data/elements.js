@@ -47,6 +47,13 @@ const EL = {
   ACID_ICE: 35,
   REAGENT_ICE: 36,
   HUMAN: 37,
+  STEEL: 38,
+  BLACK_SALT: 39,
+  REAGENT_GAS: 40,
+  OIL_GAS: 41,
+  DISSOLVER: 42,
+  DISSOLVER_GAS: 43,
+  DISSOLVER_ICE: 44,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -56,6 +63,9 @@ const TOOL_PRESSURE = 'tool:pressure';
 // Тот же принцип, что и у TOOL_PRESSURE, но правит sim.temp вместо
 // sim.windVX/VY (см. Sim.applyTempBrush).
 const TOOL_TEMP = 'tool:temp';
+// Лупа: мир не трогает вовсе, щелчок по клетке показывает, что в ней —
+// у раствора и газа по долям (см. buildCellInspectHTML в main.js).
+const TOOL_INSPECT = 'tool:inspect';
 
 const CAT = {
   POWDER: 'powder',
@@ -152,10 +162,10 @@ const ELEMENTS = {
   // Кислота окисел не берёт (acidImmune): по заданию он ею не растворяется.
   [EL.OXIDE]: { id: EL.OXIDE, name: 'Окисел', cat: CAT.SOLID, color: [104, 98, 74], density: 40, flammable: false, acidImmune: true, maxStability: 4, toughness: 3 },
   [EL.OXIDE_LOOSE]: { id: EL.OXIDE_LOOSE, name: 'Рыхлый окисел', cat: CAT.POWDER, color: [148, 132, 40], density: 16, flammable: false, acidImmune: true },
-  // Окисел МЕТАЛЛА — своя, отдельная от каменной линейка: семь стадий
-  // вместо трёх, цвет уходит в коричневый, и стадиями с соседями он НЕ
-  // делится (см. Sim.reactOxide — ржавчина расползается по поверхности
-  // сама, а не проедает металл вглубь, как окисел камень).
+  // Окисел МЕТАЛЛА (ржавчина) — своя, отдельная от каменной линейка: семь
+  // стадий вместо трёх, цвет уходит в коричневый. Соседей окисляет по
+  // своим правилам, зависящим от стадии, и отслаивается в окисляющую
+  // жидкость (см. Sim.reactRust и rustFlake).
   // Кислота берёт его только до третьей стадии включительно; с четвёртой
   // окисленный металл ей уже не по зубам (см. Sim.acidProof).
   [EL.METAL_OXIDE]: { id: EL.METAL_OXIDE, name: 'Окисел металла', cat: CAT.SOLID, color: [146, 130, 114], density: 40, flammable: false, acidSlow: true, maxStability: 8, toughness: 4 },
@@ -184,19 +194,83 @@ const ELEMENTS = {
   // не досчитывались, вместо того чтобы видеть потемневшие тела.
   [EL.HUMAN]: { id: EL.HUMAN, name: 'Человек', cat: CAT.POWDER, color: [236, 226, 210], density: 15, flammable: false, acidImmune: true },
   [EL.REAGENT_ICE]: { id: EL.REAGENT_ICE, name: 'Замёрзший реагент', cat: CAT.SOLID, color: [150, 122, 60], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -70 },
+  // Сталь — металл, которому вода нипочём: ржавеет она только от кислоты,
+  // реагента и соседней ржавчины (у её линейки окисления waterRusts=false,
+  // см. data/oxides.js). Покрытие из стали держит сколько угодно воды, пока
+  // его не коснётся кислота или ржавчина — дальше ржавчина расползается от
+  // этой точки (см. Sim.reactRust). Ржавеет в ту же ржавчину, что и
+  // металл. Цвет чуть темнее металла, стойкость выше, плавится на 50
+  // градусов позже (точка плавления задаётся ниже, от металла).
+  [EL.STEEL]: { id: EL.STEEL, name: 'Сталь', cat: CAT.SOLID, color: [150, 154, 166], density: 40, flammable: false, acidSlow: true, maxStability: 14, toughness: 7 },
+  // Чёрные соли — то, во что вода, ржавя металл, превращает свою долю
+  // (см. Sim.rustNeighbours): стоячая вода над ржавеющим железом понемногу
+  // чернеет. Соль живёт в той же системе долей, что и жидкости (вид
+  // P_SALT, data/composition.js): растворяется в них, перемешиваясь долями.
+  // Этот элемент — сыпучая фаза: клетка, где солей больше пяти долей из
+  // десяти (SALT_POWDER_FROM), сыпучая и тонет; меньше — остаётся жидким
+  // раствором (см. Sim.setComposition). Цвет считается из состава. Не
+  // испаряется и не плавится. Кислота соль не разъедает — растворяет в
+  // себе, как любая жидкость (acidImmune).
+  [EL.BLACK_SALT]: { id: EL.BLACK_SALT, name: 'Чёрные соли', cat: CAT.POWDER, color: [46, 44, 50], density: 18, flammable: false, acidImmune: true },
+  // Газовые фазы реагента и масла. Раньше газ этих веществ показывался
+  // общим "смешанным газом" (VAPOR) с долями жидкого вещества внутри;
+  // теперь доля — это элемент в своей фазе (см. data/composition.js), и
+  // у каждого вещества свой газ, как пар у воды. В палитре — только во
+  // "Всех". Газ масла выпадает не по температуре, а по сроку (life).
+  [EL.REAGENT_GAS]: { id: EL.REAGENT_GAS, name: 'Газ реагента', cat: CAT.GAS, color: [212, 176, 92], density: 2, flammable: false, acidImmune: true },
+  [EL.OIL_GAS]: { id: EL.OIL_GAS, name: 'Газ масла', cat: CAT.GAS, color: [150, 128, 70], density: 2, flammable: false, acidImmune: true },
+  // Растворитель — синяя жидкость, которая меняется долями с чем угодно
+  // (кроме стен, огня и живых); доля, ушедшая в твёрдое тело, с шансом
+  // DISSOLVER_TO_REAGENT становится реагентом (см. Sim.dissolverMix).
+  // Кипит при 50, замерзает при -20 (PHASE_LINKS в data/composition.js).
+  // Его пар ведёт себя так же, а замёрзший растворитель безопасен — сам ни
+  // с чем не смешивается, только тает.
+  [EL.DISSOLVER]: { id: EL.DISSOLVER, name: 'Растворитель', cat: CAT.LIQUID, color: [58, 76, 214], density: 10, flammable: false, acidImmune: true, dispersion: 5 },
+  [EL.DISSOLVER_GAS]: { id: EL.DISSOLVER_GAS, name: 'Пар растворителя', cat: CAT.GAS, color: [124, 138, 236], density: 2, flammable: false, acidImmune: true },
+  [EL.DISSOLVER_ICE]: { id: EL.DISSOLVER_ICE, name: 'Замёрзший растворитель', cat: CAT.SOLID, color: [150, 162, 238], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -30 },
 };
+
+// Плавление того, что сделано из камня или металла, — ровно по их
+// правилам (точка, шанс в кадр, во что), копией, а не отдельными числами:
+// поменяется плавление камня — поменяется и у них.
+//  - Кислотный остаток — растворённый камень: плавится в расплавленный
+//    камень (лаву), как камень.
+//  - Окисел камня плавится так же, но вдобавок отдаёт газом реагент,
+//    потраченный на окисление (см. Sim.meltStoneOxide).
+//  - Ржавчина плавится как обычное железо и ничего не выделяет.
+for (const id of [EL.ACID_RESIDUE, EL.OXIDE, EL.OXIDE_LOOSE]) {
+  ELEMENTS[id].meltPoint = ELEMENTS[EL.STONE].meltPoint;
+  ELEMENTS[id].meltChance = ELEMENTS[EL.STONE].meltChance;
+  ELEMENTS[id].meltsInto = ELEMENTS[EL.STONE].meltsInto;
+}
+for (const id of [EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE]) {
+  ELEMENTS[id].meltPoint = ELEMENTS[EL.METAL].meltPoint;
+  ELEMENTS[id].meltChance = ELEMENTS[EL.METAL].meltChance;
+  ELEMENTS[id].meltsInto = ELEMENTS[EL.METAL].meltsInto;
+}
+// Сталь плавится как металл, только на 50 градусов позже.
+ELEMENTS[EL.STEEL].meltPoint = ELEMENTS[EL.METAL].meltPoint + 50;
+ELEMENTS[EL.STEEL].meltChance = ELEMENTS[EL.METAL].meltChance;
+ELEMENTS[EL.STEEL].meltsInto = ELEMENTS[EL.METAL].meltsInto;
+// Свойства балки берутся от её материала (см. Sim.pickBeamMaterial), а эти
+// — только для справки в палитре: по умолчанию балка каменная, поэтому
+// здесь копия камня (устойчивость, стойкость — на сколько клеток её можно
+// вывести в сторону от опоры, — плавление).
+for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) {
+  ELEMENTS[EL.BEAM][key] = ELEMENTS[EL.STONE][key];
+}
 
 // Пока что в палитре временно оставлены только эти элементы — по просьбе
 // пользователя. Остальные определения (ELEMENTS/EL) и вся связанная с ними
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.METAL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.HUMAN,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.HUMAN,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
   // газов, а увидеть их полезно все сразу).
-  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
-  EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE,
+  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.REAGENT_GAS, EL.OIL_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE, EL.BLACK_SALT,
+  EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_GAS, EL.DISSOLVER_ICE,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
@@ -217,6 +291,17 @@ function isMovable(cat) {
   return cat === CAT.POWDER || cat === CAT.LIQUID || cat === CAT.GAS;
 }
 
+// Предикаты ниже зовутся на каждую клетку по нескольку раз за кадр
+// (computeAirBlock, computeDebrisWindChance, tryWindPush,
+// windDir...), поэтому каждый из них — одно чтение плоской таблицы по id, а
+// не цепочка сравнений с полями EL. Снаружи это те же функции isX(id):
+// меняется только их устройство, состав каждого множества задан списком.
+function idTable(ids) {
+  const t = new Uint8Array(64);
+  for (const id of ids) t[id] = 1;
+  return t;
+}
+
 // "Твёрдые тела" в смысле структурной устойчивости: падают без опоры,
 // но держатся друг за друга (можно строить навесы), в отличие от
 // сыпучих порошков, которые и так уже падают по одной частице.
@@ -225,48 +310,43 @@ function isMovable(cat) {
 // получает устойчивость только от своей ЕДИНСТВЕННОЙ запомненной связи
 // и никогда не передаёт её дальше — не может служить мостом между
 // двумя разными объектами.
-function isStructural(id) {
-  return id === EL.STONE || id === EL.WOOD || id === EL.METAL || id === EL.GLASS || id === EL.ICE || id === EL.OILFILM || id === EL.WET_EARTH || id === EL.BEAM || id === EL.OXIDE || id === EL.METAL_OXIDE;
-}
+// Замёрзшие кислота и реагент — такие же твёрдые тела, как лёд (раньше их
+// тут не было, и без опоры они висели в воздухе).
+const IS_STRUCTURAL = idTable([EL.STONE, EL.WOOD, EL.METAL, EL.GLASS, EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_ICE, EL.OILFILM, EL.WET_EARTH, EL.BEAM, EL.OXIDE, EL.METAL_OXIDE, EL.STEEL]);
+function isStructural(id) { return IS_STRUCTURAL[id] === 1; }
 
 // Окисел любой стадии и любого металла-основы (число стадии — в
 // Sim.oxideStage, основа — в OXIDE_BASE ниже).
-function isOxide(id) {
-  return id === EL.OXIDE || id === EL.OXIDE_LOOSE || id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE || id === EL.EARTH_OXIDE;
-}
+const IS_OXIDE = idTable([EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE]);
+function isOxide(id) { return IS_OXIDE[id] === 1; }
 
 // Твёрдая фаза жидкости (лёд и его сородичи) — её тает обратно tickPhase.
-function isFrozenLiquid(id) {
-  return id === EL.ICE || id === EL.ACID_ICE || id === EL.REAGENT_ICE;
-}
-function isMetalOxide(id) {
-  return id === EL.METAL_OXIDE || id === EL.METAL_OXIDE_LOOSE;
-}
+const IS_FROZEN_LIQUID = idTable([EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_ICE]);
+function isFrozenLiquid(id) { return IS_FROZEN_LIQUID[id] === 1; }
+const IS_METAL_OXIDE = idTable([EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE]);
+function isMetalOxide(id) { return IS_METAL_OXIDE[id] === 1; }
 
 // Всегда неподвижные "якоря" — сами не падают и заземляют всё, что к ним прижато.
-function isAnchor(id) {
-  return id === EL.WALL || id === EL.VOID || id === EL.CLONE;
-}
+const IS_ANCHOR = idTable([EL.WALL, EL.VOID, EL.CLONE]);
+function isAnchor(id) { return IS_ANCHOR[id] === 1; }
 
 // Непроницаемые для потоков воздуха (см. Sim.computeAirBlock/updateWind) —
 // настоящая преграда, через которую ветер не диффундирует, в отличие от
 // прочих твёрдых тел (камень, дерево, стекло, лёд и т.д.), которые для
 // потоков воздуха прозрачны. Пустота (VOID) намеренно НЕ входит сюда —
 // роль непроницаемой стены отдана именно "Стене", а не "Пустоте".
-function isAirtight(id) {
-  return id === EL.WALL || id === EL.METAL;
-}
+const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL]);
+function isAirtight(id) { return IS_AIRTIGHT[id] === 1; }
 
-// Блокирует передачу ТЕПЛА (см. Sim.computeHeatBlock/updateTemp) — не то
+// Блокирует передачу ТЕПЛА (см. HEAT_WEIGHT и Sim.updateTemp в sim/heat.js) — не то
 // же самое, что isAirtight: металл перекрывает воздух, но металл — как
 // раз то, что должно уметь ГРЕТЬСЯ и плавиться, а не быть неспособным
 // принять хоть какое-то тепло только потому, что он же блокирует ветер.
 // Реальный металл вообще-то ХОРОШО проводит тепло, несмотря на то, что
 // сплошной и не пропускает сквозь себя воздух. Стена — другое дело, она
 // именно как капитальная преграда и задумана.
-function isHeatInsulator(id) {
-  return id === EL.WALL;
-}
+const IS_HEAT_INSULATOR = idTable([EL.WALL]);
+function isHeatInsulator(id) { return IS_HEAT_INSULATOR[id] === 1; }
 
 // Быстрая таблица "клетка ведёт себя как газ" для горячего пути
 // updateTemp: газ — это разреженное вещество, перемешанное с воздухом, и
@@ -274,3 +354,17 @@ function isHeatInsulator(id) {
 // Индекс — id элемента, поэтому проверка стоит одно чтение массива.
 const IS_GASLIKE = new Uint8Array(64);
 for (let id = 0; id < 64; id++) IS_GASLIKE[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.GAS) ? 1 : 0;
+// То же для жидкости — для прохода по всем клеткам в computeLiquidEscape.
+const IS_LIQUID = new Uint8Array(64);
+for (let id = 0; id < 64; id++) IS_LIQUID[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.LIQUID) ? 1 : 0;
+// Для проб соседа при движении (attemptSwapOrMove, attemptBuoyantRise —
+// по нескольку на каждую частицу в каждом кадре): можно ли вообще сдвинуть
+// клетку этого типа (isMovable по категории, 0 и для несуществующего id)
+// и её плотность — без чтения объекта ELEMENTS[id].
+const IS_MOVABLE_ID = new Uint8Array(64);
+const DENSITY = new Float64Array(64);
+for (let id = 0; id < 64; id++) {
+  const el = ELEMENTS[id];
+  IS_MOVABLE_ID[id] = (el && isMovable(el.cat)) ? 1 : 0;
+  DENSITY[id] = el ? el.density : 0;
+}

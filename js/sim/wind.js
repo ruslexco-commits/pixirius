@@ -20,6 +20,26 @@
 // её — то есть нагнетённый кистью давления или поднятый взрывом.
 const WIND_PUSH_MIN = 0.45;
 
+// Math.hypot(a, b) побитно, но втрое быстрее встроенного — повтор его же
+// алгоритма из V8 (src/builtins/math.tq: деление на наибольший модуль и
+// сумма квадратов с компенсацией Кэхэна). Встроенный hypot в updateWind
+// зовётся 4 * 11664 раза за кадр и один съедал ~2 мс из 3. Простой
+// Math.sqrt(a*a + b*b) быстрее ещё, но в последнем бите расходится с
+// hypot почти у половины входов — ветер пошёл бы по-другому, и
+// tools/compare.js это ловит. Этот вариант сверен с Math.hypot на 2e7
+// случайных входах без единого расхождения. Только для конечных чисел
+// (ветер всегда конечен); NaN/Infinity не обрабатываются.
+function windHypot(a, b) {
+  a = Math.abs(a); b = Math.abs(b);
+  const m = a > b ? a : b;
+  if (m === 0) return 0;
+  const x = a / m, y = b / m;
+  let sum = 0, comp = 0;
+  let s = x * x - comp; let p = sum + s; comp = (p - sum) - s; sum = p;
+  s = y * y - comp; p = sum + s; sum = p;
+  return Math.sqrt(sum) * m;
+}
+
 class SimWind {
   // Любое реальное перемещение частицы (через swap — единая точка входа для
   // ВСЕГО движения в симуляции) слегка возмущает воздух в направлении этого
@@ -57,31 +77,57 @@ class SimWind {
     visited.fill(0);
     const cache = this._debrisWindVX;
     const stab = this.stability;
-    const stack = this._debrisStack || (this._debrisStack = []);
-    for (let i = 0; i < n; i++) {
+    // Стек заливки — typed-массив на все клетки, а не JS-массив с
+    // push/pop (компонента не больше поля, переполниться ему нечем).
+    const stack = this._debrisStack || (this._debrisStack = new Int32Array(n));
+    const type = this.type, h = this.h, windFrame = this.windVXFrame;
+    const rowOf = this._airRowOf, colOf = this._airColOf;
+    // Только клетки кусков, которые считаются в этом кадре (sim/sleep.js):
+    // кэш читают лишь их обломки. Порядок — тот же, что по возрастанию i.
+    const active = this._chunkActive, cw = this._chunkW;
+    for (let y = 0; y < h; y++) {
+     const rowChunk = ((y / SLEEP_CHUNK) | 0) * cw;
+     for (let ck = 0; ck < cw; ck++) {
+      if (!active[rowChunk + ck]) continue;
+      const xe = Math.min(w, (ck + 1) * SLEEP_CHUNK);
+      for (let i = y * w + ck * SLEEP_CHUNK; i < y * w + xe; i++) {
+      // Сперва тип, потом visited: у клетки, которая не обломок, флаг
+      // visited ни на что не влияет (заливка ниже её всё равно не возьмёт —
+      // тип другой), а проверка по таблице дешевле записи флага в каждую
+      // из 187 тыс. клеток.
+      const t = type[i];
+      if (IS_STRUCTURAL[t] !== 1 || stab[i] !== 0) continue;
       if (visited[i]) continue;
       visited[i] = 1;
-      const t = this.type[i];
-      if (!isStructural(t) || stab[i] !== 0) continue;
-      const wind = this.getWindVX(i % w, (i / w) | 0);
-      stack.length = 0;
-      stack.push(i);
+      const y0 = (i / w) | 0;
+      const wind = windFrame[rowOf[y0] + colOf[i - y0 * w]];  // = getWindVX(x, y)
       cache[i] = wind;
-      while (stack.length) {
-        const ci = stack.pop();
-        const cx = ci % w, cy = (ci / w) | 0;
-        for (let k = 0; k < 4; k++) {
-          const nx = cx + DX4[k], ny = cy + DY4[k];
-          if (!this.inBounds(nx, ny)) continue;
-          const ni = this.idx(nx, ny);
-          if (visited[ni]) continue;
-          visited[ni] = 1;
-          if (this.type[ni] === t && stab[ni] === 0) {
-            cache[ni] = wind;
-            stack.push(ni);
-          }
+      let sp = 0;
+      stack[sp++] = i;
+      // Порядок обхода на итог не влияет: помечены будут та же компонента
+      // и её граница, и всей компоненте пишется одно и то же wind.
+      while (sp > 0) {
+        const ci = stack[--sp];
+        const cy = (ci / w) | 0, cx = ci - cy * w;
+        if (cx > 0) {
+          const ni = ci - 1;
+          if (!visited[ni]) { visited[ni] = 1; if (type[ni] === t && stab[ni] === 0) { cache[ni] = wind; stack[sp++] = ni; } }
+        }
+        if (cx < w - 1) {
+          const ni = ci + 1;
+          if (!visited[ni]) { visited[ni] = 1; if (type[ni] === t && stab[ni] === 0) { cache[ni] = wind; stack[sp++] = ni; } }
+        }
+        if (cy > 0) {
+          const ni = ci - w;
+          if (!visited[ni]) { visited[ni] = 1; if (type[ni] === t && stab[ni] === 0) { cache[ni] = wind; stack[sp++] = ni; } }
+        }
+        if (cy < h - 1) {
+          const ni = ci + w;
+          if (!visited[ni]) { visited[ni] = 1; if (type[ni] === t && stab[ni] === 0) { cache[ni] = wind; stack[sp++] = ni; } }
         }
       }
+      }
+     }
     }
   }
 
@@ -89,21 +135,43 @@ class SimWind {
   // клетку симуляции (см. isAirtight), как полностью закрытые. Пересчитывается
   // каждый кадр перед диффузией, т.к. стена/металл могут появляться, а
   // обломки — падать и открывать проход.
+  //
+  // Полный проход — только в первый раз; дальше пересчитываются лишь клетки
+  // ветра в кусках поля, где что-то менялось (chunkChanged, sim/sleep.js):
+  // стена и металл без записи в клетку не появляются и не исчезают. Кусок
+  // сна кратен клетке ветра (SLEEP_CHUNK % airCell === 0), так что клетка
+  // ветра всегда целиком в одном куске.
   computeAirBlock() {
     const w = this.w, h = this.h, ac = this.airCell, aw = this.airW;
-    const an = aw * this.airH;
-    const blocked = this._airBlocked;
-    blocked.fill(0);
-    const type = this.type;
-    for (let y = 0; y < h; y++) {
-      const rowBase = ((y / ac) | 0) * aw;
-      for (let x = 0; x < w; x++) {
-        const ai = rowBase + ((x / ac) | 0);
-        if (!blocked[ai] && isAirtight(type[y * w + x])) blocked[ai] = 1;
+    const blocked = this._airBlocked, open = this.airOpen, type = this.type;
+    if (!this._airBlockValid) {
+      blocked.fill(0);
+      for (let y = 0; y < h; y++) {
+        const rowBase = ((y / ac) | 0) * aw;
+        const off = y * w;
+        for (let x = 0; x < w; x++) {
+          if (IS_AIRTIGHT[type[off + x]] === 1) blocked[rowBase + ((x / ac) | 0)] = 1;
+        }
       }
+      for (let ai = 0; ai < aw * this.airH; ai++) open[ai] = blocked[ai] ? 0 : 1;
+      this._airBlockValid = true;
+      return;
     }
-    const open = this.airOpen;
-    for (let ai = 0; ai < an; ai++) open[ai] = blocked[ai] ? 0 : 1;
+    const count = this._chunkW * this._chunkH;
+    for (let c = 0; c < count; c++) {
+      if (!this.chunkChanged(c)) continue;
+      const [x0, y0, x1, y1] = this.chunkBounds(c);
+      const ax0 = (x0 / ac) | 0, ax1 = ((x1 - 1) / ac) | 0, ay0 = (y0 / ac) | 0, ay1 = ((y1 - 1) / ac) | 0;
+      for (let ay = ay0; ay <= ay1; ay++) for (let ax = ax0; ax <= ax1; ax++) blocked[ay * aw + ax] = 0;
+      for (let y = y0; y < y1; y++) {
+        const rowBase = ((y / ac) | 0) * aw;
+        const off = y * w;
+        for (let x = x0; x < x1; x++) {
+          if (IS_AIRTIGHT[type[off + x]] === 1) blocked[rowBase + ((x / ac) | 0)] = 1;
+        }
+      }
+      for (let ay = ay0; ay <= ay1; ay++) for (let ax = ax0; ax <= ax1; ax++) open[ay * aw + ax] = blocked[ay * aw + ax] ? 0 : 1;
+    }
   }
 
   // Раз в кадр: лёгкое затухание (трение, чтобы ветер не дул вечно) и
@@ -161,6 +229,11 @@ class SimWind {
     }
     let vx = this.windVX, vy = this.windVY;
     let vx2 = this._windVX2, vy2 = this._windVY2;
+    // Полный штиль (частый случай в спокойном мире: ветер от движения
+    // гаснет до нуля) — диффузия нулей даёт нули, её можно не считать.
+    let any = false;
+    for (let ai = 0; ai < an; ai++) if (vx[ai] !== 0 || vy[ai] !== 0) { any = true; break; }
+    if (!any) return;
     for (let step = 0; step < WIND_SUBSTEPS; step++) {
       const isLast = step === WIND_SUBSTEPS - 1;
       for (let ay = 0; ay < ah; ay++) {
@@ -174,7 +247,7 @@ class SimWind {
           if (ay < ah - 1) { const ni = ai + aw; const o = open[ni]; sumX += vx[ni] * o; sumY += vy[ni] * o; cnt += o; }
           const avgX = cnt > 1e-4 ? sumX / cnt : 0, avgY = cnt > 1e-4 ? sumY / cnt : 0;
           const diffX = avgX - vx[ai], diffY = avgY - vy[ai];
-          const rate = Math.min(DIFFUSE_MAX, DIFFUSE_BASE + Math.hypot(diffX, diffY) * DIFFUSE_GAIN);
+          const rate = Math.min(DIFFUSE_MAX, DIFFUSE_BASE + windHypot(diffX, diffY) * DIFFUSE_GAIN);
           let nx = vx[ai] + diffX * rate;
           let ny = vy[ai] + diffY * rate;
           if (isLast) { nx *= DECAY; ny *= DECAY; }
@@ -195,6 +268,27 @@ class SimWind {
     this.windVY = vy; this._windVY2 = vy2;
   }
 
+  // Снимок ветра на кадр (см. windVXFrame в конструкторе) и попутно —
+  // есть ли в нём вообще ветер, способный что-то толкнуть. Обычно нет: в
+  // спокойном мире tryWindPush на каждой частице жидкости и газа читала
+  // бы ветер только затем, чтобы отказать. Сумма максимумов модулей по
+  // осям — верхняя граница для |vx| + |vy| любой клетки, читающей снимок,
+  // так что _windPushQuiet = true — это ровно тот же ответ, что дала бы
+  // проверка mag <= WIND_PUSH_MIN в tryWindPush, только один раз за кадр
+  // (обломки — исключение, см. там).
+  snapshotWindFrame() {
+    const fx = this.windVXFrame, fy = this.windVYFrame;
+    fx.set(this.windVX);
+    fy.set(this.windVY);
+    let mx = 0, my = 0;
+    for (let k = 0; k < fx.length; k++) {
+      const ax = Math.abs(fx[k]), ay = Math.abs(fy[k]);
+      if (ax > mx) mx = ax;
+      if (ay > my) my = ay;
+    }
+    this._windPushQuiet = mx + my <= WIND_PUSH_MIN;
+  }
+
   // Читают ЗАМОРОЖЕННЫЙ снимок (windVXFrame/windVYFrame), а не живые
   // windVX/windVY — см. комментарий в конструкторе про windVXFrame.
   getWindVX(x, y) { return this.windVXFrame[this.airIdx(x, y)]; }
@@ -210,7 +304,9 @@ class SimWind {
   // computeDebrisWindChance), а не свою точку — та же причина, что и там.
   windDir(x, y, scale) {
     const i = this.idx(x, y);
-    const wind = (isStructural(this.type[i]) && this.stability[i] === 0) ? this._debrisWindVX[i] : this.getWindVX(x, y);
+    const wind = (IS_STRUCTURAL[this.type[i]] === 1 && this.stability[i] === 0)
+      ? this._debrisWindVX[i]
+      : this.windVXFrame[this._airRowOf[y] + this._airColOf[x]];  // = getWindVX(x, y)
     const pRight = Math.max(0.05, Math.min(0.95, 0.5 + wind * scale));
     return this._windRoll < pRight ? 1 : -1;
   }
@@ -261,9 +357,15 @@ class SimWind {
     // иначе даже с общим roll и заморозкой снимка разные клетки одной
     // цепочки могут со временем накопить разный локальный ветер (реальный
     // пространственный градиент вдоль широкого объекта) и разойтись.
-    const debris = isStructural(this.type[i]) && this.stability[i] === 0;
-    const vx = debris ? this._debrisWindVX[i] : this.getWindVX(x, y);
-    const vy = this.getWindVY(x, y);
+    const debris = IS_STRUCTURAL[this.type[i]] === 1 && this.stability[i] === 0;
+    // Штиль во всём кадре (см. snapshotWindFrame) — только для не-обломков:
+    // кэш обломка, задетого заливкой чужого материала, в этом кадре не
+    // обновляется и может хранить ветер прошлых кадров, выше нынешнего
+    // максимума.
+    if (!debris && this._windPushQuiet) return false;
+    const ai = this._airRowOf[y] + this._airColOf[x];  // = airIdx(x, y)
+    const vx = debris ? this._debrisWindVX[i] : this.windVXFrame[ai];
+    const vy = this.windVYFrame[ai];
     const ax = Math.abs(vx), ay = Math.abs(vy);
     const mag = ax + ay;
     // Слабее порога — это фоновая рябь, а не ветер (см. WIND_PUSH_MIN).
@@ -307,14 +409,16 @@ class SimWind {
   // дальнем конце помечаются moved, чтобы не обработаться повторно в этом
   // же кадре. maxChain ограничивает длину поиска.
   shiftChain(x, y, wdir, el, rising) {
-    const w = this.w;
     const t = this.type[this.idx(x, y)];
     const maxChain = 64;
     const chain = [this.idx(x, y)];
     let cx = x;
     for (let step = 1; step <= maxChain; step++) {
       const nx = cx + wdir;
-      if (nx < 0 || nx >= w) return false;
+      // _colMin.._colMax — всё поле, а при параллельном обходе своя полоса
+      // с запасом (sim/threads.js): цепочка длиннее запаса за край полосы
+      // в этот кадр не сдвигается.
+      if (nx < this._colMin || nx > this._colMax) return false;
       const ni = this.idx(nx, y);
       const nt = this.type[ni];
       if (nt === t) { chain.push(ni); cx = nx; continue; }

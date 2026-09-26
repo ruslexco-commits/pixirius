@@ -126,6 +126,24 @@ function buildScene(env, w = 240, h = 160) {
   for (let x = 176; x <= 214; x += 6) sim.setCell(x, h - 36 - 10, EL.HUMAN, false);
   for (let x = 17; x <= 43; x += 7) sim.setCell(x, h - 41, EL.HUMAN, false);
   sim.setCell(190, h - 60, EL.COLONIST, false);
+  box(100, h - 70, 104, h - 67, EL.ACID_ICE);     // замёрзшие кислота и реагент в воздухе — падают
+  box(108, h - 70, 112, h - 67, EL.REAGENT_ICE);
+  sim.setCell(136, h - 22, EL.OXIDE, false);       // окисел и кислотный остаток у лавы — плавятся
+  sim.setCell(136, h - 23, EL.OXIDE, false);
+  sim.setCell(149, h - 22, EL.ACID_RESIDUE, false);
+  box(20, h - 42, 24, h - 42, EL.METAL_OXIDE);    // ржавчина на навесе под водой из тающего льда
+  // Сталь под водой и металлическая балка — только там, где они есть:
+  // сцена должна воспроизводиться и на старых коммитах (compare.js).
+  if (EL.STEEL) { box(232, h - 12, 238, h - 7, EL.STEEL); box(232, h - 16, 238, h - 13, EL.WATER); }
+  // Сухие чёрные соли у пороха: порох вспыхнет от огня и подорвёт их.
+  if (EL.BLACK_SALT) box(156, h - 52, 158, h - 50, EL.BLACK_SALT);
+  // Растворитель на каменном полу у колонны: меняется долями с камнем.
+  if (EL.DISSOLVER) box(3, h - 12, 8, h - 7, EL.DISSOLVER);
+  if (sim.pickBeamMaterial) {
+    sim.pickBeamMaterial(100, h - 20);             // от металла
+    for (let x = 131; x <= 150; x++) sim.setCell(x, h - 26, EL.BEAM, false);
+    sim.pickBeamMaterial(-1, -1);                  // дальше — снова каменные
+  }
   sim.applyTempBrush(142, h - 15, 8, 8, 1);
   return sim;
 }

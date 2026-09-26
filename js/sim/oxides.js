@@ -11,6 +11,25 @@
 // мгновенно, а он должен именно нарастать на глазах.
 const OXIDE_SPREAD_CHANCE = 0.05;
 
+// Газ реагента, выходящий из плавящегося окисла камня, всплывает вверх
+// сквозь жидкость и газ (в том числе сквозь саму лаву) до первой пустой
+// клетки, но не дальше стольких клеток (см. gasOutlet).
+const OXIDE_GAS_RISE = 40;
+
+// Ржавчина по стадиям (просьба пользователя):
+//   1..3 — соседей не окисляет;
+//   4..5 — отдаёт свою стадию соседям, у которых стадия ниже
+//          RUST_LIMITED_TARGET, пока сама не опустится ниже 4;
+//   6..7 — делится стадией, как окисел камня (S - T >= 2).
+const RUST_SPREAD_FROM = 4;
+const RUST_LIMITED_UP_TO = 5;
+const RUST_LIMITED_TARGET = 2;
+// Ржавчина, дошедшая под действием жидкости до стадии RUST_FLAKE_FROM и
+// выше, с этим шансом меняется с этой жидкостью местами — отслаивается
+// в неё, а жидкость занимает её место и ест металл дальше (см. rustFlake).
+const RUST_FLAKE_FROM = 4;
+const RUST_FLAKE_CHANCE = 0.3;
+
 class SimOxides {
   // Линейка окисления, к которой принадлежит клетка (камень или металл,
   // см. OXIDE_LINE в data/oxides.js), либо undefined — клетка не окисляется.
@@ -39,13 +58,28 @@ class SimOxides {
   // (например, кислотный остаток, который становится окислом металла).
   // Тип ставится напрямую, мимо spawn: температура и оттенок принадлежат
   // той же клетке и при окислении меняться не должны.
+  //
+  // Состав клетки следует за типом: доли прежнего элемента становятся
+  // долями нового (retypeComp). Иначе состав говорил бы "металл" у клетки
+  // ржавчины, и первый же пересчёт по составу (растворитель, окисление)
+  // вернул бы её в металл.
   setOxideStage(i, stage, line) {
     const L = line || OXIDE_LINE[this.type[i]];
     if (!L) return;
-    if (stage <= 0) { this.type[i] = L.base; this.extra[i] = 0; return; }
-    if (stage >= L.maxStage) { this.type[i] = L.loose; this.extra[i] = L.maxStage; return; }
-    this.type[i] = L.solid;
-    this.extra[i] = stage;
+    const old = this.type[i];
+    if (stage <= 0) { this.type[i] = L.base; this.extra[i] = 0; }
+    else if (stage >= L.maxStage) { this.type[i] = L.loose; this.extra[i] = L.maxStage; }
+    else { this.type[i] = L.solid; this.extra[i] = stage; }
+    if (this.type[i] !== old) this.retypeComp(i, old, this.type[i]);
+    this.markDirty(i);
+  }
+
+  // Доли вида from в составе клетки становятся долями вида to.
+  retypeComp(i, from, to) {
+    const comp = this.comp(i);
+    const n = solGet(comp, from);
+    if (!n) return;
+    this.setComp(i, solWith(solWith(comp, from, 0), to, solGet(comp, to) + n));
   }
 
   // Хрупок ли окисел в этой клетке: начиная со своей frailStage он
@@ -85,10 +119,11 @@ class SimOxides {
   // мгновенно. Получатель выбирается с наименьшей стадией — так фронт
   // идёт вглубь ровно, а не выедает один случайный ход.
   reactOxide(x, y, i) {
+    if (this.meltStoneOxide(x, y, i)) return;
     const line = this.oxideLine(i);
-    // Стадиями делится только камень: его окисел прорастает вглубь слоем.
-    // Ржавчина на металле и окисел земли остаются там, где возникли, и
-    // вглубь идут только вслед за жидкостью.
+    // Так стадиями делится только камень: его окисел прорастает вглубь
+    // слоем. У ржавчины своё правило (reactRust), окисел земли остаётся
+    // там, где возник, и вглубь идёт только вслед за жидкостью.
     if (!line || !line.spreads) return;
     const stage = this.oxideStage(i);
     if (stage < 2) return;
@@ -106,6 +141,99 @@ class SimOxides {
     if (best < 0) return;
     this.setOxideStage(i, stage - 1);
     this.setOxideStage(best, bestStage + 1);
+  }
+
+  // Окисел камня плавится, как камень, в расплавленный камень — и отдаёт
+  // газом реагент, который на него потратили: стадия N — газ из N долей
+  // реагента и 10-N пустоты (стадия 1 — одна доля, стадия 3 — три).
+  // Если газу некуда выйти (см. gasOutlet), плавление ждёт: иначе реагент
+  // пропал бы бесследно.
+  meltStoneOxide(x, y, i) {
+    const id = this.type[i];
+    if (!this.meltRoll(i, id)) return false;
+    const target = this.gasOutlet(x, y);
+    if (target < 0) return false;
+    const stage = this.oxideStage(i);
+    this.spawn(i, ELEMENTS[id].meltsInto, false);
+    this.placeGas(target, solPure(EL.REAGENT_GAS, stage), 0, false);
+    return true;
+  }
+
+  // Куда выйти газу из клетки (x, y): вверх сквозь жидкость и газ до первой
+  // пустой клетки (не дальше OXIDE_GAS_RISE) — пузырь поднимается сквозь
+  // расплав; если путь вверх упирается в твёрдое или сыпучее — любой
+  // пустой сосед. -1 — выйти некуда.
+  gasOutlet(x, y) {
+    const w = this.w;
+    for (let ny = y - 1, k = 0; ny >= 0 && k < OXIDE_GAS_RISE; ny--, k++) {
+      const ni = ny * w + x;
+      const t = this.type[ni];
+      if (t === EL.EMPTY) return ni;
+      if (IS_LIQUID[t] !== 1 && IS_GASLIKE[t] !== 1) break;
+    }
+    return this.freeNeighbour(x, y, true);
+  }
+
+  // Ржавчина (окисел металла, обе формы): плавится, как железо, ничего не
+  // выделяя, и окисляет соседей по правилу своей стадии (см. константы
+  // RUST_* в начале файла). Как и у камня, стадия не рождается из ничего:
+  // ржавчина отдаёт соседу одну свою, а получатель выбирается с наименьшей
+  // стадией, и всё это по броску OXIDE_SPREAD_CHANCE.
+  reactRust(x, y, i) {
+    const id = this.type[i];
+    if (this.meltRoll(i, id)) { this.spawn(i, ELEMENTS[id].meltsInto, false); return; }
+    const stage = this.oxideStage(i);
+    if (stage < RUST_SPREAD_FROM) return;
+    if (Math.random() >= OXIDE_SPREAD_CHANCE) return;
+    const limited = stage <= RUST_LIMITED_UP_TO;
+    let best = -1, bestStage = 99;
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX4[k], ny = y + DY4[k];
+      if (!this.inBounds(nx, ny)) continue;
+      const ni = this.idx(nx, ny);
+      // Металл, сталь и ржавчина любой стадии: сталь воду не боится, но
+      // ржавчину, коснувшуюся её, принимает (просьба пользователя: "точка
+      // ржавения" пойдёт от ржавчины).
+      if (!isRustLine(OXIDE_LINE[this.type[ni]])) continue;
+      const t = this.oxideStage(ni);
+      if (t < 0) continue;
+      // 4..5 — только тем, кто ещё не дошёл до второй стадии; 6..7 — как
+      // камень: пока после передачи не окажешься ниже получателя.
+      if (limited ? t >= RUST_LIMITED_TARGET : stage - t < 2) continue;
+      if (t < bestStage) { bestStage = t; best = ni; }
+    }
+    if (best < 0) return;
+    this.setOxideStage(i, stage - 1);
+    this.setOxideStage(best, bestStage + 1);
+  }
+
+  // Балка в клетке i окисляется на стадию дальше по линейке своего
+  // материала (жидкость в её клетке — см. reactLiquidOnBeam). Последняя
+  // стадия у линеек всегда сыпучая, а сыпучей балки не бывает: дошедшая до
+  // неё балка рассыпается и исчезает (клетка занята самой жидкостью).
+  oxidiseBeam(i, line, stage) {
+    const next = stage + 1;
+    if (next >= line.maxStage) { this.removeBeam(i); return; }
+    this.beam[i] = line.solid;
+    this.beamExtra[i] = next;
+    this.markDirty(i);   // материал балки — часть скелета
+  }
+
+  // Жидкость в клетке from только что подняла стадию металла в клетке to.
+  // Если ржавчина дошла до RUST_FLAKE_FROM и выше, то с шансом
+  // RUST_FLAKE_CHANCE она отслаивается: меняется с жидкостью местами. true
+  // — жидкость теперь в клетке to, и вызывающий дальше работает с ней там
+  // (соседи у неё уже другие, поэтому свой обход он прекращает). Обе
+  // клетки помечаются moved: ржавчина, попавшая в клетку, где устойчивость
+  // этого кадра считалась для жидкости, не должна сразу же падать как
+  // обломок — это решит пересчёт следующего кадра.
+  rustFlake(from, to) {
+    if (this.oxideStage(to) < RUST_FLAKE_FROM) return false;
+    if (Math.random() >= RUST_FLAKE_CHANCE) return false;
+    this.swap(from, to);
+    this.moved[from] = 1;
+    this.moved[to] = 1;
+    return true;
   }
 }
 

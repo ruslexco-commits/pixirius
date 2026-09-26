@@ -90,9 +90,9 @@ class Renderer {
       // Балка лежит во втором слое и рисуется ЗАДНИМ планом: её видно
       // только там, где перед ней ничего нет. Цвет приглушён до фонового,
       // чтобы она читалась как конструкция позади, а не как материал, по
-      // которому что-то ходит или течёт.
+      // которому что-то ходит или течёт. Цвет — её материала (beamColor).
       if (sim.beam[i]) {
-        const bc = ELEMENTS[EL.BEAM].color, sh = sim.shade[i];
+        const bc = this.beamColor(i), sh = sim.shade[i];
         return [clamp8(14 + (bc[0] - 14) * 0.42 + sh), clamp8(14 + (bc[1] - 14) * 0.42 + sh), clamp8(18 + (bc[2] - 18) * 0.42 + sh)];
       }
       return [14, 14, 18];
@@ -100,10 +100,12 @@ class Renderer {
 
     const el = ELEMENTS[id];
     const s = sim.shade[i];
-    // Смеси и кислотный остаток красятся по СОСТОЯНИЮ клетки, а не по
-    // таблице элементов: у смеси цвет — смесь цветов её долей, у остатка —
-    // по уровню (см. partsColor / residueColor).
-    const base = (id === EL.SOLUTION || id === EL.VAPOR) ? this.partsColor(i)
+    const comp = sim.comp(i);
+    // Клетка из нескольких веществ (comp >= 1024 — занята вторая ячейка
+    // состава), смеси и соль красятся по СОСТАВУ: цвет — среднее цветов
+    // долей (partsColor). Кислотный остаток — по уровню, окисел — по
+    // стадии; остальное — цветом элемента.
+    const base = (comp >= 1024 || id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT) ? this.partsColor(i)
       : id === EL.ACID_RESIDUE ? this.residueColor(i)
       : isOxide(id) ? this.oxideColor(i)
       // Мёртвый человек темнеет — самый заметный признак, что он больше
@@ -114,9 +116,10 @@ class Renderer {
     // Неполная клетка (часть долей — пустота, см. data/composition.js) показывается
     // бледнее, тем ближе к фону, чем меньше в ней вещества. Без этого
     // клетка с одной долей воды выглядела бы ровно как полная, и стягивание
-    // жидкости к целым клеткам было бы не разглядеть.
-    if (hasComposition(id)) {
-      const v = solGet(sim.sol[i], P_VOID);
+    // жидкости к целым клеткам было бы не разглядеть. Касается любой
+    // клетки: пустота — это прозрачность (просьба пользователя).
+    if (comp) {
+      const v = solGet(comp, P_VOID);
       if (v) {
         const k = 1 - (v / SOL_PARTS) * 0.75;
         r = clamp8(14 + (r - 14) * k);
@@ -149,25 +152,27 @@ class Renderer {
     return [r, g, b];
   }
 
-  // Цвет смеси (жидкой или газовой) — средневзвешенная смесь цветов её
-  // ВЕЩЕСТВЕННЫХ долей (PART_COLOR в data/composition.js). Делится на количество
-  // вещества, а не на все 10 долей: пустота не имеет своего цвета, она
-  // делает клетку бледнее (это применяется отдельно, в baseColor), а не
-  // темнее по составу. Раствор 5/5 кислоты и воды — ровно посередине
-  // между зелёным и синим; по мере растворения зеленеет всё слабее и
-  // тянется к цвету реагента.
-  partsColor(i) {
-    const comp = this.sim.sol[i];
-    const matter = solMatter(comp);
-    if (matter <= 0) return [14, 14, 18];
-    let r = 0, g = 0, b = 0;
-    for (let k = 1; k < P_COUNT; k++) {
-      const c = solGet(comp, k);
-      if (!c) continue;
-      const col = PART_COLOR[k];
-      r += col[0] * c; g += col[1] * c; b += col[2] * c;
+  // Цвет материала балки: у окисла — цвет его стадии (без разброса
+  // насыщенности, как у настоящего окисла: балка и так приглушена), у
+  // остального — цвет элемента. Шейдер повторяет это в beamColor.
+  beamColor(i) {
+    const sim = this.sim;
+    const mat = sim.beam[i];
+    const line = OXIDE_LINE[mat];
+    if (IS_OXIDE[mat] === 1 && line) {
+      const stage = Math.max(0, Math.min(line.maxStage, sim.beamExtra[i] || 1));
+      return line.colors[stage];
     }
-    return [r / matter, g / matter, b / matter];
+    return ELEMENTS[mat] ? ELEMENTS[mat].color : ELEMENTS[EL.BEAM].color;
+  }
+
+  // Цвет смеси (жидкой, газовой, сыпучих солей) — по составу, см. solColor
+  // в data/oxides.js: средневзвешенная смесь цветов вещественных долей
+  // (пустота не красит, она делает клетку бледнее — это в cellColor), а
+  // чёрные соли поверх тянут её к цвету ржавчины и дальше к чёрному.
+  // Раствор 5/5 кислоты и воды — ровно посередине между зелёным и синим.
+  partsColor(i) {
+    return solColor(this.sim.comp(i));
   }
 
   // Кислотный остаток — цвета металла: это уже не порода, а осадок

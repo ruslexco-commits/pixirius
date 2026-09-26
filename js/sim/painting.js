@@ -9,15 +9,16 @@ class SimPainting {
   setCell(x, y, elementId, onlyEmpty) {
     if (!this.inBounds(x, y)) return;
     const i = this.idx(x, y);
-    // Балка живёт во втором слое и кладётся независимо от того, что в
-    // клетке: она ничему не мешает и ничего не вытесняет.
+    // Балка живёт во втором слое: ничего не вытесняет и кладётся сквозь
+    // пустоту, жидкость и газ (но не в твёрдое и сыпучее, см. placeBeam).
+    // Материал — тот, с которого начали вести (beamPaintMaterial).
     if (elementId === EL.BEAM) {
       if (onlyEmpty && this.beam[i]) return;
-      this.placeBeam(i);
+      this.placeBeam(i, this.beamPaintMaterial, this.beamPaintExtra);
       return;
     }
     if (onlyEmpty && (this.type[i] !== EL.EMPTY || this.beam[i])) return;
-    if (elementId === EL.EMPTY) { this.clearCell(i); this.beam[i] = 0; }
+    if (elementId === EL.EMPTY) { this.clearCell(i); this.removeBeam(i); }
     else this.spawn(i, elementId);
   }
 
@@ -67,7 +68,10 @@ class SimPainting {
     while (stack.length) {
       const i = stack.pop();
       if (this.type[i] !== target) continue;
-      if (replacement === EL.EMPTY) this.clearCell(i); else this.spawn(i, replacement);
+      // Балка — не вещество: её кладут во второй слой, а не в type (раньше
+      // заливка балкой записывала BEAM прямо в type).
+      if (replacement === EL.BEAM) this.placeBeam(i, this.beamPaintMaterial, this.beamPaintExtra);
+      else if (replacement === EL.EMPTY) this.clearCell(i); else this.spawn(i, replacement);
       const x = i % w, y = (i / w) | 0;
       if (x > 0) { const ni = i - 1; if (!visited[ni]) { visited[ni] = 1; if (this.type[ni] === target) stack.push(ni); } }
       if (x < w - 1) { const ni = i + 1; if (!visited[ni]) { visited[ni] = 1; if (this.type[ni] === target) stack.push(ni); } }

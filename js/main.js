@@ -5,7 +5,50 @@ const GRID_H = 324;
 const ZOOM = 3;
 
 const sim = new Sim(GRID_W, GRID_H);
+startSimThreads();
 let selectedElement = ELEMENT_ORDER[0];
+
+// Многопоточная симуляция (sim/threads.js): рабочие потоки считают полосы
+// поля вместе с главным над общей памятью. Запускается сразу после
+// создания Sim — до рендера и ввода: startThreads заменяет массивы мира
+// общими, и все, кто берёт их у sim, должны увидеть уже новые.
+//
+// Рабочих по умолчанию — ядер минус один. hardwareConcurrency считает
+// логические ядра, а у процессоров с гиперпоточностью их вдвое больше
+// настоящих; замер на 4 ядрах / 8 потоках: 3 рабочих быстрее 7 — второй
+// логический поток ядра почти ничего не добавляет, а ждать в каждой фазе
+// приходится самого медленного. ?threads=N — задать число рабочих явно,
+// ?threads=0 — один поток.
+//
+// Общая память есть только на "изолированной" странице (заголовки
+// COOP/COEP, их шлёт tools/serve.js). Без неё — тихо один поток.
+function startSimThreads() {
+  const m = /[?&]threads=(\d+)/.exec(location.search);
+  const hc = navigator.hardwareConcurrency || 2;
+  const count = m ? Math.min(15, Number(m[1])) : Math.max(1, Math.min(7, Math.floor(hc / 2) - 1));
+  if (count <= 0) return;
+  if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined' || !window.PIX_SCRIPTS) {
+    console.info('Пиксилиус: страница не изолирована (нет COOP/COEP) — симуляция в одном потоке');
+    return;
+  }
+  // Потоку — всё, что грузит страница до рендера: данные и sim/*.js.
+  const all = window.PIX_SCRIPTS;
+  const scripts = all.slice(0, all.indexOf('js/render.js'))
+    .map((f) => new URL(f + '?v=' + window.PIX_V, location.href).href);
+  try {
+    sim.startThreads(count, (k, init) => {
+      const wk = new Worker('js/sim/worker.js?v=' + window.PIX_V);
+      wk.onerror = (e) => console.error(`Пиксилиус: поток ${k} упал`, e.message || e);
+      wk.postMessage({ scripts, init });
+      return wk;
+    });
+  } catch (e) {
+    // Упасть здесь может только создание общей памяти или потоков — тогда
+    // мир уже, возможно, в общей памяти, но шаг идёт по-старому: пока все
+    // потоки не доложили о готовности, step() считает в одном.
+    console.error('Пиксилиус: потоки не запустились', e);
+  }
+}
 
 const canvas = document.getElementById('view');
 const stage = document.getElementById('stage');
@@ -157,6 +200,11 @@ function showMaterialInfo(clientX, clientY, id) {
 
 function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
 
+// Справка лупы — большая панель по центру (inspect.js). Щелчок лупой по
+// полю её не закрывает, а показывает следующую клетку.
+const inspectPanel = new InspectPanel(sim, (e) => e.target === canvas && selectedElement === TOOL_INSPECT);
+input.onInspect = (gx, gy) => inspectPanel.show(gx, gy);
+
 document.addEventListener('click', hideMaterialInfo);
 document.addEventListener('scroll', hideMaterialInfo, true);
 
@@ -217,12 +265,38 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
 // во вкладке "Разное", рядом с инструментами давления и температуры, но
 // сам не инструмент — не откликается на клики по канвасу, просто правит
 // sim.timeScale напрямую.
+//
+// В подписи рядом с процентом — фактическая скорость, шагов симуляции в
+// секунду (measuredStepsPerSec, считает loop). Процент — это шагов на
+// кадр отрисовки, и когда машина не успевает посчитать их все, кадров
+// становится меньше: 400% дают не вчетверо больше шагов в секунду, а
+// сколько вытянет процессор. Раньше этого не было видно, и выглядело так,
+// будто ускорение времени не ускоряет, например, коррозию — хотя она, как
+// и всё остальное, идёт по шагам и ускоряется ровно во столько, во
+// сколько выросло число шагов.
+let measuredStepsPerSec = 0;
+let refreshTimeScaleLabel = () => {};
+
 function addTimeScaleControl() {
   const wrap = document.createElement('div');
   wrap.className = 'time-scale';
   const label = document.createElement('div');
   label.className = 'time-scale-label';
-  const refreshLabel = () => { label.textContent = `Течение времени: ${sim.timeScale}%`; };
+  const pct = document.createElement('span');
+  const rate = document.createElement('span');
+  rate.className = 'time-scale-rate';
+  rate.title = 'Фактически шагов симуляции в секунду';
+  label.append(pct, rate);
+  const refreshLabel = () => {
+    pct.textContent = `Течение времени: ${sim.timeScale}%`;
+    rate.textContent = measuredStepsPerSec ? `${measuredStepsPerSec} шаг/с` : '';
+    // Сколько потоков считает мир (sim/threads.js) — чтобы было видно,
+    // включилась ли многопоточность.
+    const threads = sim.threadsReady() ? sim._threadCount + 1 : 1;
+    rate.title = `Фактически шагов симуляции в секунду; потоков: ${threads}`;
+    if (measuredStepsPerSec && threads > 1) rate.textContent += ` · потоки: ${threads}`;
+  };
+  refreshTimeScaleLabel = refreshLabel;
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = '10';
@@ -241,9 +315,9 @@ function addTimeScaleControl() {
 }
 
 // Категории — чисто UI-группировка палитры (не связана с CAT/симуляцией
-// напрямую, кроме как через материал -> cat). "Разное" — инструменты
-// воздействия на мир (не материалы: давление воздуха, температура — оба
-// по одному и тому же принципу ЛКМ добавляет/ПКМ убавляет). "Технологии"
+// напрямую, кроме как через материал -> cat). "Разное" — инструменты, а
+// не материалы: давление воздуха и температура (оба по принципу ЛКМ
+// добавляет/ПКМ убавляет) и лупа, которая мир не трогает. "Технологии"
 // пока пуста — пользователь наполнит её позже, отдельно от "Разное".
 const CATEGORIES = [
   // "Все" вместо прежней вкладки "Газ": газов стало достаточно, чтобы они
@@ -267,6 +341,9 @@ function materialCategoryKey(id) {
   // которого начинают стройку, а то, во что материалы превращаются сами.
   // Место им во вкладке «Все», где они и видны все разом.
   if (isOxide(id)) return 'all';
+  // Чёрные соли пока только во "Всех" (просьба: "в сыпучие пока не
+  // добавляй") — они, как и окислы, продукт реакции, а не сырьё.
+  if (id === EL.BLACK_SALT) return 'all';
   const cat = ELEMENTS[id].cat;
   if (cat === CAT.GAS) return 'gas';
   if (cat === CAT.LIQUID) return 'liquid';
@@ -304,6 +381,11 @@ function buildPaletteGrid() {
       '<div class="mi-title">Температура</div>'
       + '<div class="mi-row"><span>ЛКМ</span><span>нагреть</span></div>'
       + '<div class="mi-row"><span>ПКМ</span><span>охладить</span></div>');
+    addToolButton(TOOL_INSPECT, 'Лупа', '#4a90c8',
+      '<div class="mi-title">Лупа</div>'
+      + '<div class="mi-row"><span>Щелчок</span><span>справка о клетке</span></div>'
+      + '<div class="mi-row"><span>Раствор, газ</span><span>состав по долям</span></div>'
+      + '<div class="mi-row"><span>Esc, щелчок мимо</span><span>закрыть</span></div>');
     addTimeScaleControl();
   } else {
     for (const id of ELEMENT_ORDER) {
@@ -330,12 +412,22 @@ statusLabel.textContent = ELEMENTS[ELEMENT_ORDER[0]].name;
 // рычагом, а не отдельной подстройкой каждой механики); при 50 — шаг
 // происходит в среднем раз в два кадра (вдвое медленнее).
 let stepAccumulator = 0;
+// Замер фактической скорости (см. addTimeScaleControl): шаги за окно
+// в полсекунды.
+let rateSteps = 0, rateSince = performance.now();
 
 function loop() {
   stepAccumulator += sim.timeScale / 100;
   while (stepAccumulator >= 1) {
+    if (!sim.paused) rateSteps++;
     sim.step();
     stepAccumulator -= 1;
+  }
+  const now = performance.now();
+  if (now - rateSince >= 500) {
+    measuredStepsPerSec = Math.round(rateSteps * 1000 / (now - rateSince));
+    rateSteps = 0; rateSince = now;
+    refreshTimeScaleLabel();
   }
   input.tickHold();
   renderer.render(input.getCursorState());

@@ -47,6 +47,10 @@ class InputController {
     this.debugWind = false;
     this.debugTherm = false;
 
+    // (gx, gy, clientX, clientY) => void — щелчок лупой по клетке. Задаёт
+    // main.js: что показать, решает интерфейс, а не ввод.
+    this.onInspect = null;
+
     this._bind();
   }
 
@@ -240,13 +244,21 @@ class InputController {
 
     // Инструмент "давление" — особый случай: не рисует материал, а
     // напрямую правит поток воздуха под кистью (ЛКМ усиливает, ПКМ
-    // гасит); модификаторы (shift/ctrl/alt) тут не участвуют, и в
-    // историю отмены это не попадает — сетка ветра не часть отменяемого
-    // состояния (пересчитывается заново каждый кадр).
+    // гасит); модификаторы (shift/ctrl/alt) тут не участвуют. Отдельным
+    // шагом истории это не становится (иначе каждое движение кисти
+    // давления забивало бы историю), но сам ветер в снимки отмены входит
+    // (см. Sim.snapshot) — отмена следующего действия откатит и его.
     if (elementId === TOOL_PRESSURE) {
       const mode = e.button === 0 ? 'pressureInc' : 'pressureDec';
       this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
       this.sim.applyPressureBrush(egx, egy, this.brushRX, this.brushRY, mode === 'pressureInc' ? 1 : -1);
+      return;
+    }
+
+    // Лупа ничего не меняет в мире: ни рисования, ни шага истории — только
+    // сообщает, по какой клетке щёлкнули (показывает карточку main.js).
+    if (elementId === TOOL_INSPECT) {
+      if (this.onInspect) this.onInspect(egx, egy, e.clientX, e.clientY);
       return;
     }
 
@@ -268,6 +280,9 @@ class InputController {
 
     this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
     this.pushUndo();
+    // Балка берёт материал у клетки, с которой её начали вести (зажал на
+    // металле и повёл — металлическая балка), см. Sim.pickBeamMaterial.
+    if (elementId === EL.BEAM) this.sim.pickBeamMaterial(egx, egy);
 
     if (mode === 'paint' || mode === 'erase') {
       const writeEl = this.paintElementFor(mode, elementId);
@@ -355,10 +370,13 @@ class InputController {
       if (d.mode === 'lineSnap') [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
       linePreview = { x0: d.startX, y0: d.startY, x1: ex, y1: ey };
     }
+    // У лупы контур в одну клетку: она смотрит ровно одну клетку, а не
+    // площадь кисти.
+    const inspect = this.getSelectedElement() === TOOL_INSPECT;
     return {
       gx: this.gx, gy: this.gy,
       showBrush: this.inCanvas,
-      brushShape: this.brushShape, brushRX: this.brushRX, brushRY: this.brushRY,
+      brushShape: this.brushShape, brushRX: inspect ? 0 : this.brushRX, brushRY: inspect ? 0 : this.brushRY,
       linePreview,
       zoomActive: this.zoomKeyDown && this.inCanvas,
       zoomRX: this.zoomRX, zoomRY: this.zoomRY,

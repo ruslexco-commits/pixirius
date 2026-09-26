@@ -124,7 +124,7 @@ class SimHuman {
       const t = this.type[this.idx(x, ny)];
       if (t === EL.EMPTY) continue;
       if (isVaporFamily(t)) {
-        if (solGet(this.sol[this.idx(x, ny)], P_ACID) > 0) return true;
+        if (solGet(this.comp(this.idx(x, ny)), P_ACID) > 0) return true;
         continue;
       }
       // Дошли до чего-то плотного — дальше не видно, да и незачем: это
@@ -228,7 +228,7 @@ class SimHuman {
       if (!this.inBounds(nx, ny)) continue;
       const nt = this.type[this.idx(nx, ny)];
       if (nt === EL.SOLUTION) {
-        const c = this.sol[this.idx(nx, ny)];
+        const c = this.comp(this.idx(nx, ny));
         if (!solGet(c, P_ACID) && !solGet(c, P_REAGENT)) continue;
       }
       if (this.humanDeadly(nt)) { this.humanDie(i); return; }
