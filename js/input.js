@@ -21,7 +21,11 @@ function snapAngle(x0, y0, x1, y1) {
 // Сенсорное управление (просьба пользователя: "худо-бедно, но управление с
 // сенсорного устройства"):
 //   один палец — как зажатая ЛКМ (рисует, тянет, щёлкает инструментом);
-//   два пальца сводят/разводят — кисть меньше/больше;
+//   два пальца сводят/разводят по вертикали — кисть меньше/больше;
+//   по горизонтали — лупа: появляется в точке между пальцами (как Z и
+//     щелчок) и меняет увеличение (развели — крупнее); пока она открыта
+//     пальцами, на поле её яркая метка (LENS_HANDLE_PX): метку тянут одним
+//     пальцем — лупа едет, коснулись метки и отпустили — лупа закрылась;
 //   два пальца двигаются вместе — ровная линия с привязкой к 45°
 //     (как Shift+Ctrl), кладётся, когда пальцы отпустили;
 //   двойное касание двумя пальцами — круглая/квадратная кисть (как Tab).
@@ -35,6 +39,10 @@ const TOUCH_MOVE_PX = 18;
 const TOUCH_TAP_MS = 350;
 // Между двумя касаниями двумя пальцами не дольше этого (мс) — двойное.
 const TOUCH_DOUBLE_MS = 500;
+// Метка лупы, открытой пальцами: радиус кружка и радиус, в котором касание
+// берёт метку (экранных пикселей — палец толще курсора).
+const LENS_HANDLE_PX = 14;
+const LENS_HANDLE_HIT_PX = 36;
 
 // Касание как событие мыши (onMouseDown/Move ждут именно его поля).
 function touchAsMouse(t) {
@@ -210,6 +218,8 @@ class InputController {
     // вдогонку поддельные события мыши.
     this.touch = null;
     this.lastTwoTap = 0;
+    // Лупа открыта жестом (а не клавишей Z) — у неё метка на поле.
+    this.lensByTouch = false;
     c.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
     c.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
     c.addEventListener('touchend', (e) => this.onTouchEnd(e, false), { passive: false });
@@ -229,6 +239,13 @@ class InputController {
     e.preventDefault();
     const ts = e.touches;
     this.inCanvas = true;
+    if (!this.touch && ts.length === 1 && this.hitLensHandle(ts[0])) {
+      // Палец на метке лупы — тянет лупу, а не рисует.
+      const [gx, gy] = this.toGrid(ts[0].clientX, ts[0].clientY);
+      this.touch = { mode: 'lens', id: ts[0].identifier, x0: ts[0].clientX, y0: ts[0].clientY, moved: false,
+        gx0: gx, gy0: gy, px0: this.zoomPinnedGX, py0: this.zoomPinnedGY };
+      return;
+    }
     if (!this.touch && ts.length === 1) {
       // Один палец — ЛКМ. Глубина истории — чтобы было куда откатить, если
       // окажется, что это начало жеста двумя пальцами.
@@ -243,13 +260,24 @@ class InputController {
     this.touch = {
       mode: 'two', a: a.identifier, b: b.identifier, kind: null, at: performance.now(),
       d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), mx0: mx, my0: my,
-      rx0: this.brushRX, ry0: this.brushRY,
+      sx0: Math.abs(a.clientX - b.clientX), sy0: Math.abs(a.clientY - b.clientY),
+      rx0: this.brushRX, ry0: this.brushRY, zx0: this.zoomRX, zy0: this.zoomRY,
     };
     [this.gx, this.gy] = this.toGrid(mx, my);
   }
 
   // Откатить то, что успел сделать первый палец до второго: мазок, линию,
   // вставку (всё, что положило шаг в историю после undoDepth).
+  // Касание попало в метку лупы, открытой пальцами (см. LENS_HANDLE_*).
+  hitLensHandle(t) {
+    if (!this.lensByTouch || !this.zoomPinned) return false;
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0) return false;
+    const css = rect.width / this.canvas.width, z = this.renderer.zoom;
+    const cx = rect.left + (this.zoomPinnedGX + 0.5) * z * css, cy = rect.top + (this.zoomPinnedGY + 0.5) * z * css;
+    return Math.hypot(t.clientX - cx, t.clientY - cy) <= LENS_HANDLE_HIT_PX;
+  }
+
   revertTouch(undoDepth) {
     this.drag = null;
     this.selDrag = null;
@@ -269,6 +297,16 @@ class InputController {
       if (p) this.onMouseMove(touchAsMouse(p));
       return;
     }
+    if (t.mode === 'lens') {
+      const p = this.touchById(e.touches, t.id);
+      if (!p) return;
+      if (Math.hypot(p.clientX - t.x0, p.clientY - t.y0) > TOUCH_MOVE_PX) t.moved = true;
+      if (!t.moved) return;
+      const [gx, gy] = this.toGrid(p.clientX, p.clientY);
+      this.zoomPinnedGX = clampInt(t.px0 + gx - t.gx0, 0, this.sim.w - 1);
+      this.zoomPinnedGY = clampInt(t.py0 + gy - t.gy0, 0, this.sim.h - 1);
+      return;
+    }
     if (t.mode !== 'two') return;
     const a = this.touchById(e.touches, t.a), b = this.touchById(e.touches, t.b);
     if (!a || !b) return;
@@ -278,7 +316,18 @@ class InputController {
     this.gx = gx; this.gy = gy;
     if (!t.kind) {
       const pinch = Math.abs(d - t.d0), pan = Math.hypot(mx - t.mx0, my - t.my0);
-      if (pinch > TOUCH_MOVE_PX && pinch >= pan) t.kind = 'pinch';
+      if (pinch > TOUCH_MOVE_PX && pinch >= pan) {
+        // Пальцы разошлись больше по горизонтали — лупа, по вертикали — кисть.
+        const sx = Math.abs(a.clientX - b.clientX), sy = Math.abs(a.clientY - b.clientY);
+        if (Math.abs(sx - t.sx0) > Math.abs(sy - t.sy0)) {
+          t.kind = 'lens';
+          if (!this.zoomPinned) {
+            [this.zoomPinnedGX, this.zoomPinnedGY] = this.toGrid(t.mx0, t.my0);
+            this.zoomPinned = true;
+          }
+          this.lensByTouch = true;
+        } else t.kind = 'pinch';
+      }
       else if (pan > TOUCH_MOVE_PX) {
         t.kind = 'line';
         // Линия — только материалом: у инструментов (лупа, давление,
@@ -297,6 +346,12 @@ class InputController {
       const k = d / Math.max(1, t.d0);
       this.brushRX = clampInt(Math.round((t.rx0 + 1) * k) - 1, this.minR, this.maxR);
       this.brushRY = clampInt(Math.round((t.ry0 + 1) * k) - 1, this.minR, this.maxR);
+    } else if (t.kind === 'lens') {
+      // Увеличение — обратно расстоянию между пальцами по горизонтали:
+      // развели — лупа берёт область меньше, то есть показывает крупнее.
+      const k = Math.max(1, Math.abs(a.clientX - b.clientX)) / Math.max(1, t.sx0);
+      this.zoomRX = clampInt(Math.round((t.zx0 + 1) / k) - 1, 1, this.maxZoomR);
+      this.zoomRY = clampInt(Math.round((t.zy0 + 1) / k) - 1, 1, this.maxZoomR);
     } else if (t.kind === 'line' && this.drag) {
       this.drag.lastX = gx; this.drag.lastY = gy;
     }
@@ -312,6 +367,14 @@ class InputController {
         this.touch = null;
         this.inCanvas = false;
       }
+      return;
+    }
+    if (t.mode === 'lens') {
+      if (this.touchById(e.touches, t.id)) return;
+      // Коснулись метки и отпустили, не двигая, — лупа закрывается.
+      if (!t.moved && !cancel) { this.zoomPinned = false; this.lensByTouch = false; }
+      this.touch = e.touches.length ? { mode: 'done' } : null;
+      if (!e.touches.length) this.inCanvas = false;
       return;
     }
     if (t.mode === 'two') {
@@ -414,6 +477,7 @@ class InputController {
 
     // ЛКМ с зажатой Z — не рисование, а фиксация/снятие окна лупы на месте
     if (this.zoomKeyDown && e.button === 0 && !shift && !ctrl) {
+      this.lensByTouch = false;   // лупа клавишей — без метки для пальцев
       if (this.zoomPinned) {
         this.zoomPinned = false;
       } else {
@@ -646,6 +710,8 @@ class InputController {
       zoomActive: this.zoomKeyDown && at && this.inCanvas,
       zoomRX: this.zoomRX, zoomRY: this.zoomRY,
       zoomPinned: this.zoomPinned,
+      // Метка лупы на поле — когда её открыли пальцами (см. LENS_HANDLE_PX).
+      lensHandle: this.lensByTouch && this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
       debugStability: this.debugStability,

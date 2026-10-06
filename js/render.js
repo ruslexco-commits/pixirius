@@ -1034,6 +1034,30 @@ class Renderer {
     ctx.restore();
   }
 
+  // Метка лупы, открытой пальцами (js/input.js, LENS_HANDLE_PX): яркий
+  // кружок в центре того, что она показывает, — за него лупу тянут. Размер
+  // — в экранных пикселях, чтобы под пальцем он был виден при любом
+  // масштабе поля.
+  drawLensHandle(gx, gy) {
+    const ctx = this.ctx, z = this.zoom;
+    const rect = this.canvas.getBoundingClientRect();
+    const k = rect.width > 0 ? this.canvas.width / rect.width : 1;
+    const cx = (gx + 0.5) * z, cy = (gy + 0.5) * z, r = LENS_HANDLE_PX * k;
+    ctx.save();
+    ctx.lineWidth = Math.max(2, 3 * k);
+    ctx.fillStyle = 'rgba(255, 210, 40, 0.35)';
+    ctx.strokeStyle = 'rgba(255, 220, 60, 1)';
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(20, 20, 24, 0.9)';
+    ctx.lineWidth = Math.max(1, 1.5 * k);
+    ctx.beginPath(); ctx.arc(cx, cy, r + ctx.lineWidth * 1.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - r * 0.5, cy); ctx.lineTo(cx + r * 0.5, cy);
+    ctx.moveTo(cx, cy - r * 0.5); ctx.lineTo(cx, cy + r * 0.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   drawZoomLens(gx, gy, capRX, capRY, pinned, brush, linePreview, clip = null) {
     const z = this.zoom;
     const srcRect = {
@@ -1173,6 +1197,7 @@ class Renderer {
       const zx = cursor.zoomPinned ? cursor.zoomPinnedGX : cursor.gx;
       const zy = cursor.zoomPinned ? cursor.zoomPinnedGY : cursor.gy;
       this.drawZoomSourceHighlight(zx, zy, cursor.zoomRX, cursor.zoomRY);
+      if (cursor.lensHandle) this.drawLensHandle(zx, zy);
       // Рабочая точка кисти для отрисовки внутри лупы: при наведении на саму
       // лупу — та точка, что она сейчас показывает под курсором; иначе, во
       // время протяжки линии — текущий конец линии; иначе — обычная позиция
