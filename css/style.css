@@ -29,6 +29,7 @@ html, body {
 }
 
 #view {
+  touch-action: none;   /* пальцы на поле — рисование и жесты (js/input.js), не прокрутка страницы */
   display: block;
   max-width: 100%;
   max-height: 100%;
@@ -341,7 +342,7 @@ body.playing #panel { display: none; }
 /* ---- мультиплеер: лобби (js/lobby.js) ---- */
 #lobbySide { display: none; flex: 0 0 300px; flex-direction: column; gap: 14px; padding: 14px; box-sizing: border-box; background: #16161b; border-right: 1px solid #2a2a32; overflow-y: auto; color: #e8e8ec; font-family: system-ui, sans-serif; }
 body.in-lobby #lobbySide { display: flex; }
-#lobbyView { display: none; image-rendering: pixelated; }
+#lobbyView { display: none; image-rendering: pixelated; touch-action: none; }
 body.in-lobby #lobbyView { display: block; }
 body.in-lobby #view { display: none; }
 body.in-lobby #btnPause, body.in-lobby #btnClear, body.in-lobby #btnSave, body.in-lobby #btnLoad { display: none; }

@@ -18,6 +18,29 @@ function snapAngle(x0, y0, x1, y1) {
   return [Math.round(x0 + Math.cos(angle) * dist), Math.round(y0 + Math.sin(angle) * dist)];
 }
 
+// Сенсорное управление (просьба пользователя: "худо-бедно, но управление с
+// сенсорного устройства"):
+//   один палец — как зажатая ЛКМ (рисует, тянет, щёлкает инструментом);
+//   два пальца сводят/разводят — кисть меньше/больше;
+//   два пальца двигаются вместе — ровная линия с привязкой к 45°
+//     (как Shift+Ctrl), кладётся, когда пальцы отпустили;
+//   двойное касание двумя пальцами — круглая/квадратная кисть (как Tab).
+// Первый палец почти всегда касается чуть раньше второго и успевает
+// мазнуть — всё, что он сделал, откатывается, как только касается второй
+// (просьба: "то, что натворил двойным кликом, должно сразу отменяться").
+// Кнопки — обычным касанием: сенсорные события ловит только поле.
+// Сдвиг (экранных пикселей), с которого два пальца — жест, а не касание.
+const TOUCH_MOVE_PX = 18;
+// Два пальца коснулись и отпустили не дольше этого (мс) — касание.
+const TOUCH_TAP_MS = 350;
+// Между двумя касаниями двумя пальцами не дольше этого (мс) — двойное.
+const TOUCH_DOUBLE_MS = 500;
+
+// Касание как событие мыши (onMouseDown/Move ждут именно его поля).
+function touchAsMouse(t) {
+  return { button: 0, clientX: t.clientX, clientY: t.clientY, shiftKey: false, ctrlKey: false, altKey: false };
+}
+
 class InputController {
   constructor(sim, renderer, canvas, getSelectedElement) {
     this.sim = sim;
@@ -182,6 +205,131 @@ class InputController {
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
     window.addEventListener('keyup', (e) => this.onKeyUp(e));
     window.addEventListener('blur', () => { this.zoomKeyDown = false; this.drag = null; });
+    // Сенсорные — только на поле и не пассивные: preventDefault не даёт
+    // браузеру прокручивать и масштабировать страницу пальцами и слать
+    // вдогонку поддельные события мыши.
+    this.touch = null;
+    this.lastTwoTap = 0;
+    c.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+    c.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
+    c.addEventListener('touchend', (e) => this.onTouchEnd(e, false), { passive: false });
+    c.addEventListener('touchcancel', (e) => this.onTouchEnd(e, true), { passive: false });
+  }
+
+  // ---- сенсорный ввод (см. TOUCH_* в начале файла) ----
+
+  // Касание из списка по номеру пальца.
+  touchById(list, id) {
+    for (let k = 0; k < list.length; k++) if (list[k].identifier === id) return list[k];
+    return null;
+  }
+
+  onTouchStart(e) {
+    if (!this.enabled) return;
+    e.preventDefault();
+    const ts = e.touches;
+    this.inCanvas = true;
+    if (!this.touch && ts.length === 1) {
+      // Один палец — ЛКМ. Глубина истории — чтобы было куда откатить, если
+      // окажется, что это начало жеста двумя пальцами.
+      this.touch = { mode: 'one', id: ts[0].identifier, undoDepth: this.undoStack.length };
+      this.onMouseDown(touchAsMouse(ts[0]));
+      return;
+    }
+    if (ts.length < 2 || (this.touch && this.touch.mode !== 'one')) return;
+    if (this.touch) this.revertTouch(this.touch.undoDepth);
+    const a = ts[0], b = ts[1];
+    const mx = (a.clientX + b.clientX) / 2, my = (a.clientY + b.clientY) / 2;
+    this.touch = {
+      mode: 'two', a: a.identifier, b: b.identifier, kind: null, at: performance.now(),
+      d0: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), mx0: mx, my0: my,
+      rx0: this.brushRX, ry0: this.brushRY,
+    };
+    [this.gx, this.gy] = this.toGrid(mx, my);
+  }
+
+  // Откатить то, что успел сделать первый палец до второго: мазок, линию,
+  // вставку (всё, что положило шаг в историю после undoDepth).
+  revertTouch(undoDepth) {
+    this.drag = null;
+    this.selDrag = null;
+    if (this.undoStack.length > undoDepth) {
+      const snap = this.undoStack[undoDepth];
+      this.undoStack.length = undoDepth;
+      this.sim.restore(snap);
+    }
+  }
+
+  onTouchMove(e) {
+    if (!this.enabled || !this.touch) return;
+    e.preventDefault();
+    const t = this.touch;
+    if (t.mode === 'one') {
+      const p = this.touchById(e.touches, t.id);
+      if (p) this.onMouseMove(touchAsMouse(p));
+      return;
+    }
+    if (t.mode !== 'two') return;
+    const a = this.touchById(e.touches, t.a), b = this.touchById(e.touches, t.b);
+    if (!a || !b) return;
+    const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const mx = (a.clientX + b.clientX) / 2, my = (a.clientY + b.clientY) / 2;
+    const [gx, gy] = this.toGrid(mx, my);
+    this.gx = gx; this.gy = gy;
+    if (!t.kind) {
+      const pinch = Math.abs(d - t.d0), pan = Math.hypot(mx - t.mx0, my - t.my0);
+      if (pinch > TOUCH_MOVE_PX && pinch >= pan) t.kind = 'pinch';
+      else if (pan > TOUCH_MOVE_PX) {
+        t.kind = 'line';
+        // Линия — только материалом: у инструментов (лупа, давление,
+        // температура...) линии нет.
+        const elementId = this.getSelectedElement();
+        if (typeof elementId !== 'number') { t.kind = 'none'; return; }
+        const [sx, sy] = this.toGrid(t.mx0, t.my0);
+        this.pushUndo();
+        if (elementId === EL.BEAM) this.sim.pickBeamMaterial(sx, sy);
+        this.drag = { mode: 'lineSnap', startX: sx, startY: sy, lastX: gx, lastY: gy, elementId };
+      }
+    }
+    if (t.kind === 'pinch') {
+      // От размера кисти в начале жеста — во столько раз, во сколько
+      // изменилось расстояние между пальцами (+1: кисть 0 тоже растёт).
+      const k = d / Math.max(1, t.d0);
+      this.brushRX = clampInt(Math.round((t.rx0 + 1) * k) - 1, this.minR, this.maxR);
+      this.brushRY = clampInt(Math.round((t.ry0 + 1) * k) - 1, this.minR, this.maxR);
+    } else if (t.kind === 'line' && this.drag) {
+      this.drag.lastX = gx; this.drag.lastY = gy;
+    }
+  }
+
+  onTouchEnd(e, cancel) {
+    if (!this.touch) return;
+    e.preventDefault();
+    const t = this.touch;
+    if (t.mode === 'one') {
+      if (!this.touchById(e.touches, t.id)) {
+        this.onMouseUp();
+        this.touch = null;
+        this.inCanvas = false;
+      }
+      return;
+    }
+    if (t.mode === 'two') {
+      // Жест кончается, как только поднят любой из двух пальцев; оставшийся
+      // палец уже ничего не рисует (mode 'done' — до последнего пальца).
+      if (cancel) { this.drag = null; }
+      else if (t.kind === 'line') this.onMouseUp();
+      else if (!t.kind && performance.now() - t.at <= TOUCH_TAP_MS) {
+        const now = performance.now();
+        if (now - this.lastTwoTap <= TOUCH_DOUBLE_MS) {
+          this.brushShape = this.brushShape === 'circle' ? 'square' : 'circle';
+          this.lastTwoTap = 0;
+        } else this.lastTwoTap = now;
+      }
+      this.drag = null;
+      this.touch = { mode: 'done' };
+    }
+    if (e.touches.length === 0) { this.touch = null; this.inCanvas = false; }
   }
 
   onKeyDown(e) {

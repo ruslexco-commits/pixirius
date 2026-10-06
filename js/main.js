@@ -588,10 +588,13 @@ lobby = new Lobby({
 // При заходе в игру — две кнопки (просьба пользователя): "Выживание"
 // (пока ничего не делает) и "Креатив" — знакомый редактор. Подключение по
 // ссылке ?join=ID стартовый экран пропускает.
+// Пока Выживания нет, экран выключен: игра сразу открывается Креативом
+// (просьба пользователя "стартовое меню пока пропускай"). Вернуть — true.
+const START_SCREEN = false;
 {
   const joinId = (/[?&]join=([A-Za-z0-9]+)/.exec(location.search) || [])[1];
   if (joinId) lobby.startClient(joinId);
-  else {
+  else if (START_SCREEN) {
     const start = document.createElement('div');
     start.id = 'startScreen';
     start.innerHTML = '<div class="st-title">Пиксириус</div>'
