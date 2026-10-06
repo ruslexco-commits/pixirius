@@ -614,6 +614,34 @@ const START_SCREEN = false;
   }
 }
 
+// ---- карта по умолчанию ----
+
+// При запуске открывается карта "Вышка" (просьба пользователя: "по
+// умолчанию именно эта карта"). Файл — обычное сохранение .pixsav,
+// сжатое gzip: 6,7 МБ JSON по сети ужимаются до ~0,4 МБ, игре по ссылке с
+// телефона это заметно. Адрес без ?v=: браузер может держать её в кэше
+// между запусками. Пришла позже, чем игрок начал рисовать (медленная
+// сеть), — его рисунок не затираем. Подключение по ?join= берёт мир у
+// хоста, карта там не нужна.
+const DEFAULT_MAP = 'maps/vyshka.pixsav.gz';
+if (!/[?&]join=/.test(location.search) && typeof DecompressionStream === 'function') {
+  // gzip — по первым байтам (1f 8b): сервер, который сам распаковывает
+  // .gz по дороге (Content-Encoding), отдаст уже готовый JSON.
+  fetch(DEFAULT_MAP)
+    .then((r) => (r.ok ? r.arrayBuffer() : null))
+    .then((buf) => {
+      if (!buf) return null;
+      const b = new Uint8Array(buf);
+      if (b[0] !== 0x1f || b[1] !== 0x8b) return JSON.parse(new TextDecoder().decode(b));
+      return new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).json();
+    })
+    .then((obj) => {
+      if (!obj || input.undoStack.length || (mp && mp.role)) return;
+      sim.deserialize(obj);
+    })
+    .catch((e) => console.warn('Пиксириус: карта по умолчанию не загрузилась', e));
+}
+
 // ---- игровой цикл ----
 
 // Отрисовка (и обработка удержанной кисти) всегда идёт ровно раз на кадр
