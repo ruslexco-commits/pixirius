@@ -5,6 +5,76 @@ function clamp8(v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
 // С какой температуры материал начинает светиться от жара (см. heatTint).
 const HEAT_GLOW_FROM = 70;
 
+// Непрозрачность почти угасшего заряда (см. drawCharges): свежий — 1.
+const CHARGE_MIN_ALPHA = 0.15;
+
+// Вспышка монитора, принявшего снимок (просьба пользователя: "на треть
+// секунды становился голубым, плавно"): длительность в миллисекундах
+// настоящего времени, цвет и сила на пике.
+const MONITOR_GLOW_MS = 333;
+const MONITOR_GLOW_RGB = [110, 200, 255];
+const MONITOR_GLOW_PEAK = 0.85;
+
+// Темнота и свет (sim.darkness, выбирается лупой на лампочке; просьба
+// пользователя). Уровень 1 — света не считаем вовсе, лампочки не светят.
+// Уровень 2 — солнце: свет идёт сверху по столбцу до первого непрозрачного
+// (его верхняя грань ещё освещена), в жидкости слабеет, и немного
+// растекается вбок и вниз в проёмы (LIGHT_SPREAD за клетку); закрытое со
+// всех сторон помещение остаётся тёмным. Уровень 3 — солнца нет. Свет
+// лампочки расходится от неё волной на LAMP_RADIUS клеток: огибает углы,
+// но сквозь непрозрачное не проходит (стена освещена только с лица). В
+// воздухе он виден тёплым свечением, а сама горящая лампочка — яркой.
+// Темнота — затемнение до LIGHT_AMBIENT: пиксели остаются различимы, но
+// плохо. Всё это — слой поверх поля (drawLighting) и та же поправка цвета
+// для игры за протагониста и снимков камер (litColor).
+const LIGHT_AMBIENT = 0.12;
+const LIGHT_SPREAD = 0.88;
+const LIGHT_LIQUID_KEEP = 0.93;
+// Освещённая корка: внутрь непрозрачного свет заходит на несколько
+// пикселей, слабея так за каждый, но из него в воздух за ним не выходит —
+// иначе земля под солнцем была бы тёмной целиком, кроме верхнего ряда.
+const LIGHT_SOLID_KEEP = 0.6;
+const LAMP_RADIUS = 30;
+const LIGHT_SKY_PERIOD = 4;
+// Плавный свет (sim.lightSmooth, переключатель в лупе на лампочке; просьба
+// пользователя — "не попиксельно, а натурально", с возможностью вернуться
+// к попиксельному): затемнение растягивается по экрану со сглаживанием,
+// свет лампы спадает по настоящему расстоянию до неё (кругом, а не
+// восьмиугольником волны), а свечение рисуется отдельным размытым слоем,
+// который складывается с картинкой. Размытие свечения — LIGHT_GLOW_BLUR
+// клеток, затемнения — LIGHT_DARK_BLUR (мягкие края теней вместо ступенек).
+// Куда свет доходит и что его заслоняет — та же волна, что и у
+// попиксельного; игра за протагониста рисует свет по клеткам в обоих
+// режимах.
+const LIGHT_GLOW_BLUR = 4;
+const LIGHT_DARK_BLUR = 1;
+const LAMP_ON_RGB = [255, 236, 160];
+const LAMP_GLOW_RGB = [255, 196, 110];
+const LAMP_GLOW_AIR = 0.45;           // сила свечения в воздухе
+const LAMP_GLOW_MATTER = 0.12;        // тёплый отсвет на веществе
+// Голубое небо (темнота 2; просьба пользователя: верхний свет "аккуратно
+// окрашивает фон в полупрозрачно голубые тона"): освещённый солнцем воздух
+// (пустота и балка в ней) получает прибавку этого цвета, тем сильнее, чем
+// больше там солнца. Складывается со свечением ламп в одном слое.
+const SKY_TINT_RGB = [70, 125, 210];
+const SKY_TINT_AIR = 0.2;
+// Непрозрачное для света: твёрдое и сыпучее, кроме стекла.
+const LIGHT_OPAQUE = new Uint8Array(64);
+for (let id = 1; id < 64; id++) {
+  const el = ELEMENTS[id];
+  LIGHT_OPAQUE[id] = el && (el.cat === CAT.SOLID || el.cat === CAT.POWDER) && IS_SEE_THROUGH[id] !== 1 ? 1 : 0;
+}
+
+// Хэш числа в 0..1 — для мигания лампочки без Math.random (случайные числа
+// симуляции тратить нельзя, см. CLAUDE.md).
+function hash01(v) {
+  let h = Math.imul(v | 0, 0x9E3779B1);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x85EBCA6B);
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
 // Смешивает базовый цвет (rgb) с тоном отладочного режима (tint) в пропорции
 // weight (0 = чистый базовый, 1 = чистый tint) — используется, чтобы режимы
 // ветра/тепловизора подсвечивали клетку, а не полностью прятали под собой
@@ -46,6 +116,33 @@ function hsvToRgb(h, s, v) {
   return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
+// Оттенок балки в клетке i: -15..15, постоянный для клетки (хэш номера с
+// перемешиванием битов: простое умножение давало на соседних клетках
+// заметные диагональные полосы). Шейдер (render-gl.js) считает то же самое.
+function beamShade(i) {
+  let h = Math.imul(i, 0x9E3779B1);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x85EBCA6B);
+  h ^= h >>> 13;
+  return ((h >>> 24) % 31) - 15;
+}
+
+// Цвет крови на клетках вокруг раздавленного (см. поле stain).
+const BLOOD_COLOR = [140, 10, 14];
+// Отравление реагентом у человека и протагониста (то же поле stain, см.
+// sim/human.js): к жёлтому, при 255 — на POISON_TINT_MAX. Тем же цветом
+// желтеет ник игрока (NameTags в play.js).
+const POISON_COLOR = [232, 214, 40];
+const POISON_TINT_MAX = 0.85;
+// Грязь на пикселе (поле dirt, sim/mud.js): к цвету грязи, от DIRT_TINT_FULL
+// и больше (4 доли) — на DIRT_TINT_MAX. Доля в 1/10 от 255 была едва видна.
+const DIRT_COLOR = ELEMENTS[EL.MUD].color;
+const DIRT_TINT_MAX = 0.75;
+const DIRT_TINT_FULL = 100;
+// Урон у живых (то же поле dirt, sim/human.js): к красному, при 255 — на HURT_TINT_MAX.
+const HURT_COLOR = [214, 22, 22];
+const HURT_TINT_MAX = 0.8;
+
 class Renderer {
   // options.gpu — рисовать поле на видеокарте (render-gl.js), если она
   // доступна; иначе и при false — прежним путём на CPU (buildImage).
@@ -74,6 +171,367 @@ class Renderer {
     this.debugStability = false;
     this.debugWind = false;
     this.debugTherm = false;
+    // Вспышки мониторов (updateMonitorGlow): номер монитора → { seq, start }
+    // и клетки, светящиеся в этом кадре, → сила 0..1.
+    this._glowSeen = new Map();
+    this.monitorGlow = new Map();
+    // Свет (updateLighting): яркость клетки 0..1, свет лампочек 0..1 и
+    // слой затемнения поверх поля.
+    const n = sim.w * sim.h;
+    this.lightOn = false;
+    this.sky = new Float32Array(n);
+    this._lightOp = new Uint8Array(n);
+    this._skyCol = new Float32Array(sim.w);
+    this._skyInSolid = new Uint8Array(sim.w);
+    this._skyTick = 0;
+    this._skyLevel = 0;
+    this.lampLight = new Float32Array(n);
+    this._lampDist = new Int32Array(n);
+    this._lampSrc = new Int32Array(n);     // от какой лампы пришёл свет (плавный режим)
+    this._lampD0 = new Float32Array(n);    // начальное расстояние лампы-источника (её сила)
+    this._lampStamp = new Int32Array(n);
+    this._lampGen = 0;
+    this._lampBuckets = [];
+    this.lightCanvas = document.createElement('canvas');
+    this.lightCanvas.width = sim.w;
+    this.lightCanvas.height = sim.h;
+    this.lightCtx = this.lightCanvas.getContext('2d');
+    this.lightImg = this.lightCtx.createImageData(sim.w, sim.h);
+    // Слой свечения для плавного режима (размывается при наложении).
+    this.glowCanvas = document.createElement('canvas');
+    this.glowCanvas.width = sim.w;
+    this.glowCanvas.height = sim.h;
+    this.glowCtx = this.glowCanvas.getContext('2d');
+    this.glowImg = this.glowCtx.createImageData(sim.w, sim.h);
+  }
+
+  // Горит ли лампочка в клетке i: 0..1. Первые LAMP_STEADY кадров срока —
+  // ровно, дальше мигает: вспыхивает и гаснет рывками по хэшу срока (у
+  // клеток одной лампочки срок одинаковый, и мигают они вместе), и чем
+  // ближе конец, тем реже горит.
+  lampOn(i) {
+    const sim = this.sim;
+    if (sim.type[i] !== EL.LAMP) return 0;
+    const life = sim.life[i];
+    if (life <= 0) return 0;
+    const flickFrom = LAMP_CYCLE - LAMP_STEADY;
+    if (life > flickFrom) return 1;
+    const p = 0.2 + 0.6 * (life / flickFrom);
+    return hash01(life >> 2) < p ? 1 : 0.1;
+  }
+
+  // Раз в кадр отрисовки: свет на всём поле (см. LIGHT_*). При темноте 1 —
+  // ничего не считается. Солнце (sky) меняется медленно и пересчитывается
+  // раз в LIGHT_SKY_PERIOD кадров отрисовки (и сразу при смене темноты),
+  // лампочки — каждый кадр: они мигают. Первый вариант считал всё каждый
+  // кадр, столбцами с шагом в строку, и стоил 5,5 мс; теперь солнце идёт
+  // построчно с накопителем на столбец.
+  updateLighting() {
+    const sim = this.sim, d = sim.darkness | 0;
+    this.lightOn = d >= 2;
+    if (!this.lightOn) { this._skyLevel = 0; return; }
+    if (d !== this._skyLevel || ++this._skyTick >= LIGHT_SKY_PERIOD) {
+      this._skyTick = 0;
+      this._skyLevel = d;
+      if (d === 2) this.computeSky(); else this.sky.fill(0);
+    }
+    this.lightLamps();
+  }
+
+  // Солнце (темнота 2): свет сверху по столбцу, в жидкости слабеет, в
+  // непрозрачное заходит коркой (LIGHT_SOLID_KEEP за пиксель), но из него
+  // дальше в прозрачное не выходит. Потом растекается вбок по строкам (туда
+  // и обратно), вниз и ещё раз вбок — по тому же правилу корки.
+  computeSky() {
+    const sim = this.sim, w = sim.w, h = sim.h, n = w * h, type = sim.type, L = this.sky;
+    const op = this._lightOp, col = this._skyCol, inSolid = this._skyInSolid;
+    col.fill(1);
+    inSolid.fill(0);
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i++) {
+        const t = type[i], o = LIGHT_OPAQUE[t];
+        op[i] = o;
+        let c = col[x];
+        if (o === 1) { inSolid[x] = 1; L[i] = c; col[x] = c * LIGHT_SOLID_KEEP; continue; }
+        if (inSolid[x]) { c = 0; col[x] = 0; }
+        L[i] = c;
+        if (c > 0 && IS_LIQUID[t] === 1) col[x] = c * LIGHT_LIQUID_KEEP;
+      }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      for (let y = 0; y < h; y++) {
+        const row = y * w;
+        let carry = 0, fromSolid = 0;
+        for (let i = row, e = row + w; i < e; i++) {
+          const o = op[i];
+          if (o === 1 || !fromSolid) { const v = carry * (o === 1 ? LIGHT_SOLID_KEEP : LIGHT_SPREAD); if (v > L[i]) L[i] = v; }
+          carry = L[i]; fromSolid = o;
+        }
+        carry = 0; fromSolid = 0;
+        for (let i = row + w - 1; i >= row; i--) {
+          const o = op[i];
+          if (o === 1 || !fromSolid) { const v = carry * (o === 1 ? LIGHT_SOLID_KEEP : LIGHT_SPREAD); if (v > L[i]) L[i] = v; }
+          carry = L[i]; fromSolid = o;
+        }
+      }
+      if (pass === 0) {
+        for (let i = w; i < n; i++) {
+          const o = op[i];
+          if (op[i - w] === 1 && o !== 1) continue;
+          const v = L[i - w] * (o === 1 ? LIGHT_SOLID_KEEP : LIGHT_SPREAD);
+          if (v > L[i]) L[i] = v;
+        }
+      }
+    }
+  }
+
+  // Освещённость клетки 0..1: солнце плюс лампочки.
+  lightAt(i) {
+    const v = this.sky[i] + this.lampLight[i];
+    return v > 1 ? 1 : v;
+  }
+
+  // Свет лампочек: волна от всех горящих клеток сразу (Дейкстра с целыми
+  // шагами: прямо 2, по диагонали 3), до LAMP_RADIUS клеток. Непрозрачное
+  // свет принимает, но не пропускает. Сила лампочки p (lampOn) задана
+  // начальным расстоянием: тусклая стартует так, будто она уже дальше
+  // (maxD * (1 - sqrt p)), и в клетке остаётся свет той лампы, что светит
+  // туда ярче всех, — яркость (1 - d/maxD)^2. Раньше каждой клетке
+  // доставалась сила ближайшей лампы: мигнувшая (p = 0.1) затемняла свою
+  // округу, даже если рядом горела другая, и среди многих ламп при мигании
+  // появлялись тёмные пятна (жалоба пользователя).
+  lightLamps() {
+    const sim = this.sim, w = sim.w, h = sim.h, n = w * h, type = sim.type;
+    const G = this.lampLight, dist = this._lampDist, stamp = this._lampStamp;
+    const src = this._lampSrc, srcD0 = this._lampD0, smooth = !!sim.lightSmooth;
+    G.fill(0);
+    const gen = ++this._lampGen, maxD = LAMP_RADIUS * 2;
+    const buckets = this._lampBuckets;
+    for (let b = 0; b <= maxD; b++) { if (!buckets[b]) buckets[b] = []; buckets[b].length = 0; }
+    let any = false;
+    for (let i = 0; i < n; i++) {
+      if (type[i] !== EL.LAMP) continue;
+      const p = this.lampOn(i);
+      if (p <= 0) continue;
+      any = true;
+      const d0 = Math.round(maxD * (1 - Math.sqrt(p)));
+      if (d0 >= maxD) continue;
+      stamp[i] = gen; dist[i] = d0;
+      src[i] = i; srcD0[i] = maxD * (1 - Math.sqrt(p));
+      buckets[d0].push(i);
+    }
+    if (!any) return;
+    for (let b = 0; b <= maxD; b++) {
+      const list = buckets[b];
+      for (let q = 0; q < list.length; q++) {
+        const i = list[q];
+        if (dist[i] !== b) continue;
+        // Плавный режим: яркость по настоящему расстоянию до лампы-источника
+        // (в тех же полуклетках, что и волна) плюс её начальное расстояние.
+        let f;
+        if (smooth) {
+          const s = src[i], dx = i % w - s % w, dy = ((i / w) | 0) - ((s / w) | 0);
+          f = 1 - (2 * Math.sqrt(dx * dx + dy * dy) + srcD0[s]) / maxD;
+        } else f = 1 - b / maxD;
+        const v = f > 0 ? f * f : 0;
+        if (v > G[i]) G[i] = v;
+        // Грань непрозрачного освещена, дальше свет не идёт. Горящая лампочка
+        // — источник, от неё свет расходится (погасшая — обычная преграда).
+        if (LIGHT_OPAQUE[type[i]] === 1 && !(type[i] === EL.LAMP && this.lampOn(i) > 0)) continue;
+        const x = i % w, y = (i / w) | 0;
+        for (let k = 0; k < 8; k++) {
+          const nx = x + CHARGE_NB_DX[k], ny = y + CHARGE_NB_DY[k];
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+          const j = ny * w + nx, nd = b + (k < 4 ? 2 : 3);
+          if (nd > maxD) continue;
+          if (stamp[j] === gen && dist[j] <= nd) continue;
+          stamp[j] = gen; dist[j] = nd; src[j] = src[i];
+          buckets[nd].push(j);
+        }
+      }
+    }
+  }
+
+  // Цвет rgb клетки i с учётом света (для игры и снимков камер).
+  litColor(i, rgb) {
+    if (!this.lightOn) return rgb;
+    const t = this.sim.type[i];
+    if (t === EL.LAMP) {
+      const p = this.lampOn(i);
+      if (p > 0) {
+        const a = 0.9 * p;
+        return [rgb[0] + (LAMP_ON_RGB[0] - rgb[0]) * a, rgb[1] + (LAMP_ON_RGB[1] - rgb[1]) * a, rgb[2] + (LAMP_ON_RGB[2] - rgb[2]) * a];
+      }
+    }
+    const b = LIGHT_AMBIENT + (1 - LIGHT_AMBIENT) * this.lightAt(i);
+    const g = this.lampLight[i] * (t === EL.EMPTY ? LAMP_GLOW_AIR : LAMP_GLOW_MATTER);
+    const gs = (this.sim.darkness | 0) === 2 && t === EL.EMPTY ? this.sky[i] * SKY_TINT_AIR : 0;
+    return [Math.min(255, rgb[0] * b + LAMP_GLOW_RGB[0] * g + SKY_TINT_RGB[0] * gs), Math.min(255, rgb[1] * b + LAMP_GLOW_RGB[1] * g + SKY_TINT_RGB[1] * gs), Math.min(255, rgb[2] * b + LAMP_GLOW_RGB[2] * g + SKY_TINT_RGB[2] * gs)];
+  }
+
+  // Слои света (см. LIGHT_*), картинки w x h: затемнение (чёрный с
+  // непрозрачностью 1 - яркость, горящие лампочки — своим цветом) и
+  // свечение (тёплый цвет, непрозрачность — свет лампы), которое при
+  // наложении складывается с картинкой. Раньше свечение подмешивалось в
+  // затемнение как C*a — и там, где лампа освещала клетку полностью (a = 0),
+  // его было не к чему прибавить: вокруг лампы шло тёмное кольцо.
+  buildLightImage() {
+    const sim = this.sim, n = sim.w * sim.h, type = sim.type;
+    const skyTint = (sim.darkness | 0) === 2;
+    // Пиксель RGBA одним словом (порядок байт в памяти — младший первым).
+    const d32 = this._light32 || (this._light32 = new Uint32Array(this.lightImg.data.buffer));
+    const g32 = this._glow32 || (this._glow32 = new Uint32Array(this.glowImg.data.buffer));
+    const S = this.sky, G = this.lampLight, K = 1 - LIGHT_AMBIENT;
+    const glowRGB = LAMP_GLOW_RGB[0] | (LAMP_GLOW_RGB[1] << 8) | (LAMP_GLOW_RGB[2] << 16);
+    const lampWord = LAMP_ON_RGB[0] | (LAMP_ON_RGB[1] << 8) | (LAMP_ON_RGB[2] << 16);
+    for (let i = 0; i < n; i++) {
+      const t = type[i], g0 = G[i], s0 = S[i];
+      let l = s0 + g0;
+      if (l > 1) l = 1;
+      // Голубой тон неба — только воздуху (см. SKY_TINT_*).
+      const gs = skyTint && t === EL.EMPTY ? s0 * SKY_TINT_AIR : 0;
+      if (g0 === 0) {
+        g32[i] = gs === 0 ? 0 : ((SKY_TINT_RGB[0] | (SKY_TINT_RGB[1] << 8) | (SKY_TINT_RGB[2] << 16) | ((gs * 255) << 24)) >>> 0);
+        d32[i] = ((K * (1 - l) * 255) << 24) >>> 0;
+        continue;
+      }
+      const gl = g0 * (t === EL.EMPTY ? LAMP_GLOW_AIR : LAMP_GLOW_MATTER);
+      if (gs === 0) g32[i] = (glowRGB | ((Math.min(255, gl * 255) | 0) << 24)) >>> 0;
+      else {
+        // Свечение лампы и небо вместе: цвет — взвешенный, сила — сумма.
+        const A = Math.min(1, gl + gs), kl = gl / A, ks = gs / A;
+        const r = Math.min(255, LAMP_GLOW_RGB[0] * kl + SKY_TINT_RGB[0] * ks) | 0;
+        const g = Math.min(255, LAMP_GLOW_RGB[1] * kl + SKY_TINT_RGB[1] * ks) | 0;
+        const b = Math.min(255, LAMP_GLOW_RGB[2] * kl + SKY_TINT_RGB[2] * ks) | 0;
+        g32[i] = (r | (g << 8) | (b << 16) | ((A * 255) << 24)) >>> 0;
+      }
+      if (t === EL.LAMP) {
+        const p = this.lampOn(i);
+        if (p > 0) { d32[i] = (lampWord | ((230 * p) << 24)) >>> 0; continue; }
+      }
+      d32[i] = ((K * (1 - l) * 255) << 24) >>> 0;
+    }
+    this.lightCtx.putImageData(this.lightImg, 0, 0);
+    this.glowCtx.putImageData(this.glowImg, 0, 0);
+  }
+
+  // Слои света в прямоугольник канваса (dx, dy, dw, dh) из клеток поля
+  // (x0..x1, y0..y1), обрезанные этим прямоугольником (размытие иначе
+  // вылезало за окно лупы жёлтой полосой). Попиксельно — без сглаживания и
+  // размытия; плавно — затемнение сглаженно и чуть размыто (LIGHT_DARK_BLUR),
+  // свечение размыто сильнее (LIGHT_GLOW_BLUR). Свечение — сложением.
+  paintLight(x0, y0, x1, y1, dx, dy, dw, dh) {
+    const ctx = this.ctx, sw = x1 - x0 + 1, sh = y1 - y0 + 1;
+    const smooth = !!this.sim.lightSmooth, cell = dw / sw;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(dx, dy, dw, dh);
+    ctx.clip();
+    ctx.imageSmoothingEnabled = smooth;
+    if (smooth) {
+      ctx.imageSmoothingQuality = 'high';
+      ctx.filter = `blur(${(LIGHT_DARK_BLUR * cell).toFixed(1)}px)`;
+    }
+    ctx.drawImage(this.lightCanvas, x0, y0, sw, sh, dx, dy, dw, dh);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.filter = smooth ? `blur(${(LIGHT_GLOW_BLUR * cell).toFixed(1)}px)` : 'none';
+    ctx.drawImage(this.glowCanvas, x0, y0, sw, sh, dx, dy, dw, dh);
+    ctx.restore();
+  }
+
+  // Слой света поверх поля (параметры — как у drawCharges).
+  drawLighting(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1) {
+    if (!this.lightOn) return;
+    this.paintLight(x0, y0, x1, y1, ox, oy, (x1 - x0 + 1) * scale, (y1 - y0 + 1) * scale);
+  }
+
+  // Раз в кадр отрисовки: какие мониторы сейчас светятся. Симуляция
+  // отмечает приём снимка номером (sim.monitorFlash, sim/charges.js), а
+  // время вспышки отмеряется здесь по часам, а не кадрами симуляции:
+  // треть секунды остаётся третью секунды при любой скорости времени.
+  // Сила — полуволна синуса: плавно загорается и плавно гаснет.
+  updateMonitorGlow(now = performance.now()) {
+    const glow = this.monitorGlow, seen = this._glowSeen, flashes = this.sim.monitorFlash;
+    glow.clear();
+    if (!flashes) return;
+    for (const [key, f] of flashes) {
+      let s = seen.get(key);
+      if (!s || s.seq !== f.seq) { s = { seq: f.seq, start: now }; seen.set(key, s); }
+      const t = (now - s.start) / MONITOR_GLOW_MS;
+      if (t >= 1) continue;
+      const k = Math.sin(Math.PI * t);
+      for (let n = 0; n < f.cells.length; n++) {
+        const c = f.cells[n];
+        if (this.sim.type[c] === EL.MONITOR) glow.set(c, k);
+      }
+    }
+    for (const key of seen.keys()) if (!flashes.has(key)) seen.delete(key);
+  }
+
+  // Цвет клетки монитора с вспышкой поверх (для игры за протагониста,
+  // js/play.js, где поле рисуется без оверлея).
+  glowColor(i, rgb) {
+    const k = this.monitorGlow.get(i);
+    if (!k) return rgb;
+    const a = k * MONITOR_GLOW_PEAK;
+    return [rgb[0] + (MONITOR_GLOW_RGB[0] - rgb[0]) * a, rgb[1] + (MONITOR_GLOW_RGB[1] - rgb[1]) * a, rgb[2] + (MONITOR_GLOW_RGB[2] - rgb[2]) * a];
+  }
+
+  // Точки спавна и респавна игроков (sim/spawns.js) поверх поля: точка
+  // спавна — квадратик цвета игрока с его именем, точка респавна — зелёный
+  // светящийся пиксель (мерцает). names — имена игроков по номеру (лобби).
+  // Параметры — как у drawCharges.
+  drawMarks(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1, names = null) {
+    const sim = this.sim;
+    // hideSpawnMarks — включён случайный спавн (js/lobby.js): точки спавна
+    // ни к чему, только мозолят глаза (просьба пользователя).
+    const spawns = !this.hideSpawnMarks && sim.spawnMarks && sim.spawnMarks.length;
+    if (!spawns && (!sim.respawnMarks || !sim.respawnMarks.length)) return;
+    const ctx = this.ctx, k = this.screenScale();
+    const pulse = 0.65 + 0.35 * Math.sin(performance.now() / 260);
+    ctx.save();
+    for (const m of sim.respawnMarks) {
+      if (m.x < x0 || m.x > x1 || m.y < y0 || m.y > y1) continue;
+      const px = ox + (m.x - x0) * scale, py = oy + (m.y - y0) * scale;
+      ctx.shadowColor = 'rgba(80,255,120,0.9)';
+      ctx.shadowBlur = 8 * k * pulse;
+      ctx.fillStyle = `rgba(90,255,130,${(0.7 + 0.3 * pulse).toFixed(2)})`;
+      ctx.fillRect(px, py, scale, scale);
+    }
+    ctx.shadowBlur = 0;
+    ctx.font = `bold ${Math.round(11 * k)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    if (spawns) for (const m of sim.spawnMarks) {
+      if (m.x < x0 || m.x > x1 || m.y < y0 || m.y > y1) continue;
+      const px = ox + (m.x - x0) * scale, py = oy + (m.y - y0) * scale;
+      const c = (sim.playerColors && sim.playerColors[m.n]) || ELEMENTS[EL.PROTAGONIST].color;
+      ctx.fillStyle = 'rgba(0,0,0,0.8)';
+      ctx.fillRect(px - k, py - k, scale + 2 * k, scale + 2 * k);
+      ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx.fillRect(px, py, scale, scale);
+      const label = (names && names[m.n]) || ('P' + m.n);
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillText(label, px + scale / 2 + k, py - 2 * k + k);
+      ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx.fillText(label, px + scale / 2, py - 2 * k);
+    }
+    ctx.restore();
+  }
+
+  // Вспышки мониторов поверх поля (параметры — как у drawCharges).
+  drawMonitorGlow(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1) {
+    if (this.monitorGlow.size === 0) return;
+    const ctx = this.ctx, w = this.sim.w;
+    ctx.save();
+    ctx.fillStyle = `rgb(${MONITOR_GLOW_RGB[0]},${MONITOR_GLOW_RGB[1]},${MONITOR_GLOW_RGB[2]})`;
+    for (const [c, k] of this.monitorGlow) {
+      const x = c % w, y = (c / w) | 0;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      ctx.globalAlpha = k * MONITOR_GLOW_PEAK;
+      ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+    }
+    ctx.restore();
   }
 
   cellColor(i) {
@@ -92,7 +550,11 @@ class Renderer {
       // чтобы она читалась как конструкция позади, а не как материал, по
       // которому что-то ходит или течёт. Цвет — её материала (beamColor).
       if (sim.beam[i]) {
-        const bc = this.beamColor(i), sh = sim.shade[i];
+        // Шероховатость балки — своя у каждой клетки, как у материала
+        // (светлее, темнее, в том же размахе ±15), а не оттенок пустоты, в
+        // которой она стоит: у пустоты он нулевой, и балка выходила ровной
+        // заливкой (просьба пользователя). Тот же хэш — в шейдере.
+        const bc = this.beamColor(i), sh = beamShade(i);
         return [clamp8(14 + (bc[0] - 14) * 0.42 + sh), clamp8(14 + (bc[1] - 14) * 0.42 + sh), clamp8(18 + (bc[2] - 18) * 0.42 + sh)];
       }
       return [14, 14, 18];
@@ -105,14 +567,39 @@ class Renderer {
     // состава), смеси и соль красятся по СОСТАВУ: цвет — среднее цветов
     // долей (partsColor). Кислотный остаток — по уровню, окисел — по
     // стадии; остальное — цветом элемента.
-    const base = (comp >= 1024 || id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT) ? this.partsColor(i)
+    const base = (comp >= 1024 || id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT || id === EL.MUD) ? this.partsColor(i)
       : id === EL.ACID_RESIDUE ? this.residueColor(i)
       : isOxide(id) ? this.oxideColor(i)
       // Мёртвый человек темнеет — самый заметный признак, что он больше
       // не ходит (extra=1, см. Sim.humanDie).
-      : (id === EL.HUMAN && sim.extra[i]) ? [58, 52, 48]
+      : ((id === EL.HUMAN || id === EL.PROTAGONIST) && sim.extra[i]) ? [58, 52, 48]
+      // Протагонист игрока мультиплеера — цветом игрока (шейдер — так же).
+      : (id === EL.PROTAGONIST && sim.life[i] > 0 && sim.life[i] < 16 && sim.playerColors && sim.playerColors[sim.life[i]]) ? sim.playerColors[sim.life[i]]
       : el.color;
     let r = clamp8(base[0] + s), g = clamp8(base[1] + s), b = clamp8(base[2] + s);
+    // Пятно крови (Sim.crushBody) — к красному, тем сильнее, чем гуще.
+    // Шейдер повторяет это (render-gl.js).
+    // У живых (человек, протагонист) stain — отравление: к жёлтому.
+    const stn = sim.stain[i];
+    if (stn) {
+      const creature = id === EL.HUMAN || id === EL.PROTAGONIST;
+      const col = creature ? POISON_COLOR : BLOOD_COLOR;
+      const k = stn / 255 * (creature ? POISON_TINT_MAX : 0.75);
+      r = clamp8(r + (col[0] - r) * k);
+      g = clamp8(g + (col[1] - g) * k);
+      b = clamp8(b + (col[2] - b) * k);
+    }
+    // Грязь на пикселе (sim/mud.js) — к цвету грязи. Шейдер — так же.
+    // У живых dirt — урон: к красному.
+    const drt = sim.dirt[i];
+    if (drt) {
+      const hurt = id === EL.HUMAN || id === EL.PROTAGONIST;
+      const col = hurt ? HURT_COLOR : DIRT_COLOR;
+      const k = hurt ? drt / 255 * HURT_TINT_MAX : Math.min(drt, DIRT_TINT_FULL) / DIRT_TINT_FULL * DIRT_TINT_MAX;
+      r = clamp8(r + (col[0] - r) * k);
+      g = clamp8(g + (col[1] - g) * k);
+      b = clamp8(b + (col[2] - b) * k);
+    }
     // Неполная клетка (часть долей — пустота, см. data/composition.js) показывается
     // бледнее, тем ближе к фону, чем меньше в ней вещества. Без этого
     // клетка с одной долей воды выглядела бы ровно как полная, и стягивание
@@ -365,6 +852,10 @@ class Renderer {
   // который на глаз казался мельче настоящей закрашиваемой области).
   traceShapeOutline(gx, gy, shape, rx, ry, ox = 0, oy = 0, scale = this.zoom) {
     const ctx = this.ctx;
+    // Бесконечная клетка (курсор над скрытым полем) — обход от минус
+    // бесконечности не кончился бы никогда: так висла страница (input.js,
+    // onMouseMove).
+    if (!Number.isFinite(gx) || !Number.isFinite(gy) || !Number.isFinite(rx) || !Number.isFinite(ry)) return;
     if (shape !== 'circle') {
       const w = (rx * 2 + 1) * scale, h = (ry * 2 + 1) * scale;
       const cx = ox + (gx + 0.5) * scale, cy = oy + (gy + 0.5) * scale;
@@ -395,16 +886,125 @@ class Renderer {
     ctx.stroke();
   }
 
-  drawLinePreview(gx0, gy0, gx1, gy1) {
-    const ctx = this.ctx, z = this.zoom;
+  // Заряды (sim/charges.js) поверх поля — только в режиме создания (в игре
+  // за протагониста поле рисует js/play.js, и зарядов там не видно).
+  // ox, oy, scale и окно (x0..x1, y0..y1) — для лупы.
+  drawCharges(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1) {
+    const list = this.sim.charges;
+    if (!list || !list.length) return;
+    const ctx = this.ctx, w = this.sim.w;
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    // Заряд — волна: рисуется её фронт, зелёным — если заряд несёт снимки
+    // камер. Чем меньше у заряда осталось срока, тем он прозрачнее (просьба
+    // пользователя: "сигнал становится более прозрачным по мере угасания");
+    // совсем не пропадает, чтобы последние шаги ещё было видно.
+    for (const c of list) {
+      ctx.globalAlpha = Math.max(CHARGE_MIN_ALPHA, 1 - c.count / c.life);
+      ctx.fillStyle = c.data ? 'rgb(70,255,110)' : 'rgb(255,232,60)';
+      for (const f of c.front) {
+        const x = f.i % w, y = (f.i / w) | 0;
+        if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Пунктир будущей линии. ox, oy, scale — куда и в каком увеличении:
+  // по умолчанию основной канвас, для лупы — её окно. Стирающая линия
+  // (ПКМ) — красноватая.
+  drawLinePreview(gx0, gy0, gx1, gy1, erase = false, ox = 0, oy = 0, scale = this.zoom) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = erase ? 'rgba(255,120,110,0.85)' : 'rgba(255,255,255,0.7)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
-    ctx.moveTo((gx0 + 0.5) * z, (gy0 + 0.5) * z);
-    ctx.lineTo((gx1 + 0.5) * z, (gy1 + 0.5) * z);
+    ctx.moveTo(ox + (gx0 + 0.5) * scale, oy + (gy0 + 0.5) * scale);
+    ctx.lineTo(ox + (gx1 + 0.5) * scale, oy + (gy1 + 0.5) * scale);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // Картинка прямоугольника поля (для проекции вставки, js/input.js):
+  // цвет каждой клетки — как на экране (cellColor), пустота прозрачна
+  // (вставка её и не пишет), балка в пустоте видна.
+  regionImage(x0, y0, x1, y1) {
+    const sim = this.sim, w = x1 - x0 + 1, h = y1 - y0 + 1;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const cx = cv.getContext('2d');
+    const img = cx.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y0 + y) * sim.w + x0 + x, o = (y * w + x) * 4;
+        if (sim.type[i] === EL.EMPTY && !sim.beam[i]) continue;
+        const c = this.cellColor(i);
+        img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    return cv;
+  }
+
+  // Сколько пикселей канваса приходится на пиксель экрана. Канвас рисуется
+  // в полном разрешении поля (576 клеток x 3) и на экране ужимается — у
+  // пользователя в 2-4 раза, и линия толщиной в пиксель канваса почти
+  // пропадала: рамку выделения для копирования было не видно вовсе (жалоба
+  // пользователя). Толщины рамок задаются в пикселях экрана.
+  screenScale() {
+    const cw = this.canvas.clientWidth;
+    return cw > 0 ? Math.max(1, this.canvas.width / cw) : 1;
+  }
+
+  // Заметная пунктирная рамка: тёмная подложка и светлый пунктир поверх, в
+  // пикселях экрана (screenScale).
+  strokeMarquee(x, y, w, h, color) {
+    const ctx = this.ctx, k = this.screenScale();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.lineWidth = 3 * k;
+    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5 * k;
+    ctx.setLineDash([6 * k, 4 * k]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+  }
+
+  // Рамка выделения для копирования: пунктир по краю клеток, внутри заливка,
+  // у угла — размер в клетках; у вырезания — красноватая. ox, oy, scale и
+  // окно (x0, y0) — как у drawCharges (для лупы).
+  drawClipSelect(r, cut, ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0) {
+    const ctx = this.ctx, k = this.screenScale();
+    const x = ox + (r.x0 - x0) * scale, y = oy + (r.y0 - y0) * scale;
+    const w = (r.x1 - r.x0 + 1) * scale, h = (r.y1 - r.y0 + 1) * scale;
+    ctx.save();
+    ctx.fillStyle = cut ? 'rgba(255,110,100,0.2)' : 'rgba(140,200,255,0.2)';
+    ctx.fillRect(x, y, w, h);
+    this.strokeMarquee(x, y, w, h, cut ? 'rgb(255,140,130)' : 'rgb(170,215,255)');
+    const label = `${r.x1 - r.x0 + 1}×${r.y1 - r.y0 + 1}`;
+    ctx.font = `bold ${Math.round(12 * k)}px system-ui, sans-serif`;
+    ctx.textBaseline = 'bottom';
+    const ty = y - 3 * k > 14 * k ? y - 3 * k : y + h + 15 * k;
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillText(label, x + k, ty + k);
+    ctx.fillStyle = cut ? 'rgb(255,160,150)' : 'rgb(190,225,255)';
+    ctx.fillText(label, x, ty);
+    ctx.restore();
+  }
+
+  // Полупрозрачная проекция копии с центром в клетке (gx, gy) — там же,
+  // куда её положит вставка (Sim.pasteRegion от левого верхнего угла).
+  drawClipPaste(clip, gx, gy, ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0) {
+    const ctx = this.ctx;
+    const x = ox + (gx - (clip.w >> 1) - x0) * scale, y = oy + (gy - (clip.h >> 1) - y0) * scale;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(clip.image, x, y, clip.w * scale, clip.h * scale);
+    ctx.globalAlpha = 1;
+    this.strokeMarquee(x, y, clip.w * scale, clip.h * scale, 'rgba(255,255,255,0.9)');
     ctx.restore();
   }
 
@@ -434,7 +1034,7 @@ class Renderer {
     ctx.restore();
   }
 
-  drawZoomLens(gx, gy, capRX, capRY, pinned, brush) {
+  drawZoomLens(gx, gy, capRX, capRY, pinned, brush, linePreview, clip = null) {
     const z = this.zoom;
     const srcRect = {
       x: (gx - capRX) * z, y: (gy - capRY) * z,
@@ -497,6 +1097,35 @@ class Renderer {
     // Наведение кисти внутри самой лупы — тем же точным контуром, что и на
     // основном канвасе, но в координатах и увеличении окна лупы, и только
     // если рабочая точка вообще попадает в показываемую лупой область.
+    // Заряды — и в лупе.
+    if (sx0 <= sx1 && sy0 <= sy1) this.drawLighting(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
+    if (sx0 <= sx1 && sy0 <= sy1) this.drawMonitorGlow(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
+    if (sx0 <= sx1 && sy0 <= sy1) this.drawCharges(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
+    // Точки спавна и респавна — и в лупе (их не было видно под увеличением).
+    if (sx0 <= sx1 && sy0 <= sy1) this.drawMarks(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1, this.markNames);
+    // Разметка протягиваемой линии — и в лупе (просьба пользователя), в её
+    // координатах и увеличении, обрезанная окном лупы.
+    // Рамка выделения и проекция вставки — и в лупе (просьба пользователя:
+    // "голограмма вставляемого объекта не видна в лупе"), обрезанные её окном.
+    if (clip && (clip.clipSelect || clip.clipPaste)) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ox, oy, drawW, drawH);
+      ctx.clip();
+      const bx = ox - (gx - capRX) * scale, by = oy - (gy - capRY) * scale;
+      if (clip.clipSelect) this.drawClipSelect(clip.clipSelect, clip.clipCut, bx, by, scale);
+      if (clip.clipPaste) this.drawClipPaste(clip.clipPaste.clip, clip.clipPaste.gx, clip.clipPaste.gy, bx, by, scale);
+      ctx.restore();
+    }
+    if (linePreview) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ox, oy, drawW, drawH);
+      ctx.clip();
+      const bx = ox - (gx - capRX) * scale, by = oy - (gy - capRY) * scale;
+      this.drawLinePreview(linePreview.x0, linePreview.y0, linePreview.x1, linePreview.y1, linePreview.erase, bx, by, scale);
+      ctx.restore();
+    }
     if (brush) {
       const lgx = brush.gx - gx + capRX, lgy = brush.gy - gy + capRY;
       if (Math.abs(brush.gx - gx) <= capRX + brush.rx && Math.abs(brush.gy - gy) <= capRY + brush.ry) {
@@ -511,9 +1140,21 @@ class Renderer {
     this.debugWind = !!cursor.debugWind;
     this.debugTherm = !!cursor.debugTherm;
     this.drawFrame();
+    this.updateLighting();
+    if (this.lightOn) {
+      this.buildLightImage();
+      // Весь канвас: масштаб по ширине и высоте может различаться.
+      this.paintLight(0, 0, this.sim.w - 1, this.sim.h - 1, 0, 0, this.canvas.width, this.canvas.height);
+    }
+    this.updateMonitorGlow();
+    this.drawMonitorGlow();
+    this.drawMarks(0, 0, this.zoom, 0, 0, this.sim.w - 1, this.sim.h - 1, this.markNames);
+    this.drawCharges();
+    if (cursor.clipSelect) this.drawClipSelect(cursor.clipSelect, cursor.clipCut);
+    if (cursor.clipPaste) this.drawClipPaste(cursor.clipPaste.clip, cursor.clipPaste.gx, cursor.clipPaste.gy);
     if (cursor.linePreview) {
       const lp = cursor.linePreview;
-      this.drawLinePreview(lp.x0, lp.y0, lp.x1, lp.y1);
+      this.drawLinePreview(lp.x0, lp.y0, lp.x1, lp.y1, lp.erase);
       this.drawBrushOutline(lp.x1, lp.y1, cursor.brushShape, cursor.brushRX, cursor.brushRY);
     } else if (cursor.showBrush) {
       this.drawBrushOutline(cursor.gx, cursor.gy, cursor.brushShape, cursor.brushRX, cursor.brushRY);
@@ -544,7 +1185,7 @@ class Renderer {
         else { bgx = cursor.gx; bgy = cursor.gy; }
         brush = { gx: bgx, gy: bgy, shape: cursor.brushShape, rx: cursor.brushRX, ry: cursor.brushRY };
       }
-      this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned, brush);
+      this.drawZoomLens(zx, zy, cursor.zoomRX, cursor.zoomRY, cursor.zoomPinned, brush, cursor.linePreview, cursor);
     } else {
       this.lastZoomBoxRect = null;
     }

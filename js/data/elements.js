@@ -54,6 +54,30 @@ const EL = {
   DISSOLVER: 42,
   DISSOLVER_GAS: 43,
   DISSOLVER_ICE: 44,
+  PROTAGONIST: 45,
+  CAMERA: 46,
+  MONITOR: 47,
+  SOLAR: 48,
+  COPPER: 49,
+  INSULATOR: 50,
+  COPPER_OXIDE: 51,
+  COPPER_OXIDE_LOOSE: 52,
+  MOLTEN_COPPER: 53,
+  // Сплавы (sim/alloys.js): расплавы металлов живут системой долей, как
+  // жидкости, и смешиваются в сплав.
+  MOLTEN_METAL: 54,
+  MOLTEN_STEEL: 55,
+  MOLTEN_ALLOY: 56,
+  ALLOY: 57,
+  ALLOY_RUST: 58,
+  // Техника (sim/charges.js): генератор — источник заряда без неба,
+  // усилитель — медь, прибавляющая заряду срок.
+  GENERATOR: 59,
+  AMPLIFIER: 60,
+  // Лампочка (sim/charges.js, свет — Renderer.updateLighting).
+  LAMP: 61,
+  // Грязь: растворяется в воде, оседает у поверхностей (sim/mud.js).
+  MUD: 62,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -66,6 +90,9 @@ const TOOL_TEMP = 'tool:temp';
 // Лупа: мир не трогает вовсе, щелчок по клетке показывает, что в ней —
 // у раствора и газа по долям (см. buildCellInspectHTML в main.js).
 const TOOL_INSPECT = 'tool:inspect';
+// Электрический разряд (вкладка "Технологии"): щелчок пускает жёлтый заряд
+// по проводнику под курсором (Sim.zapAt).
+const TOOL_ZAP = 'tool:zap';
 
 const CAT = {
   POWDER: 'powder',
@@ -89,8 +116,16 @@ const ELEMENTS = {
   [EL.SMOKE]: { id: EL.SMOKE, name: 'Дым',     cat: CAT.GAS,    color: [72, 70, 76],    density: 1,  flammable: false },
   [EL.FIRE]:  { id: EL.FIRE,  name: 'Огонь',   cat: CAT.SPECIAL, color: [255, 148, 24], density: 3,  flammable: false, heatSource: 1590 },
   [EL.GUNP]:  { id: EL.GUNP,  name: 'Порох',   cat: CAT.POWDER, color: [104, 98, 92],   density: 14, flammable: true, burnChance: 0.95, burnLife: 3 },
-  [EL.METAL]: { id: EL.METAL, name: 'Металл',  cat: CAT.SOLID,  color: [182, 184, 194], density: 40, flammable: false, acidSlow: true, maxStability: 10, toughness: 5, meltPoint: 180, meltChance: 0.01, meltsInto: EL.LAVA },
-  [EL.GLASS]: { id: EL.GLASS, name: 'Стекло',  cat: CAT.SOLID,  color: [202, 226, 230], density: 40, flammable: false, acidImmune: true, maxStability: 4, toughness: 4, meltPoint: 120, meltChance: 0.03, meltsInto: EL.LAVA },
+  [EL.METAL]: { id: EL.METAL, name: 'Металл',  cat: CAT.SOLID,  color: [182, 184, 194], density: 40, flammable: false, acidSlow: true, maxStability: 10, toughness: 5, meltPoint: 180, meltChance: 0.01, meltsInto: EL.MOLTEN_METAL },
+  // Стекло прозрачно (просьба пользователя): для взгляда камеры, людей и
+  // протагониста (IS_SEE_THROUGH) и на вид — цвет уже смешан с фоном поля
+  // (14,14,18), как полупрозрачный голубоватый слой (светлый тон
+  // 175,230,240 с непрозрачностью 0,45). Фон под веществом всегда один,
+  // так что смешать заранее — то же самое, что рисовать с прозрачностью,
+  // и ни шейдер, ни CPU-путь для этого не меняются. Стойкость — камня,
+  // плавится вдвое раньше камня (ниже, после таблицы). Кислоту не берёт
+  // (acidImmune), реагент — тоже: линейки окисла у стекла нет.
+  [EL.GLASS]: { id: EL.GLASS, name: 'Стекло',  cat: CAT.SOLID,  color: [86, 111, 118], density: 40, flammable: false, acidImmune: true, meltChance: 0.03, meltsInto: EL.LAVA },
   [EL.WALL]:  { id: EL.WALL,  name: 'Стена',   cat: CAT.SOLID,  color: [42, 42, 48],    density: 40, flammable: false, acidImmune: true },
   [EL.SALT]:  { id: EL.SALT,  name: 'Соль',    cat: CAT.POWDER, color: [232, 232, 226], density: 15, flammable: false },
   [EL.ASH]:   { id: EL.ASH,   name: 'Зола',    cat: CAT.POWDER, color: [64, 62, 60],    density: 5,  flammable: false },
@@ -98,6 +133,10 @@ const ELEMENTS = {
   [EL.CLONE]: { id: EL.CLONE, name: 'Клонер',  cat: CAT.SOLID,  color: [224, 64, 196],  density: 40, flammable: false },
   [EL.OILFILM]: { id: EL.OILFILM, name: 'Застывшее масло', cat: CAT.SOLID, color: [90, 74, 34], density: 40, flammable: true, burnChance: 0.5, burnLife: 12, maxStability: 1, toughness: 1 },
   [EL.EARTH]: { id: EL.EARTH, name: 'Земля', cat: CAT.POWDER, color: [150, 96, 58], density: 15, flammable: false },
+  // Грязь (sim/mud.js): сыпучая, растворяется в воде долями — вода
+  // мутнеет (раствор цвета среднего долей), — и оседает у поверхностей
+  // обратно; текущая вода её смывает. Тяжелее воды — тонет.
+  [EL.MUD]: { id: EL.MUD, name: 'Грязь', cat: CAT.POWDER, color: [104, 76, 50], density: 15, flammable: false },
   [EL.WET_EARTH]: { id: EL.WET_EARTH, name: 'Мокрая земля', cat: CAT.SOLID, color: [68, 46, 32], density: 40, flammable: false, maxStability: 3, toughness: 2 },
   // Полностью повторяет камень (тот же вес/бюджет устойчивости/плавление) —
   // единственная разница в поведении балки (см. sim/stability.js): не
@@ -216,9 +255,9 @@ const ELEMENTS = {
   // общим "смешанным газом" (VAPOR) с долями жидкого вещества внутри;
   // теперь доля — это элемент в своей фазе (см. data/composition.js), и
   // у каждого вещества свой газ, как пар у воды. В палитре — только во
-  // "Всех". Газ масла выпадает не по температуре, а по сроку (life).
+  // "Всех". Масляный газ выпадает не по температуре, а по сроку (life).
   [EL.REAGENT_GAS]: { id: EL.REAGENT_GAS, name: 'Газ реагента', cat: CAT.GAS, color: [212, 176, 92], density: 2, flammable: false, acidImmune: true },
-  [EL.OIL_GAS]: { id: EL.OIL_GAS, name: 'Газ масла', cat: CAT.GAS, color: [150, 128, 70], density: 2, flammable: false, acidImmune: true },
+  [EL.OIL_GAS]: { id: EL.OIL_GAS, name: 'Масляный газ', cat: CAT.GAS, color: [150, 128, 70], density: 2, flammable: false, acidImmune: true },
   // Растворитель — синяя жидкость, которая меняется долями с чем угодно
   // (кроме стен, огня и живых); доля, ушедшая в твёрдое тело, с шансом
   // DISSOLVER_TO_REAGENT становится реагентом (см. Sim.dissolverMix).
@@ -228,6 +267,55 @@ const ELEMENTS = {
   [EL.DISSOLVER]: { id: EL.DISSOLVER, name: 'Растворитель', cat: CAT.LIQUID, color: [58, 76, 214], density: 10, flammable: false, acidImmune: true, dispersion: 5 },
   [EL.DISSOLVER_GAS]: { id: EL.DISSOLVER_GAS, name: 'Пар растворителя', cat: CAT.GAS, color: [124, 138, 236], density: 2, flammable: false, acidImmune: true },
   [EL.DISSOLVER_ICE]: { id: EL.DISSOLVER_ICE, name: 'Замёрзший растворитель', cat: CAT.SOLID, color: [150, 162, 238], density: 40, flammable: false, acidImmune: true, maxStability: 3, toughness: 3, baseTemp: -30 },
+  // Протагонист — пиксель, которым управляет игрок (sim/protagonist.js,
+  // js/play.js). Падает как сыпучее, гибнет как человек; на поле всегда
+  // не больше одного.
+  [EL.PROTAGONIST]: { id: EL.PROTAGONIST, name: 'Протагонист', cat: CAT.POWDER, color: [255, 196, 36], density: 15, flammable: false, acidImmune: true },
+  // Техника (sim/charges.js): камера, монитор и солнечная панель по
+  // физике — металл (плавление, ржавчина, кислота — ниже копируется у
+  // металла, линейки окисла в data/oxides.js). Панель рисуется шахматкой
+  // (оттенок по чётности клетки, см. Sim.spawn).
+  [EL.CAMERA]: { id: EL.CAMERA, name: 'Камера', cat: CAT.SOLID, color: [112, 22, 28], density: 40, flammable: false, acidSlow: true },
+  [EL.MONITOR]: { id: EL.MONITOR, name: 'Монитор', cat: CAT.SOLID, color: [24, 38, 108], density: 40, flammable: false, acidSlow: true },
+  [EL.SOLAR]: { id: EL.SOLAR, name: 'Солнечная панель', cat: CAT.SOLID, color: [16, 20, 58], density: 40, flammable: false, acidSlow: true },
+  // Медь — лучший проводник заряда; ржавеет как металл, но в сине-зелёную
+  // патину, и сама окисляется на воздухе до 4-й стадии (sim/oxides.js).
+  // Стойкость — как у дерева.
+  [EL.COPPER]: { id: EL.COPPER, name: 'Медь', cat: CAT.SOLID, color: [184, 115, 51], density: 40, flammable: false, acidSlow: true, maxStability: 3, toughness: 2 },
+  // Генератор: раз в 2 секунды выпускает жёлтый заряд, неба ему не надо
+  // (sim/charges.js). По физике — металл, как камера.
+  [EL.GENERATOR]: { id: EL.GENERATOR, name: 'Генератор', cat: CAT.SOLID, color: [150, 70, 24], density: 40, flammable: false, acidSlow: true },
+  // Усилитель: во всём медь (проводит, держит, плавится, ржавеет), только
+  // заряд, войдя в него, получает ещё AMPLIFIER_BOOST клеток срока.
+  [EL.AMPLIFIER]: { id: EL.AMPLIFIER, name: 'Усилитель', cat: CAT.SOLID, color: [232, 168, 70], density: 40, flammable: false, acidSlow: true },
+  // Лампочка: жёлтый заряд зажигает её на LAMP_CYCLE кадров (срок — в
+  // life): 3 секунды горит ровно, с 3-й по 7-ю мигает, потом гаснет.
+  // Проводит заряд, как металл. По прочности и химии — как стекло (ниже,
+  // после таблицы), но непрозрачна. Цвет — погасшей; горящую рисует свет.
+  [EL.LAMP]: { id: EL.LAMP, name: 'Лампочка', cat: CAT.SOLID, color: [118, 112, 92], density: 40, flammable: false, acidImmune: true },
+  // Изолятор не пропускает заряд. Стойкость вдвое слабее дерева, горит,
+  // кислоте поддаётся как земля (линейка окисла земли, data/oxides.js).
+  [EL.INSULATOR]: { id: EL.INSULATOR, name: 'Изолятор', cat: CAT.SOLID, color: [38, 104, 132], density: 40, flammable: true, burnChance: 0.14, burnLife: 55, maxStability: 2, toughness: 1 },
+  [EL.COPPER_OXIDE]: { id: EL.COPPER_OXIDE, name: 'Окисел меди', cat: CAT.SOLID, color: [80, 150, 130], density: 40, flammable: false, acidSlow: true, maxStability: 3, toughness: 2 },
+  [EL.COPPER_OXIDE_LOOSE]: { id: EL.COPPER_OXIDE_LOOSE, name: 'Рыхлый окисел меди', cat: CAT.POWDER, color: [64, 150, 140], density: 16, flammable: false, acidImmune: true },
+  // Расплавленная медь застывает обратно в медь, остыв на
+  // MOLTEN_SOLIDIFY_BELOW ниже точки плавления меди (sim/alloys.js).
+  [EL.MOLTEN_COPPER]: { id: EL.MOLTEN_COPPER, name: 'Расплавленная медь', cat: CAT.LIQUID, color: [255, 142, 58], density: 30, flammable: false, dispersion: 1, heatSource: 400 },
+  // Расплавы металла и стали: застывают обратно в свой металл, смешиваясь
+  // между собой, с расплавленной медью и лавой, дают сплав (sim/alloys.js).
+  // heatSource — чтобы нарисованный расплав был горячим и не застывал в
+  // первые же кадры (у лавы так было всегда).
+  [EL.MOLTEN_METAL]: { id: EL.MOLTEN_METAL, name: 'Расплавленный металл', cat: CAT.LIQUID, color: [255, 176, 92], density: 30, flammable: false, dispersion: 1, heatSource: 400 },
+  [EL.MOLTEN_STEEL]: { id: EL.MOLTEN_STEEL, name: 'Расплавленная сталь', cat: CAT.LIQUID, color: [255, 206, 138], density: 30, flammable: false, dispersion: 1, heatSource: 450 },
+  // Смесь расплавов (как "раствор" у жидкостей): цвет — по составу.
+  [EL.MOLTEN_ALLOY]: { id: EL.MOLTEN_ALLOY, name: 'Расплав', cat: CAT.LIQUID, color: [255, 160, 80], density: 30, flammable: false, dispersion: 1, heatSource: 400 },
+  // Сплав: твёрдое из нескольких металлов (и камня). Свойства считаются по
+  // его долям (sim/alloys.js); числа здесь — только для таблиц по типу:
+  // meltPoint — самая низкая точка плавления возможных долей (раньше неё
+  // сплав не проснётся для плавления, см. SAFE_HI в sim/sleep.js).
+  [EL.ALLOY]: { id: EL.ALLOY, name: 'Сплав', cat: CAT.SOLID, color: [170, 158, 146], density: 40, flammable: false, acidSlow: true, maxStability: 10, toughness: 5, meltPoint: 165, meltChance: 0.01, meltsInto: EL.MOLTEN_ALLOY },
+  // Сплав, проржавевший на ALLOY_CRUMBLE_AT долей из десяти, рассыпается.
+  [EL.ALLOY_RUST]: { id: EL.ALLOY_RUST, name: 'Рыхлая ржавчина сплава', cat: CAT.POWDER, color: [120, 96, 72], density: 16, flammable: false, acidImmune: true, meltPoint: 165, meltChance: 0.01, meltsInto: EL.MOLTEN_ALLOY },
 };
 
 // Плавление того, что сделано из камня или металла, — ровно по их
@@ -237,7 +325,8 @@ const ELEMENTS = {
 //    камень (лаву), как камень.
 //  - Окисел камня плавится так же, но вдобавок отдаёт газом реагент,
 //    потраченный на окисление (см. Sim.meltStoneOxide).
-//  - Ржавчина плавится как обычное железо и ничего не выделяет.
+//  - Ржавчина плавится как обычное железо (в расплавленный металл) и
+//    ничего не выделяет.
 for (const id of [EL.ACID_RESIDUE, EL.OXIDE, EL.OXIDE_LOOSE]) {
   ELEMENTS[id].meltPoint = ELEMENTS[EL.STONE].meltPoint;
   ELEMENTS[id].meltChance = ELEMENTS[EL.STONE].meltChance;
@@ -248,10 +337,38 @@ for (const id of [EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE]) {
   ELEMENTS[id].meltChance = ELEMENTS[EL.METAL].meltChance;
   ELEMENTS[id].meltsInto = ELEMENTS[EL.METAL].meltsInto;
 }
-// Сталь плавится как металл, только на 50 градусов позже.
+// Сталь плавится как металл, только на 50 градусов позже, и в свой
+// расплав: застыв, она снова сталь (sim/alloys.js).
 ELEMENTS[EL.STEEL].meltPoint = ELEMENTS[EL.METAL].meltPoint + 50;
 ELEMENTS[EL.STEEL].meltChance = ELEMENTS[EL.METAL].meltChance;
-ELEMENTS[EL.STEEL].meltsInto = ELEMENTS[EL.METAL].meltsInto;
+ELEMENTS[EL.STEEL].meltsInto = EL.MOLTEN_STEEL;
+// Камера, монитор и панель — металл: стойкость и плавление его. Камера и
+// монитор плавятся в металл (просьба: "плавятся в металл" — прибор
+// перестаёт быть прибором, а дальше плавится уже как металл), панель —
+// как сам металл.
+for (const id of [EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.GENERATOR]) {
+  for (const key of ['maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) ELEMENTS[id][key] = ELEMENTS[EL.METAL][key];
+}
+ELEMENTS[EL.CAMERA].meltsInto = EL.METAL;
+ELEMENTS[EL.MONITOR].meltsInto = EL.METAL;
+ELEMENTS[EL.GENERATOR].meltsInto = EL.METAL;
+// Медь плавится на 10 градусов раньше металла, в расплавленную медь; её
+// окислы — туда же.
+// Усилитель — медь: плавится так же и в неё же (перестаёт быть
+// усилителем), стойкость меди.
+for (const id of [EL.COPPER, EL.COPPER_OXIDE, EL.COPPER_OXIDE_LOOSE, EL.AMPLIFIER]) {
+  ELEMENTS[id].meltPoint = ELEMENTS[EL.METAL].meltPoint - 10;
+  ELEMENTS[id].meltChance = ELEMENTS[EL.METAL].meltChance;
+  ELEMENTS[id].meltsInto = EL.MOLTEN_COPPER;
+}
+ELEMENTS[EL.AMPLIFIER].maxStability = ELEMENTS[EL.COPPER].maxStability;
+ELEMENTS[EL.AMPLIFIER].toughness = ELEMENTS[EL.COPPER].toughness;
+// Стекло: стойкость камня, точка плавления — половина каменной.
+ELEMENTS[EL.GLASS].maxStability = ELEMENTS[EL.STONE].maxStability;
+ELEMENTS[EL.GLASS].toughness = ELEMENTS[EL.STONE].toughness;
+ELEMENTS[EL.GLASS].meltPoint = ELEMENTS[EL.STONE].meltPoint / 2;
+// Лампочка — как стекло: стойкость, плавление, кислота и реагент её не берут.
+for (const key of ['maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) ELEMENTS[EL.LAMP][key] = ELEMENTS[EL.GLASS][key];
 // Свойства балки берутся от её материала (см. Sim.pickBeamMaterial), а эти
 // — только для справки в палитре: по умолчанию балка каменная, поэтому
 // здесь копия камня (устойчивость, стойкость — на сколько клеток её можно
@@ -265,24 +382,40 @@ for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltCha
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.BEAM, EL.HUMAN,
+  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST,
+  EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
   // газов, а увидеть их полезно все сразу).
-  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.REAGENT_GAS, EL.OIL_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE, EL.BLACK_SALT,
+  EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.ACID_GAS, EL.REAGENT_GAS, EL.OIL_GAS, EL.VAPOR, EL.SMOKE, EL.ACID_RESIDUE,
   EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_GAS, EL.DISSOLVER_ICE,
+  EL.COPPER_OXIDE, EL.COPPER_OXIDE_LOOSE, EL.MOLTEN_COPPER, EL.MOLTEN_METAL, EL.MOLTEN_STEEL,
 ];
 
 // Элементы вкладки "Технологии" — по CAT они попали бы в другие вкладки
 // (балка — обычное CAT.SOLID, как камень; колонист — CAT.POWDER, как
 // земля), но их место среди технологий, не среди сырых материалов (см.
 // materialCategoryKey в main.js).
-const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN]);
+const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
+
+// Приборы и то, чем они являются по физике: под растворителем становятся
+// простым металлом (просьба: "не имея особых пикселей для этого"), а
+// усилитель — медью, см. dissolverMix. Ржавчина и плавление превращают
+// их в основу сами — через линейку окисла и meltsInto. 0 — не прибор.
+const DEVICE_BASE = new Uint8Array(64);
+DEVICE_BASE[EL.CAMERA] = EL.METAL;
+DEVICE_BASE[EL.MONITOR] = EL.METAL;
+DEVICE_BASE[EL.SOLAR] = EL.METAL;
+DEVICE_BASE[EL.GENERATOR] = EL.METAL;
+DEVICE_BASE[EL.AMPLIFIER] = EL.COPPER;
 
 // Собственная температура свежей частицы, если у элемента не задана своя
 // (baseTemp). Спавн ПРИБАВЛЯЕТ её к температуре места, а не заменяет ею:
 // вещество приносит с собой своё тепло или холод, а не мгновенно
-// принимает температуру фона. Комнатные 20 градусов — для всего обычного;
+// принимает температуру фона. Прибавляет только до неё самой: место, уже
+// не холоднее (у льда — не теплее), остаётся как есть, иначе повторный
+// спавн на одном месте копил бы тепло (см. Sim.spawn). Комнатные 20
+// градусов — для всего обычного;
 // у льда и замёрзших жидкостей стоят свои минусовые значения, у лавы и
 // огня работает прежний heatSource.
 const DEFAULT_BASE_TEMP = 20;
@@ -312,12 +445,13 @@ function idTable(ids) {
 // двумя разными объектами.
 // Замёрзшие кислота и реагент — такие же твёрдые тела, как лёд (раньше их
 // тут не было, и без опоры они висели в воздухе).
-const IS_STRUCTURAL = idTable([EL.STONE, EL.WOOD, EL.METAL, EL.GLASS, EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_ICE, EL.OILFILM, EL.WET_EARTH, EL.BEAM, EL.OXIDE, EL.METAL_OXIDE, EL.STEEL]);
+const IS_STRUCTURAL = idTable([EL.STONE, EL.WOOD, EL.METAL, EL.GLASS, EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_ICE, EL.OILFILM, EL.WET_EARTH, EL.BEAM, EL.OXIDE, EL.METAL_OXIDE, EL.STEEL,
+  EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.COPPER_OXIDE, EL.ALLOY, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
 function isStructural(id) { return IS_STRUCTURAL[id] === 1; }
 
 // Окисел любой стадии и любого металла-основы (число стадии — в
 // Sim.oxideStage, основа — в OXIDE_BASE ниже).
-const IS_OXIDE = idTable([EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE]);
+const IS_OXIDE = idTable([EL.OXIDE, EL.OXIDE_LOOSE, EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.EARTH_OXIDE, EL.COPPER_OXIDE, EL.COPPER_OXIDE_LOOSE]);
 function isOxide(id) { return IS_OXIDE[id] === 1; }
 
 // Твёрдая фаза жидкости (лёд и его сородичи) — её тает обратно tickPhase.
@@ -335,8 +469,14 @@ function isAnchor(id) { return IS_ANCHOR[id] === 1; }
 // прочих твёрдых тел (камень, дерево, стекло, лёд и т.д.), которые для
 // потоков воздуха прозрачны. Пустота (VOID) намеренно НЕ входит сюда —
 // роль непроницаемой стены отдана именно "Стене", а не "Пустоте".
-const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL]);
+const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.ALLOY, EL.GENERATOR]);
 function isAirtight(id) { return IS_AIRTIGHT[id] === 1; }
+
+// Твёрдое, сквозь которое видно: взгляд камеры (Sim.lookOpaque), человека
+// (humanBlocksSight) и протагониста (PlayMode.opaque) через него проходит.
+// Люди и протагонист тоже прозрачны для взгляда (просьба пользователя):
+// один человек не заслоняет другого, а камера видит за ними.
+const IS_SEE_THROUGH = idTable([EL.GLASS, EL.HUMAN, EL.PROTAGONIST]);
 
 // Блокирует передачу ТЕПЛА (см. HEAT_WEIGHT и Sim.updateTemp в sim/heat.js) — не то
 // же самое, что isAirtight: металл перекрывает воздух, но металл — как

@@ -72,6 +72,9 @@ class SimComposition {
   // воде и выпадает из неё. С чем угодно меняется только растворитель, и
   // делает это отдельно (dissolverMix).
   samePartsFamily(a, b) {
+    // Расплавы (лава, металлы, их смесь) — своя среда, как растворы у
+    // жидкостей: так металлы смешиваются в сплав (sim/alloys.js).
+    if (IS_MOLTEN[a] === 1 || IS_MOLTEN[b] === 1) return IS_MOLTEN[a] === 1 && IS_MOLTEN[b] === 1;
     if (a === EL.OIL || b === EL.OIL) return a === b;
     if (isVaporFamily(a)) return isVaporFamily(b);
     return isSolutionMedium(a) && isSolutionMedium(b);
@@ -89,7 +92,11 @@ class SimComposition {
   //    перескочить в соседний элемент);
   //  - жидкость: одного вида — его элемент; смесь — "раствор". Кроме
   //    жидкостей вне семейства растворов (лава, масло): с примесью
-  //    твёрдого они остаются собой — лава с долей камня всё ещё лава.
+  //    твёрдого они остаются собой — лава с долей камня всё ещё лава;
+  //  - сплавы (sim/alloys.js): смесь одних расплавов — "Расплав"; твёрдое
+  //    из двух и больше видов сплавных долей, среди которых есть металл, —
+  //    "Сплав", а проржавевшее на ALLOY_CRUMBLE_AT долей — рыхлая ржавчина
+  //    сплава.
   // Пустота на выбор элемента не влияет: неполная клетка воды это всё ещё
   // вода. Клетка без единой вещественной доли исчезает.
   //
@@ -102,6 +109,7 @@ class SimComposition {
   setComposition(i, comp) {
     let gas = 0, liquid = 0, solid = 0;
     let gasKinds = 0, gasId = 0, liqKinds = 0, liqId = 0, solidId = 0, solidBest = 0;
+    let moltenKinds = 0, alloyKinds = 0, metallic = false, rust = 0;
     const cur = this.type[i];
     for (let s = 0; s < SOL_SLOTS; s++) {
       const slot = solSlot(comp, s);
@@ -109,17 +117,20 @@ class SimComposition {
       const id = slotId(slot), n = slotCount(slot);
       const st = PART_STATE[id];
       if (st === STATE_GAS) { gas += n; gasKinds++; gasId = id; }
-      else if (st === STATE_LIQUID) { liquid += n; liqKinds++; liqId = id; }
+      else if (st === STATE_LIQUID) { liquid += n; liqKinds++; liqId = id; if (IS_MOLTEN[id] === 1) moltenKinds++; }
       else {
         solid += n;
+        if (ALLOY_PART[id] === 1) { alloyKinds++; if (ALLOY_METALLIC[id] === 1) metallic = true; }
+        if (ALLOY_OXIDE_PART[id] === 1) rust += n;
         if (n > solidBest || (n === solidBest && id === cur)) { solidBest = n; solidId = id; }
       }
     }
     if (gas + liquid + solid === 0) { this.clearCell(i); return; }
     let id;
     if (liquid + solid === 0) id = gasKinds === 1 ? gasId : EL.VAPOR;
-    else if (solid >= liquid) id = solidId;
+    else if (solid >= liquid) id = alloyKinds >= 2 && metallic ? (rust >= ALLOY_CRUMBLE_AT ? EL.ALLOY_RUST : EL.ALLOY) : solidId;
     else if (liqKinds === 1 && (solid === 0 || !isSolutionFamily(liqId))) id = liqId;
+    else if (moltenKinds === liqKinds) id = EL.MOLTEN_ALLOY;
     else id = EL.SOLUTION;
     if (this.type[i] !== id) { this.type[i] = id; this.markDirty(i); }
     this.setComp(i, comp);
@@ -165,6 +176,12 @@ class SimComposition {
   // отдельным пикселем, стягивание пустоты. Между ними проверка типа:
   // переход мог увести клетку из живых составов (например, всё замёрзло).
   tickComposition(x, y, i) {
+    // Чистая полная клетка (одно вещество, все 10 долей — почти любая вода
+    // и масло в мире): реагенту с водой здесь не встретиться, делить на газ
+    // нечего, пустоты нет — остаётся только фазовый переход. Прочие шаги
+    // вышли бы сразу, ничего не тратя, так что выход тот же.
+    const c = this.comp(i);
+    if (c < 1024 && ((c >>> 6) & 15) === SOL_PARTS) { this.tickPhase(x, y, i); return; }
     this.quenchReagentWater(i);
     if (!this.hasParts(i)) return;
     this.tickPhase(x, y, i);
@@ -183,7 +200,7 @@ class SimComposition {
   //    — в газ превращаются ровно 2 доли кислоты, и они выходят рядом
   //    кислотным газом (splitGas), а вода и реагент остаются лежать.
   //  - Газ, остывший ниже точки кипения своей жидкости, выпадает; из
-  //    нескольких первым — наименее летучий. Газ масла — по сроку (life),
+  //    нескольких первым — наименее летучий. Масляный газ — по сроку (life),
   //    а не по температуре.
   //  - Жидкость ниже точки замерзания застывает (первым — вид с самой
   //    высокой точкой замерзания: при охлаждении раствора сперва выходит
@@ -332,7 +349,14 @@ class SimComposition {
     const ni = this.idx(nx, ny);
     const id = this.type[i], nid = this.type[ni];
     if (!this.samePartsFamily(id, nid)) return;
+    // Два сыпучих (грязь, чёрные соли) сами собой не мешаются — только при
+    // движении (powderMix, sim/mud.js).
+    if (IS_POWDER_MIX[id] === 1 && IS_POWDER_MIX[nid] === 1) return;
     const a = this.comp(i), b = this.comp(ni);
+    // Одно и то же чистое вещество по обе стороны — меняться нечем (любой
+    // обмен вернул бы те же составы); выходим, не тратя бросков. Это почти
+    // каждая клетка озера или лужи расплава.
+    if (a === b && a < 1024) return;
     if (solGet(a, P_VOID) === 0 && solGet(b, P_VOID) === 0
         && ((id === EL.ACID && nid === EL.WATER) || (id === EL.WATER && nid === EL.ACID))) {
       const half = solWith(solWith(0, P_ACID, SOL_PARTS / 2), P_WATER, SOL_PARTS / 2);

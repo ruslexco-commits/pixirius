@@ -20,6 +20,7 @@ html, body {
 }
 
 #stage {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -104,6 +105,10 @@ html, body {
 }
 
 .el-btn:hover { filter: brightness(1.15); }
+
+/* Рисованный значок 32x32 растягивается на всю кнопку (размер задаёт
+   addPaletteButton) без размытия. */
+.el-btn.el-textured { image-rendering: pixelated; }
 
 .el-btn.selected {
   border: 2px solid #ffffff;
@@ -236,16 +241,53 @@ html, body {
 }
 #inspectPanel .ip-row { display: flex; justify-content: space-between; gap: 16px; color: #b8b8c0; }
 #inspectPanel .ip-row span:last-child { color: #e8e8ec; text-align: right; }
+#inspectPanel .ip-levels { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#inspectPanel .ip-level {
+  width: 30px; height: 26px; border: 1px solid #4a4a54; background: #24242c; color: #e8e8ec;
+  font: inherit; font-weight: 600; cursor: pointer;
+}
+#inspectPanel .ip-level-wide { width: auto; padding: 0 10px; font-weight: 500; }
+#inspectPanel .ip-level:hover { background: #2e2e38; }
+#inspectPanel .ip-level-on { background: #3a4a6a; border-color: #7a9ad0; }
+#inspectPanel .ip-level-text { color: #b8b8c0; margin-left: 6px; flex: 1 1 160px; }
+#inspectPanel .ip-map { display: block; width: 100%; image-rendering: pixelated; border: 1px solid #3a3a44; margin: 2px 0 8px; }
+#inspectPanel .ip-desc { color: #d0d0d8; }
 #inspectPanel .ip-note { position: relative; padding-left: 12px; color: #b8b8c0; }
 #inspectPanel .ip-note::before { content: '•'; position: absolute; left: 0; color: #6a6a74; }
 
-#inspectPanel .ip-comp { display: flex; align-items: center; gap: 20px; }
-#inspectPanel .ip-pie { flex: 0 0 auto; line-height: 0; }
-#inspectPanel .ip-legend { flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
-#inspectPanel .ip-legend-row { display: flex; align-items: center; gap: 8px; color: #b8b8c0; }
-#inspectPanel .ip-legend-name { flex: 1 1 auto; color: #e8e8ec; }
-#inspectPanel .ip-state { color: #7a7a84; font-size: 11px; }
-#inspectPanel .ip-sw { width: 12px; height: 12px; flex: 0 0 auto; border: 1px solid rgba(255, 255, 255, 0.18); }
+/* Состав: диаграмма по центру, под ней десять полос-долей (js/inspect.js). */
+#inspectPanel .ip-comp { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+#inspectPanel .ip-pie { display: block; max-width: 100%; height: auto; overflow: visible; }
+#inspectPanel .ip-sector { stroke: #101014; stroke-width: 1.5; cursor: none; transition: transform 0.12s ease-out; }
+#inspectPanel .ip-callout { fill: none; stroke: #7a7a86; stroke-width: 1; cursor: none; }
+#inspectPanel .ip-callout-text { fill: #c8c8d0; font-size: 11px; pointer-events: none; }
+#inspectPanel .ip-cells { display: flex; gap: 5px; justify-content: center; }
+#inspectPanel .ip-cell { width: 12px; height: 46px; border: 1px solid rgba(255, 255, 255, 0.18); cursor: none; }
+#inspectPanel .ip-cell-void {
+  background: repeating-linear-gradient(45deg, #26262e 0 3px, #1a1a20 3px 6px);
+}
+/* Наведённое вещество: сектор отлетает и мигает лаймовым контуром. */
+@keyframes ip-blink-stroke { 0%, 100% { stroke: #b4ff2a; } 50% { stroke: rgba(180, 255, 42, 0.15); } }
+@keyframes ip-blink-outline { 0%, 100% { outline-color: #b4ff2a; } 50% { outline-color: rgba(180, 255, 42, 0.15); } }
+#inspectPanel .ip-sector.ip-hot { stroke-width: 2.5; animation: ip-blink-stroke 0.6s steps(2, jump-none) infinite; }
+#inspectPanel .ip-callout.ip-hot { stroke: #b4ff2a; }
+#inspectPanel .ip-cell.ip-hot { outline: 1px solid #b4ff2a; outline-offset: 1px; animation: ip-blink-outline 0.6s steps(2, jump-none) infinite; }
+#inspectPanel .ip-cell.ip-hot-cell { outline-width: 2px; }
+/* Подсказка на месте курсора: картинка, название, доля крупно. */
+.ip-tip {
+  position: fixed; z-index: 30; pointer-events: none; display: none;
+  transform: translate(-50%, -24px);
+  text-align: center; color: #f0f0f4;
+  text-shadow: 0 1px 3px #000, 0 0 6px #000;
+}
+.ip-tip.visible { display: block; }
+.ip-tip img, .ip-tip .ip-tip-sw {
+  display: block; width: 48px; height: 48px; margin: 0 auto 4px;
+  image-rendering: pixelated; border: 1px solid rgba(255, 255, 255, 0.4); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+.ip-tip .ip-tip-name { font-size: 18px; font-weight: 600; white-space: nowrap; }
+.ip-tip .ip-tip-pct { font-size: 30px; font-weight: 700; line-height: 1.1; }
+.ip-tip .ip-tip-sub { font-size: 12px; color: #c0c0c8; }
 
 @media (max-width: 860px) {
   #app { flex-direction: column; align-items: stretch; height: auto; min-height: 100vh; overflow: auto; }
@@ -255,3 +297,131 @@ html, body {
   #palette, #tools { grid-template-columns: repeat(8, 1fr); }
   #paletteTabs { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ---- игра за протагониста (js/play.js) ---- */
+/* Меню создания в игре недоступно. */
+body.playing #panel { display: none; }
+#playView {
+  position: absolute;
+  display: none;
+  image-rendering: pixelated;
+  cursor: grab;
+}
+#playView.visible { display: block; }
+/* Квадратная кнопка "сохранить" в левом нижнем углу поля. */
+#playSave {
+  position: absolute;
+  display: none;
+  width: 48px;
+  height: 48px;
+  padding: 10px;
+  border: 1px solid #4a4a56;
+  background: rgba(26, 26, 32, 0.85);
+  cursor: pointer;
+}
+#playSave:hover { border-color: #ffc424; }
+#playSave.visible { display: block; }
+#playSave svg { width: 100%; height: 100%; display: block; }
+#playFlash {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  background: rgba(26, 26, 32, 0.92);
+  border: 1px solid #ffc424;
+  color: #f0e0b0;
+  font-size: 14px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+#playFlash.visible { opacity: 1; }
+
+/* ---- мультиплеер: лобби (js/lobby.js) ---- */
+#lobbySide { display: none; flex: 0 0 300px; flex-direction: column; gap: 14px; padding: 14px; box-sizing: border-box; background: #16161b; border-right: 1px solid #2a2a32; overflow-y: auto; color: #e8e8ec; font-family: system-ui, sans-serif; }
+body.in-lobby #lobbySide { display: flex; }
+#lobbyView { display: none; image-rendering: pixelated; }
+body.in-lobby #lobbyView { display: block; }
+body.in-lobby #view { display: none; }
+body.in-lobby #btnPause, body.in-lobby #btnClear, body.in-lobby #btnSave, body.in-lobby #btnLoad { display: none; }
+#lobbySide .lb-id { font-size: 15px; color: #b8b8c0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#lobbySide .lb-id b { font: 700 22px ui-monospace, Consolas, monospace; letter-spacing: 2px; color: #fff; user-select: all; }
+#lobbySide .lb-copy { background: #24242c; color: #c8c8d0; border: 1px solid #4a4a54; padding: 2px 8px; cursor: pointer; font-size: 12px; }
+#lobbySide .lb-start { font: 800 40px/1 system-ui, sans-serif; letter-spacing: 1px; color: #fff; padding: 16px 0; border: 0; cursor: pointer; background: linear-gradient(#55aa2c, #23461a); }
+#lobbySide .lb-start:hover { filter: brightness(1.12); }
+#lobbySide .lb-players { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.lb-sq { aspect-ratio: 1; border: 2px solid #55555f; position: relative; display: flex; align-items: center; justify-content: center; cursor: pointer; box-sizing: border-box; }
+.lb-sq.me { border-color: #fff; }
+.lb-sq span { font: 600 14px system-ui, sans-serif; text-align: center; overflow: hidden; text-overflow: ellipsis; max-width: 92%; white-space: nowrap; }
+.lb-sq em { position: absolute; top: 2px; right: 4px; font: 700 11px system-ui; font-style: normal; color: #fff; text-shadow: 0 0 3px #000; }
+.lb-sq em.norespawn { top: auto; bottom: 2px; color: #ff8a80; }
+#lobbySide .lb-preview { position: relative; border: 2px solid #55555f; background: #ececec; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+#lobbySide .lb-preview-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#lobbySide .lb-preview-label { position: relative; color: #222; font-size: 18px; }
+body:not(.mp-client) #lobbySide .lb-preview { cursor: pointer; }
+body:not(.mp-client) #lobbySide .lb-preview:hover { border-color: #9ad06a; }
+#lobbySide .lb-toggles { display: flex; flex-direction: column; gap: 10px; }
+.lb-toggle-row, .lb-pop-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 15px; color: #c8c8d0; }
+.lb-toggle { width: 70px; height: 28px; border: 2px solid #55555f; background: #b4b4b4; position: relative; cursor: pointer; padding: 0; flex: 0 0 auto; }
+.lb-toggle i { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; background: #e01a1a; }
+.lb-toggle.on i { right: auto; left: 2px; background: #3c7a1e; }
+#lobbySide .lb-hint { font-size: 12px; color: #8a8a94; line-height: 1.5; }
+#lobbySide .lb-wait { color: #c8c8d0; }
+#lobbySide .lb-leave { align-self: flex-start; background: #24242c; color: #c8c8d0; border: 1px solid #4a4a54; padding: 6px 12px; cursor: pointer; }
+.lb-pop { position: fixed; z-index: 60; display: none; background: #1a1a20; border: 1px solid #4a4a54; padding: 14px 16px; width: 280px; max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box; color: #e8e8ec; font-size: 14px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); font-family: system-ui, sans-serif; }
+.lb-pop.visible { display: flex; flex-direction: column; gap: 10px; }
+.lb-pop-head { display: flex; align-items: center; gap: 10px; }
+.lb-pop-sw { width: 26px; height: 26px; border: 1px solid rgba(255,255,255,0.3); }
+.lb-pop-title { font-size: 18px; font-weight: 600; }
+.lb-field { display: flex; flex-direction: column; gap: 5px; color: #b8b8c0; }
+.lb-pop input[type=text] { background: #24242c; color: #fff; border: 1px solid #4a4a54; padding: 4px 6px; font: inherit; }
+.lb-slider { position: relative; height: 20px; border: 1px solid #4a4a54; cursor: pointer; touch-action: none; }
+.lb-slider i { position: absolute; top: -3px; bottom: -3px; width: 6px; margin-left: -4px; background: #fff; border: 1px solid #000; box-shadow: 0 0 3px rgba(0,0,0,0.8); pointer-events: none; }
+.lb-pop .lb-role { background: #24242c; color: #e8e8ec; border: 1px solid #4a4a54; padding: 4px 10px; cursor: pointer; }
+.lb-pop .lb-role.on { background: #3a4a6a; border-color: #7a9ad0; }
+.lb-pop-host { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #2a2a32; padding-top: 10px; }
+.lb-menu { position: fixed; z-index: 60; display: none; width: 280px; background: #1a1a20; border: 1px solid #4a4a54; padding: 14px; flex-direction: column; gap: 10px; color: #e8e8ec; font-family: system-ui, sans-serif; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+.lb-menu.visible { display: flex; }
+.lb-menu-title { font-size: 16px; font-weight: 600; }
+.lb-menu-btn { background: #2e3a24; color: #e8f0e0; border: 1px solid #5a7a3a; padding: 7px 12px; cursor: pointer; font-size: 14px; }
+.lb-menu-join { display: flex; gap: 6px; }
+.lb-id-input { flex: 1 1 auto; min-width: 0; background: #24242c; color: #fff; border: 1px solid #4a4a54; padding: 6px 8px; font: 600 16px ui-monospace, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+.lb-id-input.bad { border-color: #e05a4a; }
+.lb-menu-hint { font-size: 12px; color: #8a8a94; line-height: 1.5; }
+#lobbyMsg { position: fixed; inset: 0; z-index: 70; display: none; background: rgba(10,10,14,0.92); color: #e8e8ec; font: 22px system-ui, sans-serif; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; padding: 20px; }
+#lobbyMsg.visible { display: flex; }
+#lobbyMsg button { font-size: 16px; padding: 6px 14px; cursor: pointer; }
+#mpBar { position: fixed; z-index: 40; top: 8px; left: 50%; transform: translateX(-50%); display: none; gap: 12px; align-items: center; background: rgba(20,20,26,0.92); border: 1px solid #4a4a54; padding: 6px 10px; color: #c8c8d0; font-size: 13px; }
+#mpBar.visible { display: flex; }
+#mpBar span, #mpBar button { white-space: nowrap; }
+#mpBar button { background: #2e3a24; color: #e8f0e0; border: 1px solid #5a7a3a; padding: 4px 12px; cursor: pointer; }
+body.mp-client #btnClear, body.mp-client #btnSave, body.mp-client #btnLoad { display: none; }
+#inspectPanel .ip-mark-label { margin: 8px 0 4px; color: #8a8a94; font-size: 12px; }
+/* ---- стартовый экран (main.js) ---- */
+#startScreen { position: fixed; inset: 0; z-index: 80; background: #0f0f13; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 36px; font-family: system-ui, sans-serif; }
+#startScreen .st-title { font: 800 clamp(40px, 7vw, 84px)/1 system-ui, sans-serif; color: #e8e8ec; letter-spacing: 2px; }
+#startScreen .st-buttons { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; }
+#startScreen .st-btn { font: 800 clamp(26px, 3.4vw, 44px)/1 system-ui, sans-serif; color: #fff; border: 0; padding: 26px 46px; cursor: pointer; min-width: 280px; }
+#startScreen .st-survival { background: linear-gradient(#b0523a, #4d1f15); }
+#startScreen .st-creative { background: linear-gradient(#55aa2c, #23461a); }
+#startScreen .st-btn:hover { filter: brightness(1.12); }
+#startScreen .st-note { color: #9a9aa4; font-size: 16px; min-height: 20px; }
+/* Числовые настройки лобби (жизни, скорость копания) — поле без стрелок. */
+#lobbySide .lb-num { width: 52px; background: #24242c; color: #fff; border: 1px solid #4a4a54; padding: 3px 6px; font: inherit; text-align: center; }
+
+/* Чат мультиплеера (T, js/lobby.js). */
+#mpChat { position: fixed; left: 12px; bottom: 12px; z-index: 55; width: min(520px, calc(100vw - 24px)); display: none; flex-direction: column; gap: 6px; pointer-events: none; font: 15px system-ui, sans-serif; }
+#mpChat.visible { display: flex; }
+#mpChat .ch-log { display: flex; flex-direction: column; gap: 2px; }
+#mpChat .ch-log > div { background: rgba(10,10,14,0.66); color: #ececf0; padding: 3px 8px; overflow-wrap: anywhere; }
+#mpChat .ch-sys { color: #c8c0b8 !important; font-style: italic; }
+#mpChat .ch-in { display: none; pointer-events: auto; background: rgba(20,20,26,0.92); color: #fff; border: 1px solid #6a6a78; padding: 6px 8px; font: inherit; }
+#mpChat.open .ch-in { display: block; }
+#mpChat.open { pointer-events: auto; }
+.lb-pop.wide { width: auto; max-width: calc(100vw - 16px); }
+.lb-stats-t { border-collapse: collapse; font-size: 14px; }
+.lb-stats-t th, .lb-stats-t td { padding: 4px 8px; border-bottom: 1px solid #2e2e38; text-align: left; white-space: nowrap; }
+.lb-stats-t th { color: #a8a8b4; font-weight: 600; }
+#lobbySide .lb-statbtn { background: #24242c; color: #e8e8ec; border: 1px solid #4a4a54; padding: 6px 12px; cursor: pointer; font: inherit; }
+#mpChat .ch-death { color: #ff5a4a !important; font-style: normal; font-weight: 600; }

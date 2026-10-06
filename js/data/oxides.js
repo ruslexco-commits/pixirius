@@ -28,6 +28,19 @@ const OXIDE_METAL_COLOR = [
   [78, 50, 28],
 ];
 
+// Медь зеленеет: от цвета меди к сине-зелёной патине (просьба
+// "приобретает сине-зелёный окрас").
+const OXIDE_COPPER_COLOR = [
+  [184, 115, 51],
+  [158, 118, 68],
+  [132, 124, 86],
+  [108, 132, 104],
+  [90, 142, 120],
+  [78, 150, 132],
+  [70, 154, 140],
+  [64, 150, 140],
+];
+
 // Описание линейки по id элемента-основы или любого её окисла.
 // maxStage — последняя стадия (она же сыпучая), solid/loose — элементы,
 // base — исходный материал, colors — цвета по стадиям.
@@ -60,11 +73,29 @@ const OXIDE_LINE_EARTH = { base: EL.EARTH, maxStage: 10, solid: EL.EARTH_OXIDE, 
 // металла, те же элементы стадий и цвета. "Ржавая линейка" — любая с
 // ржавчиной на стадиях, см. isRustLine.
 OXIDE_LINE_METAL.waterRusts = true;
+// rust — "ржавеющая" линейка: кислота её с равным шансом разъедает или
+// окисляет, вода с чёрными солями ржавит, ржавчина делится стадиями с
+// соседями той же линейки (reactRust). Металл, сталь, приборы и медь.
+OXIDE_LINE_METAL.rust = true;
 const OXIDE_LINE_STEEL = Object.assign({}, OXIDE_LINE_METAL, { base: EL.STEEL, waterRusts: false });
-// Ржавеющая (металлическая) линейка — металл или сталь. Сравнивается по
-// элементу ржавчины, а не по самой линейке: у стали и металла линейки
-// разные объекты, а ржавчина одна.
-function isRustLine(line) { return !!line && line.solid === EL.METAL_OXIDE; }
+// Камера, монитор и панель ржавеют ровно как металл и той же ржавчиной:
+// заржавев, прибор становится обычной ржавчиной (своих окислов у них нет).
+const OXIDE_LINE_CAMERA = Object.assign({}, OXIDE_LINE_METAL, { base: EL.CAMERA });
+const OXIDE_LINE_MONITOR = Object.assign({}, OXIDE_LINE_METAL, { base: EL.MONITOR });
+const OXIDE_LINE_SOLAR = Object.assign({}, OXIDE_LINE_METAL, { base: EL.SOLAR });
+const OXIDE_LINE_GENERATOR = Object.assign({}, OXIDE_LINE_METAL, { base: EL.GENERATOR });
+// Медь — как металл, но своими окислами (патина) и хрупкая, как дерево.
+const OXIDE_LINE_COPPER = Object.assign({}, OXIDE_LINE_METAL, { base: EL.COPPER, solid: EL.COPPER_OXIDE, loose: EL.COPPER_OXIDE_LOOSE, colors: OXIDE_COPPER_COLOR });
+// Усилитель ржавеет как медь, в ту же патину, и, заржавев, усилителем
+// быть перестаёт.
+const OXIDE_LINE_AMPLIFIER = Object.assign({}, OXIDE_LINE_COPPER, { base: EL.AMPLIFIER });
+// Изолятор кислоте поддаётся как земля — её линейкой.
+const OXIDE_LINE_INSULATOR = Object.assign({}, OXIDE_LINE_EARTH, { base: EL.INSULATOR });
+// Ржавеющая линейка (см. rust выше).
+function isRustLine(line) { return !!line && line.rust === true; }
+// Одна ли "семья" ржавчины у двух линеек: общий элемент твёрдой стадии
+// (у металла, стали и приборов — одна ржавчина, у меди — патина).
+function sameRustFamily(a, b) { return !!a && !!b && a.solid === b.solid; }
 const OXIDE_LINE = [];
 OXIDE_LINE[EL.STEEL] = OXIDE_LINE_STEEL;
 OXIDE_LINE[EL.STONE] = OXIDE_LINE_STONE;
@@ -75,6 +106,15 @@ OXIDE_LINE[EL.METAL_OXIDE] = OXIDE_LINE_METAL;
 OXIDE_LINE[EL.METAL_OXIDE_LOOSE] = OXIDE_LINE_METAL;
 OXIDE_LINE[EL.EARTH] = OXIDE_LINE_EARTH;
 OXIDE_LINE[EL.EARTH_OXIDE] = OXIDE_LINE_EARTH;
+OXIDE_LINE[EL.CAMERA] = OXIDE_LINE_CAMERA;
+OXIDE_LINE[EL.MONITOR] = OXIDE_LINE_MONITOR;
+OXIDE_LINE[EL.SOLAR] = OXIDE_LINE_SOLAR;
+OXIDE_LINE[EL.GENERATOR] = OXIDE_LINE_GENERATOR;
+OXIDE_LINE[EL.AMPLIFIER] = OXIDE_LINE_AMPLIFIER;
+OXIDE_LINE[EL.COPPER] = OXIDE_LINE_COPPER;
+OXIDE_LINE[EL.COPPER_OXIDE] = OXIDE_LINE_COPPER;
+OXIDE_LINE[EL.COPPER_OXIDE_LOOSE] = OXIDE_LINE_COPPER;
+OXIDE_LINE[EL.INSULATOR] = OXIDE_LINE_INSULATOR;
 
 // Стойкость дерева — её получают окислы, начиная со своей frailStage:
 // окалина и ржавчина держат навес заметно хуже исходного камня или
@@ -89,23 +129,32 @@ const OXIDE_FRAIL_TOUGHNESS = 2;
 // (последняя, сыпучая стадия), больше нуля — сравнить со стадией в extra.
 // Цвет клетки по составу (просьба пользователя: "цвет пикселя — это
 // усреднённый цвет всех входящих в него"). Живёт здесь, а не в
-// data/composition.js, потому что чёрные соли красятся в цвет ржавчины —
-// а он задан выше.
+// data/composition.js, по истории: раньше чёрные соли красились в цвет
+// ржавчины, заданный выше.
 //
 // Обычные доли: среднее цветов вещественных долей (пустота не красит —
 // она делает клетку бледнее, это в Renderer.cellColor). Чёрные соли —
-// не долей в среднем, а поверх: с 1 до SALT_RUST_AT долей клетка тянется
-// к цвету ржавчины и на SALT_RUST_AT от неё не отличима, дальше до 10
-// долей — чернеет. Шейдер повторяет эту функцию (render-gl.js,
+// не долей в среднем, а поверх: с 1 до SALT_GREY_AT долей оттенок воды
+// (или чего угодно ещё) уходит в серый и на SALT_GREY_AT исчезает совсем,
+// дальше до 10 долей клетка понемногу чернеет. Раньше соли тянули к цвету
+// ржавчины — пользователь передумал: вода с солями должна чернеть, а не
+// ржаветь на вид. Шейдер повторяет эту функцию (render-gl.js,
 // partsColor): правя здесь, правь и там.
-const SALT_RUST_AT = 5;
-const SALT_RUST_COLOR = OXIDE_METAL_COLOR[5];
-const SALT_BLACK_COLOR = [24, 22, 26];
+const SALT_GREY_AT = 3;
+const SALT_GREY_COLOR = [92, 92, 96];
+const SALT_BLACK_COLOR = [30, 30, 34];
+// Грязь (просьба пользователя: мокрая грязь выглядела голубой, будто
+// застывшая вода): доли грязи уводят цвет к цвету грязи — к MUD_FULL_AT
+// долям полностью, — а дальше он темнеет к MUD_DARK_COLOR (у чистой грязи).
+// Как у солей, только к своему цвету. Шейдер (render-gl.js) — так же.
+const MUD_FULL_AT = 5;
+const MUD_DARK_COLOR = [64, 44, 28];
+
 function solColor(comp) {
   const matter = solMatter(comp);
   if (matter <= 0) return [14, 14, 18];
-  const s = solGet(comp, P_SALT);
-  const other = matter - s;
+  const s = solGet(comp, P_SALT), m = solGet(comp, EL.MUD);
+  const other = matter - s - m;
   let r, g, b;
   if (other > 0) {
     r = 0; g = 0; b = 0;
@@ -113,25 +162,36 @@ function solColor(comp) {
       const slot = solSlot(comp, k);
       if (!slot) break;
       const id = slotId(slot);
-      if (id === P_SALT) continue;
+      if (id === P_SALT || id === EL.MUD) continue;
       const n = slotCount(slot);
       const col = PART_COLOR[id];
       r += col[0] * n; g += col[1] * n; b += col[2] * n;
     }
     r /= other; g /= other; b /= other;
   } else {
-    r = SALT_RUST_COLOR[0]; g = SALT_RUST_COLOR[1]; b = SALT_RUST_COLOR[2];
+    const c0 = m > 0 ? PART_COLOR[EL.MUD] : SALT_GREY_COLOR;
+    r = c0[0]; g = c0[1]; b = c0[2];
+  }
+  if (m > 0) {
+    const mc = PART_COLOR[EL.MUD];
+    if (m <= MUD_FULL_AT) {
+      const t = m / MUD_FULL_AT;
+      r += (mc[0] - r) * t; g += (mc[1] - g) * t; b += (mc[2] - b) * t;
+    } else {
+      const t = (m - MUD_FULL_AT) / (SOL_PARTS - MUD_FULL_AT);
+      r = mc[0] + (MUD_DARK_COLOR[0] - mc[0]) * t; g = mc[1] + (MUD_DARK_COLOR[1] - mc[1]) * t; b = mc[2] + (MUD_DARK_COLOR[2] - mc[2]) * t;
+    }
   }
   if (s === 0) return [r, g, b];
-  if (s <= SALT_RUST_AT) {
-    const t = s / SALT_RUST_AT;
-    return [r + (SALT_RUST_COLOR[0] - r) * t, g + (SALT_RUST_COLOR[1] - g) * t, b + (SALT_RUST_COLOR[2] - b) * t];
+  if (s <= SALT_GREY_AT) {
+    const t = s / SALT_GREY_AT;
+    return [r + (SALT_GREY_COLOR[0] - r) * t, g + (SALT_GREY_COLOR[1] - g) * t, b + (SALT_GREY_COLOR[2] - b) * t];
   }
-  const t = (s - SALT_RUST_AT) / (SOL_PARTS - SALT_RUST_AT);
+  const t = (s - SALT_GREY_AT) / (SOL_PARTS - SALT_GREY_AT);
   return [
-    SALT_RUST_COLOR[0] + (SALT_BLACK_COLOR[0] - SALT_RUST_COLOR[0]) * t,
-    SALT_RUST_COLOR[1] + (SALT_BLACK_COLOR[1] - SALT_RUST_COLOR[1]) * t,
-    SALT_RUST_COLOR[2] + (SALT_BLACK_COLOR[2] - SALT_RUST_COLOR[2]) * t,
+    SALT_GREY_COLOR[0] + (SALT_BLACK_COLOR[0] - SALT_GREY_COLOR[0]) * t,
+    SALT_GREY_COLOR[1] + (SALT_BLACK_COLOR[1] - SALT_GREY_COLOR[1]) * t,
+    SALT_GREY_COLOR[2] + (SALT_BLACK_COLOR[2] - SALT_GREY_COLOR[2]) * t,
   ];
 }
 
@@ -140,3 +200,5 @@ OXIDE_FRAIL_FROM[EL.OXIDE] = OXIDE_LINE_STONE.frailStage;
 OXIDE_FRAIL_FROM[EL.OXIDE_LOOSE] = -1;
 OXIDE_FRAIL_FROM[EL.METAL_OXIDE] = OXIDE_LINE_METAL.frailStage;
 OXIDE_FRAIL_FROM[EL.METAL_OXIDE_LOOSE] = -1;
+OXIDE_FRAIL_FROM[EL.COPPER_OXIDE] = OXIDE_LINE_COPPER.frailStage;
+OXIDE_FRAIL_FROM[EL.COPPER_OXIDE_LOOSE] = -1;

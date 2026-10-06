@@ -196,6 +196,13 @@ function pureCompFor(id) {
   if (id === EL.EMPTY) return 0;
   if (id === EL.SOLUTION) return solPure(EL.WATER);
   if (id === EL.VAPOR) return solPure(EL.STEAM);
+  // Сплавы веществом тоже не являются, их тип выводится из долей (см.
+  // sim/alloys.js). Если такую клетку всё же создали напрямую (spawn), она
+  // получает пример состава — железо с медью пополам, — чтобы тип и
+  // состав сходились.
+  if (id === EL.ALLOY) return solWith(solPure(EL.METAL, 5), EL.COPPER, 5);
+  if (id === EL.MOLTEN_ALLOY) return solWith(solPure(EL.MOLTEN_METAL, 5), EL.MOLTEN_COPPER, 5);
+  if (id === EL.ALLOY_RUST) return solWith(solPure(EL.METAL_OXIDE, 5), EL.COPPER_OXIDE, 5);
   return solPure(id);
 }
 
@@ -215,7 +222,12 @@ function isSolutionFamily(id) { return IS_SOLUTION_FAMILY[id] === 1; }
 // выпадают из неё). Отдельно от isSolutionFamily нарочно: соль не
 // жидкость и в LIQUID_PHASE (связность лужи для вытеснения тонущими
 // телами) не входит.
-const IS_SOLUTION_MEDIUM = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.BLACK_SALT]);
+// Грязь — так же, как соли (sim/mud.js).
+// Сыпучие вещества, которые смешиваются друг с другом долями — только при
+// движении (Sim.powderMix, sim/mud.js; просьба пользователя: "растворы из
+// сыпучих веществ: грязи, земли и чёрной соли").
+const IS_POWDER_MIX = idTable([EL.MUD, EL.EARTH, EL.BLACK_SALT]);
+const IS_SOLUTION_MEDIUM = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.BLACK_SALT, EL.MUD]);
 function isSolutionMedium(id) { return IS_SOLUTION_MEDIUM[id] === 1; }
 
 // Газовое семейство: всё, что умеет перемешиваться, стягиваться и
@@ -228,8 +240,9 @@ function isVaporFamily(id) { return IS_VAPOR_FAMILY[id] === 1; }
 // кипит и конденсируется покомпонентно (tickComposition). Состав есть у
 // всех клеток, но у камня, песка и прочего твёрдого он меняется только
 // извне (растворитель, окисление) и сам ничего не делает.
+// Грязь — тоже: вода в мокрой грязи кипит и мёрзнет (sim/mud.js).
 const HAS_COMPOSITION = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.STEAM, EL.ACID_GAS, EL.VAPOR,
-  EL.OIL, EL.BLACK_SALT, EL.DISSOLVER, EL.REAGENT_GAS, EL.OIL_GAS, EL.DISSOLVER_GAS]);
+  EL.OIL, EL.BLACK_SALT, EL.DISSOLVER, EL.REAGENT_GAS, EL.OIL_GAS, EL.DISSOLVER_GAS, EL.MUD]);
 function hasComposition(id) { return HAS_COMPOSITION[id] === 1; }
 
 // С чем меняется долями растворитель: любое вещество с фазой, кроме
@@ -237,7 +250,7 @@ function hasComposition(id) { return HAS_COMPOSITION[id] === 1; }
 // выпала бы новой стеной где попало) и живых (человек, колонист).
 const DISSOLVER_MIXABLE = new Uint8Array(64);
 for (let id = 1; id < 64; id++) {
-  DISSOLVER_MIXABLE[id] = (PART_STATE[id] !== 0 && !isAnchor(id) && id !== EL.HUMAN && id !== EL.COLONIST) ? 1 : 0;
+  DISSOLVER_MIXABLE[id] = (PART_STATE[id] !== 0 && !isAnchor(id) && id !== EL.HUMAN && id !== EL.COLONIST && id !== EL.PROTAGONIST) ? 1 : 0;
 }
 
 // "Фаза" жидкости для computeLiquidEscape/displaceLiquidThroughBody: всё
@@ -246,3 +259,5 @@ for (let id = 1; id < 64; id++) {
 // остальные жидкости — каждая сама по себе. Индекс — id элемента.
 const LIQUID_PHASE = new Uint8Array(64);
 for (let id = 0; id < 64; id++) LIQUID_PHASE[id] = isSolutionFamily(id) ? EL.WATER : id;
+// Расплавы (лава, расплавы металлов и их смесь) — тоже одна жидкость.
+for (const id of [EL.LAVA, EL.MOLTEN_METAL, EL.MOLTEN_STEEL, EL.MOLTEN_COPPER, EL.MOLTEN_ALLOY]) LIQUID_PHASE[id] = EL.LAVA;

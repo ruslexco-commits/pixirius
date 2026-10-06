@@ -2,6 +2,13 @@
 
 function clampInt(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+// Режимы линии: тянется с зажатым Shift (с Ctrl или Alt — с привязкой к
+// 45°), кладётся по отпусканию кнопки. ЛКМ рисует, ПКМ стирает (просьба:
+// "комбинация Shift плюс Ctrl будет работать и с ПКМ, то есть удалением").
+function isLineMode(mode) { return mode === 'line' || mode === 'lineSnap' || mode === 'lineErase' || mode === 'lineSnapErase'; }
+function isSnapLine(mode) { return mode === 'lineSnap' || mode === 'lineSnapErase'; }
+function isEraseLine(mode) { return mode === 'lineErase' || mode === 'lineSnapErase'; }
+
 function snapAngle(x0, y0, x1, y1) {
   const dx = x1 - x0, dy = y1 - y0;
   const dist = Math.sqrt(dx * dx + dy * dy);
@@ -50,6 +57,19 @@ class InputController {
     // (gx, gy, clientX, clientY) => void — щелчок лупой по клетке. Задаёт
     // main.js: что показать, решает интерфейс, а не ввод.
     this.onInspect = null;
+
+    // Копирование и вставка (просьба пользователя). Ctrl+C / Ctrl+X —
+    // clipMode 'copy' / 'cut': следующая протяжка ЛКМ выделяет
+    // прямоугольник (selDrag), по отпусканию он копируется в clipboard (а
+    // при вырезании ещё и стирается). Ctrl+V — clipMode 'paste': у курсора
+    // полупрозрачная проекция копии, ЛКМ вставляет. ПКМ или Esc — отмена.
+    this.clipMode = null;
+    this.clipboard = null;
+    this.selDrag = null;
+
+    // false — рисование и клавиши создания выключены: идёт игра за
+    // протагониста (js/play.js), меню создания в ней недоступно.
+    this.enabled = true;
 
     this._bind();
   }
@@ -102,7 +122,9 @@ class InputController {
   brushRadiusFor(writeElementId) {
     // Человек и колонист — не заливочный материал, а отдельные существа:
     // кисть для них всегда в одну клетку, каким бы ни был её размер.
-    return (writeElementId === EL.COLONIST || writeElementId === EL.HUMAN) ? [0, 0] : [this.brushRX, this.brushRY];
+    // Протагонист — так же, одна клетка в центре кисти (просьба: "спавнится
+    // всегда в центре спавн-поля").
+    return (writeElementId === EL.COLONIST || writeElementId === EL.HUMAN || writeElementId === EL.PROTAGONIST) ? [0, 0] : [this.brushRX, this.brushRY];
   }
 
   toGrid(clientX, clientY) {
@@ -163,6 +185,18 @@ class InputController {
   }
 
   onKeyDown(e) {
+    if (!this.enabled) return;
+    if (e.ctrlKey && (e.code === 'KeyC' || e.code === 'KeyX')) {
+      if (!e.repeat) { this.clipMode = e.code === 'KeyC' ? 'copy' : 'cut'; this.selDrag = null; this.drag = null; }
+      e.preventDefault();
+      return;
+    }
+    if (e.ctrlKey && e.code === 'KeyV') {
+      if (!e.repeat && this.clipboard) { this.clipMode = 'paste'; this.selDrag = null; this.drag = null; }
+      e.preventDefault();
+      return;
+    }
+    if (e.code === 'Escape' && this.clipMode) { this.clipMode = null; this.selDrag = null; return; }
     if (e.code === 'Tab') {
       if (!e.repeat) this.brushShape = this.brushShape === 'circle' ? 'square' : 'circle';
       e.preventDefault();
@@ -194,6 +228,7 @@ class InputController {
   }
 
   onWheel(e) {
+    if (!this.enabled) return;
     if (!this.inCanvas) return;
     e.preventDefault();
     const dir = e.deltaY > 0 ? -1 : 1;
@@ -215,6 +250,7 @@ class InputController {
   }
 
   onMouseDown(e) {
+    if (!this.enabled) return;
     if (e.button !== 0 && e.button !== 2) return;
     // gx,gy — реальная клетка под курсором (для отображения/слежения лупы);
     // egx,egy — "рабочая" клетка действия: та же самая, кроме случая, когда
@@ -240,6 +276,20 @@ class InputController {
       return;
     }
 
+    // Выделение для копирования и вставка — поверх любого инструмента.
+    if (this.clipMode) {
+      if (e.button === 2) { this.clipMode = null; this.selDrag = null; return; }
+      if (this.clipMode === 'paste') {
+        const clip = this.clipboard;
+        this.pushUndo();
+        this.sim.pasteRegion(clip, egx - (clip.w >> 1), egy - (clip.h >> 1));
+        this.clipMode = null;
+      } else {
+        this.selDrag = { x0: egx, y0: egy, x1: egx, y1: egy };
+      }
+      return;
+    }
+
     const elementId = this.getSelectedElement();
 
     // Инструмент "давление" — особый случай: не рисует материал, а
@@ -252,6 +302,26 @@ class InputController {
       const mode = e.button === 0 ? 'pressureInc' : 'pressureDec';
       this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
       this.sim.applyPressureBrush(egx, egy, this.brushRX, this.brushRY, mode === 'pressureInc' ? 1 : -1);
+      return;
+    }
+
+    // Точки спавна игроков и респавна (мультиплеер, sim/spawns.js): ЛКМ —
+    // поставить, ПКМ — убрать рядом. Шагом истории не становятся.
+    if (typeof elementId === 'string' && elementId.startsWith(TOOL_SPAWN_PREFIX)) {
+      if (e.button === 2) this.sim.removeMarksNear(egx, egy, 1, 1);
+      else this.sim.setSpawnMark(egx, egy, Number(elementId.slice(TOOL_SPAWN_PREFIX.length)));
+      return;
+    }
+    if (elementId === TOOL_RESPAWN) {
+      if (e.button === 2) this.sim.removeMarksNear(egx, egy, 1, 1);
+      else this.sim.addRespawnMark(egx, egy);
+      return;
+    }
+
+    // Электрический разряд: заряд по проводнику под курсором (или ближайшему
+    // в пределах кисти), без шага истории — заряды в отмену не входят.
+    if (elementId === TOOL_ZAP) {
+      this.sim.zapAt(egx, egy, this.brushRX, this.brushRY);
       return;
     }
 
@@ -272,10 +342,11 @@ class InputController {
     }
 
     let mode;
-    // Shift+Ctrl+ЛКМ и Shift+Alt+ЛКМ — оба дают линию с привязкой к 45°
-    if (shift && (ctrl || alt) && e.button === 0) mode = 'lineSnap';
+    // Shift — линия; Shift+Ctrl и Shift+Alt — линия с привязкой к 45°.
+    // ЛКМ ею рисует, ПКМ — стирает.
+    if (shift && (ctrl || alt)) mode = e.button === 0 ? 'lineSnap' : 'lineSnapErase';
     else if (ctrl && !shift) mode = (e.button === 0) ? 'fill' : 'fillErase';
-    else if (shift && e.button === 0) mode = 'line';
+    else if (shift) mode = e.button === 0 ? 'line' : 'lineErase';
     else mode = (e.button === 0) ? 'paint' : 'erase';
 
     this.drag = { mode, startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
@@ -296,11 +367,21 @@ class InputController {
   }
 
   onMouseMove(e) {
+    // Скрытое поле (лобби показывает своё, экран игры — своё) — нулевого
+    // размера: деление на его ширину давало бесконечные координаты, а
+    // "мышь над полем" оставалась включённой, если поле скрылось прямо под
+    // мышью (ухода мыши браузер тогда не присылает). Стоило полю снова
+    // показаться (хост щёлкнул превью карты) — контур кисти обводился от
+    // минус бесконечности, цикл не кончался, и страница висла намертво
+    // (жалоба пользователя, трижды; поймано через diag.log).
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) { this.inCanvas = false; return; }
     const [gx, gy] = this.toGrid(e.clientX, e.clientY);
     this.updateLensHover(e.clientX, e.clientY);
     const hovering = this.zoomHoverGX !== null && this.zoomHoverGX !== undefined;
     const egx = hovering ? this.zoomHoverGX : gx;
     const egy = hovering ? this.zoomHoverGY : gy;
+    if (this.selDrag) { this.selDrag.x1 = egx; this.selDrag.y1 = egy; }
     if (this.drag) {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
@@ -308,7 +389,7 @@ class InputController {
         const [brx, bry] = this.brushRadiusFor(writeEl);
         this.sim.stampLine(d.lastX, d.lastY, egx, egy, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
         d.lastX = egx; d.lastY = egy;
-      } else if (d.mode === 'line' || d.mode === 'lineSnap') {
+      } else if (isLineMode(d.mode)) {
         d.lastX = egx; d.lastY = egy;
       } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {
         this.sim.applyPressureBrush(egx, egy, this.brushRX, this.brushRY, d.mode === 'pressureInc' ? 1 : -1);
@@ -322,21 +403,48 @@ class InputController {
   }
 
   onMouseUp() {
+    if (this.selDrag) { this.finishSelection(); return; }
     if (!this.drag) return;
     const d = this.drag;
-    if (d.mode === 'line' || d.mode === 'lineSnap') {
+    if (isLineMode(d.mode)) {
       let ex = d.lastX, ey = d.lastY;
-      if (d.mode === 'lineSnap') [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
-      const [brx, bry] = this.brushRadiusFor(d.elementId);
-      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, brx, bry, d.elementId, this.onlyEmptyFor('paint', d.elementId));
+      if (isSnapLine(d.mode)) [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
+      const erase = isEraseLine(d.mode);
+      const writeEl = erase ? EL.EMPTY : d.elementId;
+      const [brx, bry] = this.brushRadiusFor(writeEl);
+      this.sim.stampLine(d.startX, d.startY, ex, ey, this.brushShape, brx, bry, writeEl, erase ? false : this.onlyEmptyFor('paint', d.elementId));
     }
     this.drag = null;
+  }
+
+  // Выделение отпущено: прямоугольник (обрезанный по полю) копируется —
+  // вместе с картинкой для проекции вставки, снятой с живого поля, пока
+  // вырезание его ещё не стёрло.
+  selectionRect() {
+    const d = this.selDrag, sim = this.sim;
+    const x0 = clampInt(Math.min(d.x0, d.x1), 0, sim.w - 1), x1 = clampInt(Math.max(d.x0, d.x1), 0, sim.w - 1);
+    const y0 = clampInt(Math.min(d.y0, d.y1), 0, sim.h - 1), y1 = clampInt(Math.max(d.y0, d.y1), 0, sim.h - 1);
+    return { x0, y0, x1, y1 };
+  }
+
+  finishSelection() {
+    const r = this.selectionRect();
+    const clip = this.sim.copyRegion(r.x0, r.y0, r.x1, r.y1);
+    clip.image = this.renderer.regionImage(r.x0, r.y0, r.x1, r.y1);
+    this.clipboard = clip;
+    if (this.clipMode === 'cut') {
+      this.pushUndo();
+      this.sim.clearRegion(r.x0, r.y0, r.x1, r.y1);
+    }
+    this.clipMode = null;
+    this.selDrag = null;
   }
 
   // Вызывается каждый кадр из игрового цикла: если кисть зажата и стоит на
   // месте, она всё равно должна продолжать действовать (например, стирать
   // всё, что упало под неё под гравитацией), а не только при движении мыши.
   tickHold() {
+    if (!this.enabled) return;
     if (!this.drag) return;
     const d = this.drag;
     if (d.mode === 'paint' || d.mode === 'erase') {
@@ -362,23 +470,32 @@ class InputController {
   }
 
   getCursorState() {
-    const inLine = this.drag && (this.drag.mode === 'line' || this.drag.mode === 'lineSnap');
+    const inLine = this.drag && isLineMode(this.drag.mode);
     let linePreview = null;
     if (inLine) {
       const d = this.drag;
       let ex = d.lastX, ey = d.lastY;
-      if (d.mode === 'lineSnap') [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
-      linePreview = { x0: d.startX, y0: d.startY, x1: ex, y1: ey };
+      if (isSnapLine(d.mode)) [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
+      linePreview = { x0: d.startX, y0: d.startY, x1: ex, y1: ey, erase: isEraseLine(d.mode) };
     }
     // У лупы контур в одну клетку: она смотрит ровно одну клетку, а не
     // площадь кисти.
     const inspect = this.getSelectedElement() === TOOL_INSPECT;
+    const clipArmed = this.clipMode === 'copy' || this.clipMode === 'cut';
+    // Клетка под курсором ещё не известна (мышь не двигалась над полем) —
+    // ни кисти, ни рамок: рисовать их негде (см. onMouseMove).
+    const at = Number.isFinite(this.gx) && Number.isFinite(this.gy);
     return {
       gx: this.gx, gy: this.gy,
-      showBrush: this.inCanvas,
+      showBrush: at && this.inCanvas && !this.clipMode,
+      // Выделение (рамка протяжки или взведённый режим — клетка под
+      // курсором) и проекция вставки.
+      clipSelect: this.selDrag ? this.selectionRect() : (clipArmed && at && this.inCanvas ? { x0: this.gx, y0: this.gy, x1: this.gx, y1: this.gy } : null),
+      clipCut: this.clipMode === 'cut',
+      clipPaste: this.clipMode === 'paste' && at && this.inCanvas ? { clip: this.clipboard, gx: this.gx, gy: this.gy } : null,
       brushShape: this.brushShape, brushRX: inspect ? 0 : this.brushRX, brushRY: inspect ? 0 : this.brushRY,
       linePreview,
-      zoomActive: this.zoomKeyDown && this.inCanvas,
+      zoomActive: this.zoomKeyDown && at && this.inCanvas,
       zoomRX: this.zoomRX, zoomRY: this.zoomRY,
       zoomPinned: this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,

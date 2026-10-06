@@ -29,6 +29,13 @@ const WATER_RUST_SLOWER = 5;
 // дешевле, чем проверять всем: на глаз ржавчина всё равно ползёт
 // медленно, а лишняя работа уходит.
 const RUST_TICK_CHANCE = 0.25;
+// Изолятор растворяется в воде (просьба пользователя): клетка воды (или
+// раствора с водой), касающаяся изолятора, с этим шансом в кадр растворяет
+// одну его клетку — та становится чёрными солями, которые дальше живут по
+// своим правилам (мокрые не взрываются, в воде перемешиваются долями).
+// Шанс бросается, только если изолятор рядом есть: в озере соседей
+// проверяет каждая клетка воды, и лишний бросок там дорог.
+const INSULATOR_WATER_CHANCE = 0.004;
 
 // Реагент, попав на дерево, поджигает его.
 const REAGENT_IGNITE_WOOD = 0.08;
@@ -92,8 +99,17 @@ class SimChemistry {
     const nx = x + DX4[k], ny = y + DY4[k];
     if (!this.inBounds(nx, ny)) return;
     const ni = this.idx(nx, ny);
-    const nt = this.type[ni];
+    let nt = this.type[ni];
     if (DISSOLVER_MIXABLE[nt] !== 1) return;
+    // Прибор под растворителем — сперва простой металл (усилитель —
+    // медь), дальше как с ним (своих долей у приборов нет).
+    if (DEVICE_BASE[nt] !== 0) {
+      const base = DEVICE_BASE[nt];
+      this.type[ni] = base;
+      this.retypeComp(ni, nt, base);
+      this.markDirty(ni);
+      nt = base;
+    }
     const a = this.comp(i), b = this.comp(ni);
     const pa = this.randomMatterPart(a), pb = this.randomMatterPart(b);
     if (pa < 0 || pb < 0 || pa === pb) return;
@@ -115,6 +131,9 @@ class SimChemistry {
   // Растворитель в растворе действует по своей доле (см. reactDissolver).
   reactSolutionLike(x, y, i) {
     this.mixParts(x, y, i);
+    // Мутная вода: грязь оседает (sim/mud.js).
+    // Вода откладывает грязь на соседние пиксели и забирает с них (sim/mud.js).
+    if (IS_LIQUID[this.type[i]] === 1 && (solGet(this.comp(i), EL.MUD) > 0 || this.dirtyNear(x, y, i))) this.mudStick(x, y, i);
     const d = solGet(this.comp(i), P_DISSOLVER);
     if (d && Math.random() < DISSOLVER_MIX_CHANCE * d / SOL_PARTS) this.dissolverMix(x, y, i);
     if (!this.hasParts(i)) return;
@@ -127,6 +146,20 @@ class SimChemistry {
     if (this.hasParts(i) && solGet(this.comp(i), P_REAGENT) > 0) this.oxidiseNeighbours(x, y, i);
     if (this.hasParts(i) && Math.random() < RUST_TICK_CHANCE && solGet(this.comp(i), P_WATER) > 0) this.rustNeighbours(x, y, i);
     if (this.beam[i] && IS_LIQUID[this.type[i]] === 1) this.reactLiquidOnBeam(x, y, i);
+    if (this.hasParts(i) && solGet(this.comp(i), P_WATER) > 0) this.dissolveInsulator(x, y, i);
+  }
+
+  // Вода в клетке i растворяет соседний изолятор в чёрные соли (см.
+  // INSULATOR_WATER_CHANCE). Соседи — справа, слева, снизу, сверху.
+  dissolveInsulator(x, y, i) {
+    const w = this.w, type = this.type, INS = EL.INSULATOR;
+    let ni = -1;
+    if (x < w - 1 && type[i + 1] === INS) ni = i + 1;
+    else if (x > 0 && type[i - 1] === INS) ni = i - 1;
+    else if (y < this.h - 1 && type[i + w] === INS) ni = i + w;
+    else if (y > 0 && type[i - w] === INS) ni = i - w;
+    if (ni < 0 || Math.random() >= INSULATOR_WATER_CHANCE) return;
+    this.spawn(ni, EL.BLACK_SALT, false);
   }
 
   // Жидкость, стоящая в клетке с балкой, действует на балку так же, как на
@@ -202,7 +235,8 @@ class SimChemistry {
   // at — где жидкость сейчас: отслоившаяся ржавчина (rustFlake) меняется с
   // ней местами, и итоговый состав пишется уже туда.
   rustNeighbours(x, y, i) {
-    let comp = this.comp(i);
+    const comp0 = this.comp(i);
+    let comp = comp0;
     let water = solGet(comp, P_WATER);
     const salty = solGet(comp, P_SALT) > 0;
     let at = i;
@@ -210,6 +244,15 @@ class SimChemistry {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
       const ni = this.idx(nx, ny);
+      // Сплав ржавеет по долям (sim/alloys.js): доля стали защищает его от
+      // чистой воды, но не от солёной.
+      if (this.type[ni] === EL.ALLOY) {
+        if (Math.random() >= 0.06 / WATER_RUST_SLOWER * water / SOL_PARTS) continue;
+        if (!this.alloyRustPart(ni, salty ? ALLOY_BY_SALTY_WATER : ALLOY_BY_WATER)) continue;
+        comp = solMove(comp, P_WATER, P_SALT);
+        water = solGet(comp, P_WATER);
+        continue;
+      }
       const line = OXIDE_LINE[this.type[ni]];
       // Чистая вода ржавит металл и его ржавчину, но не сталь; вода с
       // чёрными солями — и сталь (просьба: "вода с чёрными солями может
@@ -226,6 +269,12 @@ class SimChemistry {
       water = solGet(comp, P_WATER);
       if (this.rustFlake(at, ni)) { at = ni; break; }
     }
+    // Ничего не заржавело (почти всегда: бросок на ржавление редок) — и
+    // состав прежний. setComposition тогда ничего не меняет, если тип уже
+    // совпадает с единственным веществом состава; а зовётся это на каждой
+    // четверти клеток воды каждый кадр, и в озере это была заметная доля
+    // кадра. Смесь или несовпавший тип — прежним путём, пусть пересчитает.
+    if (at === i && comp === comp0 && comp < 1024 && this.type[i] === (comp & 63)) return;
     this.setComposition(at, comp, false);
   }
 
@@ -277,6 +326,17 @@ class SimChemistry {
         }
         continue;
       }
+      // Сплав реагент окисляет по долям (sim/alloys.js).
+      if (nt === EL.ALLOY) {
+        if (Math.random() >= chance) continue;
+        if (!this.alloyRustPart(ni, ALLOY_BY_REAGENT)) continue;
+        if (Math.random() < OXIDISE_COST) {
+          comp = solWith(comp, P_REAGENT, reagent - 1);
+          comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+          reagent = solGet(comp, P_REAGENT);
+        }
+        continue;
+      }
       const line = OXIDE_LINE[nt];
       if (!line) continue;
       const stage = this.oxideStage(ni);
@@ -315,8 +375,18 @@ class SimChemistry {
       if (nt === EL.EMPTY || isSolutionMedium(nt) || isVaporFamily(nt) || nt === EL.ACID_RESIDUE) continue;
       const nel = ELEMENTS[nt];
       if (!nel || nel.acidImmune || this.acidProof(ni)) continue;
-      const chance = (nel.acidSlow ? 0.015 : 0.06) * acid / SOL_PARTS;
+      // У сплава скорость растворения — средняя по долям (sim/alloys.js).
+      const base = nt === EL.ALLOY ? this.alloyAcidChance(ni) : (nel.acidSlow ? 0.015 : 0.06);
+      const chance = base * acid / SOL_PARTS;
       if (Math.random() >= chance) continue;
+      // Сплав кислота, как и металл, с равным шансом окисляет — одну его
+      // металлическую долю.
+      if (nt === EL.ALLOY && Math.random() < ACID_OXIDISE_METAL && this.alloyRustPart(ni, ALLOY_BY_ACID)) {
+        comp = solWith(comp, P_ACID, acid - 1);
+        comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
+        acid = solGet(comp, P_ACID);
+        continue;
+      }
       // Металл кислота с равным шансом либо разъедает, либо окисляет на
       // стадию. Доля кислоты тратится в обоих случаях: на окисление она
       // уходит целиком в пустоту (израсходована), а при растворении —
@@ -348,8 +418,12 @@ class SimChemistry {
   //     след на каждом следующем растворении.
   //  3. Когда кислоты не осталось, последняя доля вещества тоже
   //     становится реагентом.
-  //  4. С шансом 20% выделяется газ (см. ventGas).
+  //  4. С шансом 20% выделяется газ (см. ventGas). У клетки из нескольких
+  //     веществ (сплав и прочие смеси) газ — газ случайной доли: бросок от 1
+  //     до 10 по её долям, какая выпала, та и выделяет свой газ (просьба
+  //     пользователя).
   dissolveInto(x, y, ni, comp, sourceId) {
+    const niComp = this.comp(ni);
     const hadStone = solGet(comp, P_STONE) > 0;
     if (hadStone) {
       comp = solMove(comp, P_ACID, P_REAGENT);
@@ -363,7 +437,7 @@ class SimChemistry {
       for (let k = 0; k < st; k++) comp = solMove(comp, P_STONE, P_REAGENT);
     }
     const GAS_CHANCE = 0.2;
-    if (Math.random() < GAS_CHANCE) this.ventGas(x, y, sourceId);
+    if (Math.random() < GAS_CHANCE) this.ventGas(x, y, niComp >= 1024 ? this.randomMatterPart(niComp) : sourceId);
     return comp;
   }
 
@@ -379,7 +453,9 @@ class SimChemistry {
     const line = OXIDE_LINE[sourceId];
     const fromMetal = isRustLine(line);
     const fromWood = sourceId === EL.WOOD;
-    const fromEarth = !!line && line.base === EL.EARTH;
+    // Земля и всё, что кислоте поддаётся как земля (изолятор), — по
+    // семье окисла, а не по основе линейки.
+    const fromEarth = !!line && line.solid === EL.EARTH_OXIDE;
     // Доли газа — газовые элементы (пар, кислотный газ, газ реагента и
     // масла), см. фазы в data/composition.js.
     let comp = 0, hot = false, life = 0;

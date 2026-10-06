@@ -6,7 +6,63 @@ const ZOOM = 3;
 
 const sim = new Sim(GRID_W, GRID_H);
 startSimThreads();
+// Рабочие потоки не ответили (упали) — шаг дальше в одном, а причина — в diag.log.
+sim.onThreadStall = () => diagError('рабочие потоки не ответили за 2 с, дальше счёт в одном потоке', 'потоки');
 let selectedElement = ELEMENT_ORDER[0];
+// Мультиплеер (js/net.js, js/lobby.js) — создаются ниже, после экрана игры;
+// объявлены здесь, потому что палитра строится раньше и смотрит на них.
+let mp = null, lobby = null;
+
+// ---- диагностика зависаний (tools/serve.js пишет её в diag.log) ----
+//
+// Пользователь трижды сообщал: хост щёлкает превью карты — "поле не
+// движется, кнопки не отвечают, вылетает", а здесь это не повторялось. Чтобы
+// увидеть, где именно, страница сама сообщает серверу разработки:
+// - главный поток отмечает этап кадра (pixDiag) в фоновом рабочем потоке
+//   (сторож — тот же, что считает мультиплеер в фоне, см. ниже); если
+//   главный молчит дольше DIAG_HANG_MS у видимой вкладки, сторож шлёт
+//   "hang" с последним этапом, а когда главный оживёт — "resume" с
+//   длительностью;
+// - ошибки страницы и рабочих потоков — "error" с текстом и стеком.
+// Без tools/serve.js (другой сервер) отчёты просто не доходят. На
+// опубликованной странице (GitHub Pages) их и не шлём: принять их там
+// некому, а каждый отчёт — лишний запрос к чужому серверу.
+const DIAG_HANG_MS = 3000;
+const DIAG_ON = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+let diagWorker = null;
+const diagSent = new Set();
+function diagReport(o) {
+  if (!DIAG_ON) return;
+  const key = o.kind + ':' + (o.msg || o.phase || '');
+  if (o.kind === 'error' && diagSent.has(key)) return;   // одну ошибку каждый кадр — один раз
+  diagSent.add(key);
+  try {
+    navigator.sendBeacon('/__diag', JSON.stringify({ ...o, mp: mp && mp.role, phase: mp && mp.phase, lobby: !!(lobby && lobby.visible), editing: !!(lobby && lobby.editing) }));
+  } catch (e) { /* без сервера разработки — молча */ }
+}
+function pixDiag(phase) {
+  if (diagWorker) diagWorker.postMessage({ p: phase, h: document.hidden, r: mp ? mp.role || '' : '' });
+}
+function diagError(e, where) {
+  const msg = String((e && e.message) || e);
+  console.error('Пиксириус:', where, e);
+  diagReport({ kind: 'error', where, msg, stack: String((e && e.stack) || '').slice(0, 1500) });
+  showDiagToast(`Ошибка (${where}): ${msg}`);
+}
+function showDiagToast(text) {
+  let el = document.getElementById('diagToast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'diagToast';
+    el.style.cssText = 'position:fixed;left:50%;bottom:12px;transform:translateX(-50%);z-index:99;background:#5a1e1e;color:#fff;border:1px solid #c05050;padding:8px 12px;font:13px system-ui,sans-serif;max-width:90vw';
+    document.body.appendChild(el);
+  }
+  el.textContent = text + ' — записано в diag.log';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.remove(), 8000);
+}
+window.addEventListener('error', (e) => diagError(e.error || e.message, 'страница'));
+window.addEventListener('unhandledrejection', (e) => diagError(e.reason, 'обещание'));
 
 // Многопоточная симуляция (sim/threads.js): рабочие потоки считают полосы
 // поля вместе с главным над общей памятью. Запускается сразу после
@@ -28,7 +84,7 @@ function startSimThreads() {
   const count = m ? Math.min(15, Number(m[1])) : Math.max(1, Math.min(7, Math.floor(hc / 2) - 1));
   if (count <= 0) return;
   if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined' || !window.PIX_SCRIPTS) {
-    console.info('Пиксилиус: страница не изолирована (нет COOP/COEP) — симуляция в одном потоке');
+    console.info('Пиксириус: страница не изолирована (нет COOP/COEP) — симуляция в одном потоке');
     return;
   }
   // Потоку — всё, что грузит страница до рендера: данные и sim/*.js.
@@ -38,7 +94,7 @@ function startSimThreads() {
   try {
     sim.startThreads(count, (k, init) => {
       const wk = new Worker('js/sim/worker.js?v=' + window.PIX_V);
-      wk.onerror = (e) => console.error(`Пиксилиус: поток ${k} упал`, e.message || e);
+      wk.onerror = (e) => diagError(e.message || e, `рабочий поток ${k}`);
       wk.postMessage({ scripts, init });
       return wk;
     });
@@ -46,7 +102,7 @@ function startSimThreads() {
     // Упасть здесь может только создание общей памяти или потоков — тогда
     // мир уже, возможно, в общей памяти, но шаг идёт по-старому: пока все
     // потоки не доложили о готовности, step() считает в одном.
-    console.error('Пиксилиус: потоки не запустились', e);
+    console.error('Пиксириус: потоки не запустились', e);
   }
 }
 
@@ -58,11 +114,15 @@ canvas.height = GRID_H * ZOOM;
 // Полагаться на CSS object-fit для канваса ненадёжно (в некоторых движках
 // внутренний буфер не масштабируется как надо, только обрезается) —
 // поэтому размер отображения считаем сами и выставляем в px явно.
+// Подгоняется и поле комнатки лобби (js/lobby.js), если оно есть.
 function fitCanvas() {
   const r = stage.getBoundingClientRect();
-  const scale = Math.max(0.01, Math.min(r.width / canvas.width, r.height / canvas.height));
-  canvas.style.width = Math.floor(canvas.width * scale) + 'px';
-  canvas.style.height = Math.floor(canvas.height * scale) + 'px';
+  for (const c of [canvas, document.getElementById('lobbyView')]) {
+    if (!c) continue;
+    const scale = Math.max(0.01, Math.min(r.width / c.width, r.height / c.height));
+    c.style.width = Math.floor(c.width * scale) + 'px';
+    c.style.height = Math.floor(c.height * scale) + 'px';
+  }
 }
 window.addEventListener('resize', fitCanvas);
 fitCanvas();
@@ -71,6 +131,9 @@ fitCanvas();
 // случай проблем с видеокартой).
 const renderer = new Renderer(sim, canvas, ZOOM, { gpu: !/[?&]cpu\b/.test(location.search) });
 const input = new InputController(sim, renderer, canvas, () => selectedElement);
+// Снимки камер (sim/charges.js) запоминают клетки тем цветом, каким их
+// рисует поле.
+sim.lookColor = (i) => renderer.litColor(i, renderer.cellColor(i));
 
 // ---- пиксельные SVG-иконки инструментов (только прямоугольники) ----
 
@@ -96,6 +159,7 @@ const ICONS = {
   clear: ['10001', '01010', '00100', '01010', '10001'],
   save:  ['00100', '00100', '10101', '01110', '11111'],
   load:  ['00100', '01110', '10101', '00100', '11111'],
+  lobby: ['0100010', '1110111', '0100010', '0000000', '1110111', '1110111', '1010101'],
 };
 
 const btnPause = document.getElementById('btnPause');
@@ -118,6 +182,10 @@ btnPause.addEventListener('click', togglePause);
 btnClear.addEventListener('click', () => { sim.clear(); });
 
 window.addEventListener('keydown', (e) => {
+  // В лобби паузы нет (пробел — прыжок протагониста, js/lobby.js), на
+  // стартовом экране — тоже.
+  if (lobby && lobby.visible) return;
+  if (document.body.classList.contains('start')) return;
   if (e.code === 'Space' && !e.repeat) {
     e.preventDefault();
     togglePause();
@@ -202,22 +270,75 @@ function hideMaterialInfo() { materialInfo.classList.remove('visible'); }
 
 // Справка лупы — большая панель по центру (inspect.js). Щелчок лупой по
 // полю её не закрывает, а показывает следующую клетку.
-const inspectPanel = new InspectPanel(sim, (e) => e.target === canvas && selectedElement === TOOL_INSPECT);
+// В панели доли состава меняются щелчком: на выбранное в палитре вещество
+// (ЛКМ) или на воздух (ПКМ) — это шаг отмены, как любое рисование.
+// Щелчок по палитре панель не закрывает: там выбирают, на что менять долю.
+const inspectPanel = new InspectPanel(sim, (e) => ((e.target === canvas || e.target.id === 'lobbyView') && selectedElement === TOOL_INSPECT) || !!e.target.closest('#palette, #paletteTabs'), {
+  getSelected: () => selectedElement,
+  beforeEdit: () => (lobby && lobby.visible && lobby.roomInput ? lobby.roomInput : input).pushUndo(),
+});
 input.onInspect = (gx, gy) => inspectPanel.show(gx, gy);
 
 document.addEventListener('click', hideMaterialInfo);
 document.addEventListener('scroll', hideMaterialInfo, true);
 
-function addPaletteButton(id) {
+// Рисованные значки кнопок палитры (img/palette, 32x32, рисовал
+// пользователь). У кого значка нет — кнопка залита цветом элемента. Окисел
+// камня — линейка из трёх стадий: кнопка "Окисел" ставит стадию 1,
+// "Рыхлый окисел" — последнюю, 3.
+const PALETTE_TEXTURE = {
+  [EL.WATER]: 'img/palette/water.png',
+  [EL.ACID]: 'img/palette/acid.png',
+  [EL.OXIDE]: 'img/palette/oxide-1.png',
+  [EL.OXIDE_LOOSE]: 'img/palette/oxide-3.png',
+  [EL.REAGENT]: 'img/palette/reagent.png',
+  [EL.ICE]: 'img/palette/ice.png',
+  [EL.ACID_ICE]: 'img/palette/acid-ice.png',
+  [EL.REAGENT_ICE]: 'img/palette/reagent-ice.png',
+  [EL.DISSOLVER]: 'img/palette/dissolver.png',
+  [EL.DISSOLVER_ICE]: 'img/palette/dissolver-ice.png',
+  [EL.STEAM]: 'img/palette/steam.png',
+  [EL.SMOKE]: 'img/palette/smoke.png',
+  [EL.ACID_GAS]: 'img/palette/acid-gas.png',
+  [EL.REAGENT_GAS]: 'img/palette/reagent-gas.png',
+  [EL.OIL_GAS]: 'img/palette/oil-gas.png',
+  [EL.DISSOLVER_GAS]: 'img/palette/dissolver-gas.png',
+  [EL.BLACK_SALT]: 'img/palette/black-salt.png',
+};
+
+// Кнопки, у которых нет своего элемента: тот же элемент, но кисть ставит
+// его в другой стадии окисла (sim.paintOxideStage). Во вкладке "Все" должен
+// быть каждый особый пиксель (просьба пользователя), а у окисла камня
+// вторая стадия — тот же элемент "Окисел", что и первая. Кнопка встаёт
+// сразу за кнопкой своего элемента: "Окисел" (1) → стадия 2 → "Рыхлый
+// окисел" (3).
+const PALETTE_VARIANTS = {
+  [EL.OXIDE]: [{ stage: 2, name: 'Окисел (стадия 2)', texture: 'img/palette/oxide-2.png' }],
+};
+// Стадия выбранной кнопки: 0 — обычная кнопка элемента.
+let selectedStage = 0;
+
+function addPaletteButton(id, variant) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'el-btn';
-  const name = ELEMENTS[id].name;
+  const name = variant ? variant.name : ELEMENTS[id].name;
+  const stage = variant ? variant.stage : 0;
+  const texture = variant ? variant.texture : PALETTE_TEXTURE[id];
   btn.style.background = rgbCss(ELEMENTS[id].color);
+  // Цвет под картинкой остаётся: пока она грузится (или если не нашлась),
+  // кнопка всё равно своего цвета. Размер — в той же строке: инлайновое
+  // background сбрасывает размер и повтор из CSS, и значок ложился плиткой.
+  if (texture) {
+    btn.style.background = `url("${texture}") center / 100% 100% no-repeat, ${rgbCss(ELEMENTS[id].color)}`;
+    btn.classList.add('el-textured');
+  }
   btn.title = name;
-  if (id === selectedElement) btn.classList.add('selected');
+  if (id === selectedElement && stage === selectedStage) btn.classList.add('selected');
   btn.addEventListener('click', () => {
     selectedElement = id;
+    selectedStage = stage;
+    sim.paintOxideStage = stage;
     for (const b of palette.children) b.classList.remove('selected');
     btn.classList.add('selected');
     statusLabel.textContent = name;
@@ -244,6 +365,8 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
   if (toolValue === selectedElement) btn.classList.add('selected');
   btn.addEventListener('click', () => {
     selectedElement = toolValue;
+    selectedStage = 0;
+    sim.paintOxideStage = 0;
     for (const b of palette.children) b.classList.remove('selected');
     btn.classList.add('selected');
     statusLabel.textContent = name;
@@ -341,9 +464,11 @@ function materialCategoryKey(id) {
   // которого начинают стройку, а то, во что материалы превращаются сами.
   // Место им во вкладке «Все», где они и видны все разом.
   if (isOxide(id)) return 'all';
-  // Чёрные соли пока только во "Всех" (просьба: "в сыпучие пока не
-  // добавляй") — они, как и окислы, продукт реакции, а не сырьё.
-  if (id === EL.BLACK_SALT) return 'all';
+  // Расплавленная медь — продукт плавления, не сырьё.
+  if (id === EL.MOLTEN_COPPER || id === EL.MOLTEN_METAL || id === EL.MOLTEN_STEEL) return 'all';
+  // Льды — замёрзшие жидкости, а не строительный материал: во вкладке
+  // "Тела" их нет (просьба пользователя), только во "Всех".
+  if (id === EL.ICE || id === EL.ACID_ICE || id === EL.REAGENT_ICE || id === EL.DISSOLVER_ICE) return 'all';
   const cat = ELEMENTS[id].cat;
   if (cat === CAT.GAS) return 'gas';
   if (cat === CAT.LIQUID) return 'liquid';
@@ -388,8 +513,31 @@ function buildPaletteGrid() {
       + '<div class="mi-row"><span>Esc, щелчок мимо</span><span>закрыть</span></div>');
     addTimeScaleControl();
   } else {
+    // Хост лобби в редакторе карты: точки спавна игроков и точка респавна
+    // (sim/spawns.js) — в "Технологиях", первыми.
+    if (activeCategory === 'tech' && mp && mp.role === 'host' && mp.state) {
+      addToolButton(TOOL_RESPAWN, 'Точка респавна', '#5aff82',
+        '<div class="mi-title">Точка респавна</div>'
+        + '<div class="mi-row"><span>ЛКМ</span><span>поставить</span></div>'
+        + '<div class="mi-row"><span>ПКМ</span><span>убрать</span></div>'
+        + '<div class="mi-row"><span>Лупа</span><span>кого и при какой смерти возрождает</span></div>');
+      for (const p of mp.state.players) {
+        addToolButton(TOOL_SPAWN_PREFIX + p.n, 'Спавн: ' + (p.name || 'P' + p.n), `rgb(${p.rgb[0]},${p.rgb[1]},${p.rgb[2]})`,
+          `<div class="mi-title">Точка спавна: ${p.name || 'P' + p.n}</div><div class="mi-row"><span>ЛКМ</span><span>поставить (одна на игрока)</span></div><div class="mi-row"><span>ПКМ</span><span>убрать</span></div>`);
+      }
+    }
+    // Инструмент "Электрический разряд" — в "Технологиях", первым.
+    if (activeCategory === 'tech') {
+      addToolButton(TOOL_ZAP, 'Электрический разряд', '#ffe83c',
+        '<div class="mi-title">Электрический разряд</div>'
+        + `<div class="mi-row"><span>Щелчок</span><span>жёлтый заряд со сроком ${ZAP_LIFE}</span></div>`
+        + '<div class="mi-row"><span>Куда</span><span>в проводник под курсором или ближайший в пределах кисти</span></div>');
+    }
     for (const id of ELEMENT_ORDER) {
-      if (activeCategory === 'all' || materialCategoryKey(id) === activeCategory) addPaletteButton(id);
+      if (activeCategory === 'all' || materialCategoryKey(id) === activeCategory) {
+        addPaletteButton(id);
+        if (activeCategory === 'all' && PALETTE_VARIANTS[id]) for (const v of PALETTE_VARIANTS[id]) addPaletteButton(id, v);
+      }
     }
   }
 }
@@ -397,6 +545,71 @@ function buildPaletteGrid() {
 buildPaletteTabs();
 buildPaletteGrid();
 statusLabel.textContent = ELEMENTS[ELEMENT_ORDER[0]].name;
+
+// ---- игра за протагониста (js/play.js) ----
+
+// P — войти в игру и выйти из неё. Пока идёт игра, меню создания спрятано
+// (body.playing в style.css), поле вместо обычного рендера рисует
+// PlayMode: приближённое окно с протагонистом в центре или карта увиденного.
+const playMode = new PlayMode({
+  sim, renderer, input, canvas, stage,
+  saveIconHTML: pixelSvg(ICONS.save, ICON_COLOR),
+  setPaused: (p) => { sim.paused = p; refreshPauseIcon(); },
+  onEnter: () => { document.body.classList.add('playing'); hideMaterialInfo(); inspectPanel.hide(); fitCanvas(); },
+  onExit: () => { document.body.classList.remove('playing'); fitCanvas(); },
+});
+
+// ---- мультиплеер (js/net.js, js/lobby.js) ----
+
+// Кнопка мультиплеера в панели: меню "Создать лобби" / "Подключиться" (по
+// ID), у хоста в редакторе карты — назад в лобби. Адрес ?join=ID
+// подключает к лобби сразу.
+mp = new Multiplayer({ sim, makeLobbySim: (w, h) => new Sim(w, h) });
+lobby = new Lobby({
+  mp, sim, renderer, input, playMode, inspectPanel, stage, mainCanvas: canvas,
+  getSelected: () => selectedElement,
+  fitCanvas,
+  onShow: () => hideMaterialInfo(),
+  rebuildPalette: () => buildPaletteGrid(),
+});
+{
+  const btn = document.createElement('button');
+  btn.id = 'btnLobby';
+  btn.className = 'tool-btn';
+  btn.type = 'button';
+  btn.title = 'Мультиплеер: создать лобби или подключиться по ID';
+  btn.innerHTML = pixelSvg(ICONS.lobby, ICON_COLOR);
+  btn.addEventListener('click', () => lobby.openMenu(btn));
+  document.getElementById('tools').appendChild(btn);
+}
+
+// ---- стартовый экран ----
+
+// При заходе в игру — две кнопки (просьба пользователя): "Выживание"
+// (пока ничего не делает) и "Креатив" — знакомый редактор. Подключение по
+// ссылке ?join=ID стартовый экран пропускает.
+{
+  const joinId = (/[?&]join=([A-Za-z0-9]+)/.exec(location.search) || [])[1];
+  if (joinId) lobby.startClient(joinId);
+  else {
+    const start = document.createElement('div');
+    start.id = 'startScreen';
+    start.innerHTML = '<div class="st-title">Пиксириус</div>'
+      + '<div class="st-buttons"><button type="button" class="st-btn st-survival">Выживание</button>'
+      + '<button type="button" class="st-btn st-creative">Креатив</button></div>'
+      + '<div class="st-note"></div>';
+    document.body.appendChild(start);
+    document.body.classList.add('start');
+    start.querySelector('.st-survival').addEventListener('click', () => {
+      start.querySelector('.st-note').textContent = 'Выживание — скоро';
+    });
+    start.querySelector('.st-creative').addEventListener('click', () => {
+      start.remove();
+      document.body.classList.remove('start');
+      fitCanvas();
+    });
+  }
+}
 
 // ---- игровой цикл ----
 
@@ -416,21 +629,117 @@ let stepAccumulator = 0;
 // в полсекунды.
 let rateSteps = 0, rateSince = performance.now();
 
-function loop() {
-  stepAccumulator += sim.timeScale / 100;
-  while (stepAccumulator >= 1) {
-    if (!sim.paused) rateSteps++;
-    sim.step();
-    stepAccumulator -= 1;
+// Расчёт одного кадра без отрисовки: шаги мира, мультиплеер, лобби.
+function simFrame() {
+  pixDiag('шаг карты');
+  // Подключившаяся вкладка мир не считает (его досылает хост), а хост на
+  // экране лобби не крутит карту — идёт только комнатка (mp.hostTick).
+  const client = mp.role === 'client';
+  const hostInLobby = mp.role === 'host' && lobby.visible;
+  if (!client && !hostInLobby) {
+    stepAccumulator += sim.timeScale / 100;
+    while (stepAccumulator >= 1) {
+      if (!sim.paused) rateSteps++;
+      // Хост мультиплеера шагает карту через mp: шаг по сиду и тик вкладкам (net.js).
+      if (mp.role === 'host') mp.hostStep('map');
+      else sim.step();
+      stepAccumulator -= 1;
+    }
   }
+  pixDiag('мультиплеер: комнатка и тики');
+  if (mp.role === 'host') mp.hostTick();
+  else if (client) mp.clientTick();
+  pixDiag('лобби: переходы');
+  if (mp.role) lobby.tick();
   const now = performance.now();
   if (now - rateSince >= 500) {
     measuredStepsPerSec = Math.round(rateSteps * 1000 / (now - rateSince));
     rateSteps = 0; rateSince = now;
     refreshTimeScaleLabel();
   }
-  input.tickHold();
-  renderer.render(input.getCursorState());
+}
+
+let lastFrameAt = performance.now();
+
+// Ошибка в кадре больше не останавливает игру: раньше исключение где угодно
+// в цикле обрывало requestAnimationFrame(loop), и поле вставало насовсем.
+// Теперь она показывается и пишется в diag.log, а цикл идёт дальше.
+function loop() {
+  lastFrameAt = performance.now();
+  try {
+    simFrame();
+    if (lobby.visible) { pixDiag('отрисовка комнатки'); lobby.render(); }
+    else if (playMode.active) { pixDiag('экран игры'); playMode.frame(); }
+    else {
+      pixDiag('отрисовка карты');
+      input.tickHold();
+      renderer.render(input.getCursorState());
+      // Ники игроков и на карте редактора (мультиплеер).
+      if (mp.role) lobby.drawMapNames();
+    }
+    pixDiag('ожидание кадра');
+  } catch (e) {
+    diagError(e, 'игровой цикл');
+  }
+  // И в конце: долгий кадр — не простой, фоновый счёт за ним не нужен.
+  lastFrameAt = performance.now();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+// Мультиплеер в фоне (просьба пользователя: хост переключился на другое
+// окно — и у всех всё замерло). У скрытой вкладки браузер останавливает
+// requestAnimationFrame, а таймеры главного потока тормозит до раза в
+// секунду, через несколько минут — до раза в минуту. Таймер рабочего потока
+// так не тормозится: он раз в BG_TICK_MS шлёт сообщение, и у СКРЫТОЙ вкладки
+// без кадров (BG_STALL_MS) мир считается без отрисовки.
+//
+// Только у скрытой и не больше половины времени (после кадра ценой C мс —
+// пауза C мс), по кадру за раз. Первая версия считала и у видимой вкладки,
+// если кадры шли реже 10 в секунду, и до 4 кадров за раз: на тяжёлой карте
+// кадр хоста в редакторе длился больше 100 мс, фоновый счёт добавлял к нему
+// ещё кадры, главный поток не успевал рисовать — "всё зависает и вылетает"
+// (жалоба пользователя). Вне мультиплеера фон не считается: одиночной игре
+// незачем жечь процессор. Заморозить вкладку целиком браузер может и так,
+// но вкладку с Web Lock (net.js держит их в лобби) он не замораживает.
+const BG_TICK_MS = 16;
+const BG_STALL_MS = 100;
+const BG_FRAME_MS = 1000 / 60;
+let bgDue = 0, bgResumeAt = 0;
+try {
+  // Он же — сторож зависаний (см. diagReport вверху).
+  const src = `
+    let phase = '', hidden = false, beat = Date.now(), hungAt = 0, role = '';
+    const report = (o) => { try { fetch('${location.origin}/__diag', { method: 'POST', body: JSON.stringify(o) }); } catch (e) {} };
+    onmessage = (e) => {
+      if (hungAt) { report({ kind: 'resume', phase, role, ms: Date.now() - hungAt }); hungAt = 0; }
+      phase = e.data.p; hidden = e.data.h; role = e.data.r; beat = Date.now();
+    };
+    setInterval(() => postMessage(0), ${BG_TICK_MS});
+    setInterval(() => {
+      if (!hungAt && phase && !hidden && Date.now() - beat > ${DIAG_HANG_MS}) { hungAt = beat; report({ kind: 'hang', phase, role, ms: Date.now() - beat }); }
+    }, 500);`;
+  const bg = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+  diagWorker = bg;
+  let bgLast = performance.now();
+  bg.onmessage = () => {
+    const now = performance.now();
+    const dt = now - bgLast;
+    bgLast = now;
+    // Хост — только у скрытой вкладки (см. выше). Подключившаяся вкладка —
+    // всегда, когда кадров нет: её дело — успевать за тиками хоста, а
+    // браузер, бывает, почти не даёт кадров и видимому, но не активному окну
+    // (в diag.log — пропуски кадров по 3-40 с у вкладки, не скрытой); тики
+    // копились, и у игрока подлагивало.
+    if (!mp.role || now - lastFrameAt < BG_STALL_MS || (!document.hidden && mp.role !== 'client')) { bgDue = 0; return; }
+    if (now < bgResumeAt) return;
+    bgDue = Math.min(1, bgDue + dt / BG_FRAME_MS);
+    if (bgDue < 1) return;
+    bgDue -= 1;
+    try { simFrame(); } catch (e) { diagError(e, 'счёт в фоне'); }
+    const end = performance.now();
+    bgResumeAt = end + (end - now);
+  };
+} catch (e) {
+  console.warn('Пиксириус: фоновый таймер не запустился — в фоне мультиплеер встанет', e);
+}

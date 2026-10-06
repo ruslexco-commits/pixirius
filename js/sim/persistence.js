@@ -51,6 +51,7 @@ class SimPersistence {
   }
 
   restore(snap) {
+    this.resetCharges();   // заряды — импульсы, в снимок не входят
     for (const f of PARTICLE_FIELDS) {
       if (snap[f.name]) this[f.name].set(snap[f.name]);
       else this[f.name].fill(f.empty);
@@ -71,7 +72,10 @@ class SimPersistence {
   serialize() {
     // Версия 2: в beam материал балки, а не маска опор. Версия 3: состав у
     // каждой клетки, доли — элементы (solLo/solHi). См. deserialize.
-    const out = { v: 3, w: this.w, h: this.h };
+    // Настройки мира из лупы: темнота и видимость карты протагонистом.
+    const out = { v: 3, w: this.w, h: this.h, darkness: this.darkness, vision: this.playerVision, lightSmooth: this.lightSmooth, rays: this.playerRays,
+      // Точки спавна и респавна игроков (sim/spawns.js).
+      spawnMarks: this.spawnMarks, respawnMarks: this.respawnMarks };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
     return out;
   }
@@ -85,6 +89,9 @@ class SimPersistence {
   // Файл без обязательных полей (required) не читается вовсе — и мир при
   // этом не трогается: проверка идёт до первой записи.
   deserialize(obj) {
+    this.resetCharges();
+    // Карта сменилась: экраны игроков забывают увиденное (js/play.js).
+    this.mapEpoch = (this.mapEpoch || 0) + 1;
     if (!obj || obj.w !== this.w || obj.h !== this.h) return false;
     for (const f of PARTICLE_FIELDS) if (f.required && !obj[f.saveKey || f.name]) return false;
     for (const f of PARTICLE_FIELDS) {
@@ -126,6 +133,13 @@ class SimPersistence {
         if (this.beam[i]) { this.beam[i] = EL.STONE; this.beamExtra[i] = 0; }
       }
     }
+    // Файл без настроек (сохранён до них) — значения по умолчанию.
+    this.darkness = obj.darkness >= 1 && obj.darkness <= 3 ? obj.darkness : 1;
+    this.playerVision = obj.vision >= 1 && obj.vision <= 3 ? obj.vision : 3;
+    this.lightSmooth = obj.lightSmooth !== false;
+    this.playerRays = obj.rays === true;
+    this.spawnMarks = Array.isArray(obj.spawnMarks) ? obj.spawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, n: m.n | 0 })) : [];
+    this.respawnMarks = Array.isArray(obj.respawnMarks) ? obj.respawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, players: m.players || null, kinds: m.kinds || null, physics: !!m.physics, acid: !!m.acid })) : [];
     this.moved.fill(0);
     this.wakeAll();
     return true;

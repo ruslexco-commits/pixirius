@@ -45,14 +45,35 @@
 // в конце шага. Правила игры те же; побайтно с однопоточным прогоном мир
 // не совпадает (tools/compare.js сравнивает однопоточный путь).
 //
-// Кроме клеток, потокам раздаётся диффузия тепла (tempRows, heat.js): она
-// читает прошлый кадр температуры и пишет только свою строку нового, так
-// что делится по строкам в одну фазу и даёт побитно тот же результат.
+// Кроме клеток, потокам раздаются общие проходы начала кадра, которые друг
+// от друга не зависят и случайных чисел не тратят (globalPassesParallel):
+// диффузия ветра — одной порцией, выходы луж — одной порцией, тепло —
+// порциями по строкам (оно читает прошлый кадр температуры и пишет только
+// свою строку нового). Все три идут в одну фазу, одновременно, и дают
+// побитно то же, что в одном потоке: в плотной сцене это ~3 мс главного
+// потока, которые раньше шли друг за другом.
 //
 // Когда потоки не нужны. Разбудить рабочих и дождаться их — заметная доля
 // миллисекунды на кадр. В спокойном мире, где почти всё спит, это дороже
 // самого обхода, поэтому при малом числе бодрствующих кусков
 // (THREAD_MIN_ACTIVE) шаг идёт в одном потоке.
+//
+// Мультиплеер (lockstep, sim/lockstep.js) — обход полосами, одинаковый у
+// всех вкладок (updateBands). Раньше в мультиплеере потоки выключались
+// совсем: случайные числа у каждого потока свои, кто какую полосу возьмёт —
+// как повезёт, отложенное ложится в очередь вперемешку, а включаются потоки
+// по замеру времени — у каждой вкладки своему. Миры расходились, и
+// оставался один поток — у обоих игроков подлагивало сильнее, чем в одиночной
+// игре (жалоба пользователя). Теперь в мультиплеере:
+//  - обход всегда полосами, с потоками или без: без потоков главный поток
+//    проходит те же полосы по очереди (полосы одной фазы друг друга не
+//    касаются — порядок внутри фазы не важен);
+//  - у каждой полосы свои случайные числа: сид кадра (из генератора мира) и
+//    её столбец — всё равно, какой поток её взял (TC_LOCK, TC_SEED);
+//  - отложенное — в порядке полос (processDeferred с bands), а внутри полосы
+//    — в порядке, в каком его отложил тот единственный поток, что её считал.
+// Мир от числа потоков не зависит: tools/lockstep-check.js сверяет потоки
+// с одним главным побайтно.
 //
 // Методы класса Sim, вынесенные в отдельный файл: класс ниже — только
 // контейнер, extendSim переносит его методы в Sim.prototype (см. core.js).
@@ -64,17 +85,31 @@
 // (1 столбец) не должны в ней встретиться: 2*THREAD_REACH + 2 < THREAD_STRIPE.
 const THREAD_STRIPE = 32;
 const THREAD_REACH = 12;       // на сколько столбцов за свою полосу заглядывают дальние дела
+// Сколько главный поток ждёт рабочих в одной фазе, прежде чем счесть их
+// упавшими (runPhase).
+const THREAD_STALL_MS = 2000;
 const THREAD_MIN_ACTIVE = 250; // бодрствующих кусков 16x16 (~2.5 мс обхода), ниже которых шаг идёт в одном потоке
+// Но число кусков — плохая мера работы, когда куски набиты движущимся
+// веществом: падающий блок 200x100 будит меньше 250 кусков, а обход в одном
+// потоке стоил 6 мс (просьба пользователя: "при падении подлагивает").
+// Поэтому ещё и по времени: однопоточный обход дольше THREAD_SERIAL_MAX_MS
+// — дальше потоками; обход потоками быстрее THREAD_PARALLEL_MIN_MS (то
+// есть и в одном потоке уложился бы) — снова в одном.
+const THREAD_SERIAL_MAX_MS = 2;
+const THREAD_PARALLEL_MIN_MS = 0.6;
 const THREAD_SPIN = 20000;     // сколько раз рабочий проверяет фазу, прежде чем уснуть
 const THREAD_TEMP_ROWS = 12;   // строк тепла в одной порции
-const THREAD_TEMP_MIN = 48;    // горячих строк, ниже которых тепло считается в одном потоке
-const TASK_CELLS = 0, TASK_TEMP = 1;
+const TASK_CELLS = 0, TASK_GLOBAL = 1;
+// Порции общей фазы: сперва две длинные (ветер, выходы луж), чтобы их
+// взяли первыми, потом строки тепла.
+const GLOBAL_WIND = 0, GLOBAL_ESCAPE = 1, GLOBAL_TEMP0 = 2;
 const DEFER_UPDATE = 0, DEFER_GUNPOWDER = 1, DEFER_SALT = 2;
 const DEFER_CAP = 65536;
 
 // Ячейки общего управляющего массива.
 const TC_PHASE = 0, TC_DONE = 1, TC_NEXT = 2, TC_COUNT = 3, TC_READY = 4, TC_STOP = 5,
-  TC_FRAME = 6, TC_TEMPFLIP = 7, TC_WINDFLIP = 8, TC_DEFER = 9, TC_QUIET = 10, TC_TASK = 11;
+  TC_FRAME = 6, TC_TEMPFLIP = 7, TC_WINDFLIP = 8, TC_DEFER = 9, TC_QUIET = 10, TC_TASK = 11,
+  TC_LOCK = 12, TC_SEED = 13;
 const TC_SIZE = 16;
 
 // Поля Sim, которые видят все потоки. temp/_temp2 и windVX/_windVX2 —
@@ -83,8 +118,20 @@ const TC_SIZE = 16;
 const THREAD_SHARED_FIELDS = [
   'type', 'life', 'extra', 'shade', 'temp', '_temp2', 'moisture', 'sol', 'sol2', 'beam', 'beamExtra',
   'colonistHomeX', 'colonistHomeY', 'moved', 'stability', '_liquidEscape', '_debrisWindVX',
-  'windVXFrame', 'windVYFrame', 'windVX', 'windVY', '_windVX2', '_windVY2', '_chunkActive', '_chunkDirty', '_tempRowHot',
+  'windVXFrame', 'windVYFrame', 'windVX', 'windVY', '_windVX2', '_windVY2', '_chunkActive', '_chunkDirty', '_tempRowHot', '_chunkHeatWake', '_chunkAsleep', 'stain', 'dirt', 'fall', 'crushed',
 ];
+
+// Случайные числа полосы в мультиплеере (см. шапку): mulberry32 от сида.
+function stripeRandom(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // Забирать порции текущей фазы, пока они есть (и рабочий, и главный
 // поток): полосы клеток или строки тепла.
@@ -95,10 +142,20 @@ function runStripesShared(sim, ctrl, stripes) {
     const b = Atomics.add(ctrl, TC_NEXT, 1);
     if (b >= count) return;
     const a0 = stripes[2 * b], a1 = stripes[2 * b + 1];
-    if (task === TASK_TEMP) { sim.tempRows(a0, a1); continue; }
+    if (task === TASK_GLOBAL) {
+      if (b === GLOBAL_WIND) { if (a1 > a0) sim.diffuseWind(); }
+      else if (b === GLOBAL_ESCAPE) sim.computeLiquidEscape();
+      else sim.tempRows(a0, a1);
+      continue;
+    }
     sim._colMin = Math.max(0, a0 - THREAD_REACH);
     sim._colMax = Math.min(sim.w - 1, a1 - 1 + THREAD_REACH);
-    sim.updateCols(a0, a1);
+    if (ctrl[TC_LOCK]) {
+      // Мультиплеер: случайные числа — полосы, а не потока (см. шапку).
+      const prev = Math.random;
+      Math.random = stripeRandom((ctrl[TC_SEED] ^ Math.imul(a0 + 1, 0x9E3779B1)) >>> 0);
+      try { sim.updateCols(a0, a1); } finally { Math.random = prev; }
+    } else sim.updateCols(a0, a1);
   }
 }
 
@@ -165,7 +222,7 @@ class SimThreads {
     }
     this._tempA = this.temp; this._windXA = this.windVX;
     const ctrl = new SharedArrayBuffer(TC_SIZE * 4);
-    const stripes = new SharedArrayBuffer((Math.max(Math.ceil(this.w / THREAD_STRIPE), Math.ceil(this.h / THREAD_TEMP_ROWS)) + 2) * 2 * 4);
+    const stripes = new SharedArrayBuffer((Math.max(Math.ceil(this.w / THREAD_STRIPE), Math.ceil(this.h / THREAD_TEMP_ROWS) + GLOBAL_TEMP0) + 2) * 2 * 4);
     const params = new SharedArrayBuffer(8 * 4);
     const defer = new SharedArrayBuffer(DEFER_CAP * 2 * 4);
     this._tctrl = new Int32Array(ctrl);
@@ -204,21 +261,47 @@ class SimThreads {
     Atomics.add(ctrl, TC_PHASE, 1);
     Atomics.notify(ctrl, TC_PHASE);
     runStripesShared(this, ctrl, this._tstripes);
-    // Ждать остальных: активно, Atomics.wait на главном потоке нельзя.
-    while (Atomics.load(ctrl, TC_DONE) < this._threadCount) { /* ждём */ }
+    // Ждать остальных: активно, Atomics.wait на главном потоке нельзя. Но не
+    // вечно: упавший рабочий (ошибка в потоке) раньше вешал страницу
+    // намертво — главный крутился здесь, кнопки не отвечали. Дольше
+    // THREAD_STALL_MS — потоки останавливаются, дальше шаг в одном.
+    let spins = 0, t0 = 0;
+    while (Atomics.load(ctrl, TC_DONE) < this._threadCount) {
+      if ((++spins & 0xfffff) !== 0) continue;
+      const now = performance.now();
+      if (t0 === 0) t0 = now;
+      else if (now - t0 > THREAD_STALL_MS) {
+        this.stopThreads();
+        if (typeof this.onThreadStall === 'function') this.onThreadStall();
+        break;
+      }
+    }
   }
 
-  // Тепло строками по потокам (см. updateTemp). false — потоков нет или
-  // горячих строк мало, считать в одном потоке.
-  runTempParallel(hotRows) {
-    if (!(this._threadCount > 0) || hotRows < THREAD_TEMP_MIN || !this.threadsReady()) return false;
+  // Ветер, тепло и выходы луж — одной фазой на все потоки (см. шапку).
+  // Вместо updateWind + updateTemp + computeLiquidEscape в step().
+  // Непроницаемость воздуха и флаги горячих строк — главным потоком до
+  // фазы: они быстрые, а ветер и тепло на них опираются.
+  //
+  // Выходы луж расставляют пометки изменений (markDirty), а
+  // computeAirBlock смотрит на них — но она отработала раньше, как и в
+  // одном потоке, где выходы луж считались уже после ветра.
+  globalPassesParallel() {
+    this.computeAirBlock();
+    // При нечётном числе проходов ветер кончил бы в другом буфере, и
+    // главный поток не знал бы об этом — тогда ветер считается здесь, а
+    // его порция в фазе пустая (a1 === a0).
+    const windHere = WIND_SUBSTEPS % 2 !== 0;
+    if (windHere) this.diffuseWind();
+    this.markHotRows();
     const stripes = this._tstripes, h = this.h;
-    let k = 0;
+    stripes[2 * GLOBAL_WIND] = 0; stripes[2 * GLOBAL_WIND + 1] = windHere ? 0 : 1;
+    let k = GLOBAL_TEMP0;
     for (let y = 0; y < h; y += THREAD_TEMP_ROWS) {
       stripes[2 * k] = y; stripes[2 * k + 1] = Math.min(h, y + THREAD_TEMP_ROWS); k++;
     }
-    this.runPhase(TASK_TEMP, k);
-    return true;
+    this.runPhase(TASK_GLOBAL, k);
+    this.swapTempBuffers();
   }
 
   // Обход клеток всеми потоками: одна фаза полос, другая, потом отложенное.
@@ -227,7 +310,15 @@ class SimThreads {
     const active = this._chunkActive;
     let awake = 0;
     for (let c = 0; c < active.length && awake < THREAD_MIN_ACTIVE; c++) awake += active[c];
-    if (awake < THREAD_MIN_ACTIVE) { this.updateRows(0, this.h); return; }
+    const few = awake < THREAD_MIN_ACTIVE;
+    if (few && !this._rowsHeavy) {
+      const t0 = performance.now();
+      this.updateRows(0, this.h);
+      if (performance.now() - t0 > THREAD_SERIAL_MAX_MS) this._rowsHeavy = true;
+      return;
+    }
+    const t0 = performance.now();
+    ctrl[TC_LOCK] = 0;
     ctrl[TC_FRAME] = this.frame;
     this._tparams[0] = this._windRoll;
     ctrl[TC_QUIET] = this._windPushQuiet ? 1 : 0;
@@ -250,10 +341,64 @@ class SimThreads {
       }
       this.runPhase(TASK_CELLS, k);
     }
+    if (few && performance.now() - t0 < THREAD_PARALLEL_MIN_MS) this._rowsHeavy = false;
     this._inBand = false;
     this._colMin = 0;
     this._colMax = w - 1;
     this.processDeferred();
+  }
+
+  // Мультиплеер: обход полосами, одинаковый у всех вкладок (см. шапку).
+  // thr — потоки запущены и готовы; нет — те же полосы главным потоком.
+  updateBands(thr) {
+    const w = this.w;
+    if (!this._lsCtrl) {
+      this._lsCtrl = new Int32Array(TC_SIZE);
+      this._lsStripes = new Int32Array((Math.ceil(w / THREAD_STRIPE) + 2) * 2);
+      this._lsDefer = new Int32Array(DEFER_CAP * 2);
+    }
+    const ownCtrl = this._tctrl, ownQ = this._deferQ;
+    if (!thr) { this._tctrl = this._lsCtrl; this._deferQ = this._lsDefer; }
+    const ctrl = this._tctrl, stripes = thr ? this._tstripes : this._lsStripes;
+    const seed = (Math.random() * 4294967296) >>> 0;
+    const off = Math.random() < 0.5 ? 0 : SLEEP_CHUNK;
+    const first = Math.random() < 0.5 ? 0 : 1;
+    if (thr) {
+      ctrl[TC_FRAME] = this.frame;
+      this._tparams[0] = this._windRoll;
+      ctrl[TC_QUIET] = this._windPushQuiet ? 1 : 0;
+    }
+    ctrl[TC_LOCK] = 1;
+    ctrl[TC_SEED] = seed | 0;
+    Atomics.store(ctrl, TC_DEFER, 0);
+    this._inBand = true;
+    const count = (off > 0 ? 1 : 0) + Math.ceil((w - off) / THREAD_STRIPE);
+    try {
+      for (let phase = 0; phase < 2; phase++) {
+        const parity = phase ^ first;
+        let k = 0;
+        for (let b = parity; b < count; b += 2) {
+          const g = off > 0 ? b - 1 : b;
+          stripes[2 * k] = g < 0 ? 0 : off + g * THREAD_STRIPE;
+          stripes[2 * k + 1] = g < 0 ? off : Math.min(w, off + (g + 1) * THREAD_STRIPE);
+          k++;
+        }
+        if (thr) this.runPhase(TASK_CELLS, k);
+        else {
+          Atomics.store(ctrl, TC_TASK, TASK_CELLS);
+          Atomics.store(ctrl, TC_COUNT, k);
+          Atomics.store(ctrl, TC_NEXT, 0);
+          runStripesShared(this, ctrl, stripes);
+        }
+      }
+    } finally {
+      this._inBand = false;
+      this._colMin = 0;
+      this._colMax = w - 1;
+      ctrl[TC_LOCK] = 0;
+    }
+    this.processDeferred({ off, first });
+    if (!thr) { this._tctrl = ownCtrl; this._deferQ = ownQ; }
   }
 
   // Отложить действие, которое не помещается в полосу (см. шапку файла).
@@ -263,10 +408,24 @@ class SimThreads {
   }
 
   // Досчитать отложенное — главным потоком, когда рабочие уже стоят.
-  processDeferred() {
+  // bands (мультиплеер, updateBands) — в порядке полос: фаза, номер полосы,
+  // а внутри полосы — порядок очереди (её отложил один поток, по порядку).
+  processDeferred(bands = null) {
     const q = this._deferQ, w = this.w;
     const count = Math.min(DEFER_CAP, Atomics.load(this._tctrl, TC_DEFER));
-    for (let n = 0; n < count; n++) {
+    let order = null;
+    if (bands && count > 1) {
+      const keys = new Int32Array(count);
+      for (let n = 0; n < count; n++) {
+        const x = q[2 * n + 1] % w;
+        const b = bands.off > 0 ? (x < bands.off ? 0 : 1 + (((x - bands.off) / THREAD_STRIPE) | 0)) : ((x / THREAD_STRIPE) | 0);
+        keys[n] = (((b & 1) ^ bands.first) << 12) + b;
+      }
+      order = Array.from({ length: count }, (_, n) => n);
+      order.sort((a, b) => keys[a] - keys[b] || a - b);
+    }
+    for (let k = 0; k < count; k++) {
+      const n = order ? order[k] : k;
       const kind = q[2 * n], i = q[2 * n + 1];
       const x = i % w, y = (i / w) | 0;
       if (kind === DEFER_UPDATE) this.updateCell(x, y);

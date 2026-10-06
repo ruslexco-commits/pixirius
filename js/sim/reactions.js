@@ -120,8 +120,21 @@ class SimReactions {
   // кадр от мельчайших шумовых колебаний температуры около одного и того же
   // числа (гистерезис: плавится при 55+, застывает только при 30-, между
   // ними остаётся тем, чем уже является).
+  //
+  // Лава — расплав камня: меняется долями с соседними расплавами металлов
+  // (так камень входит в сплав, см. sim/alloys.js). Смешавшись, клетка
+  // становится "Расплавом" и живёт уже в reactMolten.
   reactLava(x, y, i) {
+    this.mixParts(x, y, i);
+    if (this.type[i] !== EL.LAVA) return;
     if (this.temp[i] < LAVA_SOLIDIFY_TEMP) { this.spawn(i, EL.STONE); return; }
+    this.hotNeighbours(x, y, i);
+  }
+
+  // Раскалённая жидкость (лава и расплавы металлов) действует на соседей:
+  // вода вскипает и гасит расплав (он застывает), лёд тает, порох рвётся,
+  // дерево и масло загораются. true — клетка застыла.
+  hotNeighbours(x, y, i) {
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
@@ -129,7 +142,11 @@ class SimReactions {
       const nt = this.type[ni];
       if (nt === EL.WATER) {
         if (Math.random() < 0.6) this.spawn(ni, EL.STEAM);
-        if (Math.random() < 0.5) { this.spawn(i, EL.STONE); return; }
+        if (Math.random() < 0.5) {
+          if (this.type[i] === EL.LAVA) this.spawn(i, EL.STONE);
+          else this.solidifyMolten(i);
+          return true;
+        }
       } else if (nt === EL.ICE) {
         if (Math.random() < 0.4) this.spawn(ni, EL.WATER);
       } else if (nt === EL.GUNP) {
@@ -143,6 +160,7 @@ class SimReactions {
         }
       }
     }
+    return false;
   }
 
   reactIce(x, y, i) {
@@ -189,7 +207,11 @@ class SimReactions {
   // лёд тоже не входит — у него уже есть reactIce (топится в воду, а не
   // в лаву, плюс попутно замораживает воду рядом — отдельный, не сводимый
   // к простому "плавлению" механизм).
+  //
+  // Металлы, камень и их ржавчины плавятся по долям (sim/alloys.js): что
+  // было намешано в клетке, то и течёт, а точка плавления — средняя.
   reactMelt(x, y, i, id) {
+    if (MELT_TO[id]) { if (this.alloyMeltRoll(i)) this.meltAlloy(i); return; }
     if (this.meltRoll(i, id)) {
       // seedHeat=false — см. комментарий у spawn(): расплав сохраняет
       // свою уже-достаточную-для-плавления температуру, а не подскакивает
@@ -233,14 +255,18 @@ class SimReactions {
     // Вода в клетке с металлической балкой ржавит и её (см. reactLiquidOnBeam).
     if (this.beam[i] && IS_LIQUID[this.type[i]] === 1) this.reactLiquidOnBeam(x, y, i);
     if (this.type[i] !== EL.WATER) return;
-    for (let k = 0; k < 4; k++) {
-      const nx = x + DX4[k], ny = y + DY4[k];
-      if (!this.inBounds(nx, ny)) continue;
-      const ni = this.idx(nx, ny);
-      if (this.type[ni] === EL.FIRE) {
-        if (Math.random() < 0.5) this.clearCell(ni);
-      }
-    }
+    // Вода гасит соседний огонь. Соседи — в порядке DX4/DY4 (справа,
+    // слева, снизу, сверху), развёрнуто вручную: этот цикл шёл на каждой
+    // клетке воды каждый кадр и был самой горячей строкой обхода озера.
+    const w = this.w, type = this.type, FIRE = EL.FIRE;
+    if (x < w - 1 && type[i + 1] === FIRE && Math.random() < 0.5) this.clearCell(i + 1);
+    if (x > 0 && type[i - 1] === FIRE && Math.random() < 0.5) this.clearCell(i - 1);
+    if (y < this.h - 1 && type[i + w] === FIRE && Math.random() < 0.5) this.clearCell(i + w);
+    if (y > 0 && type[i - w] === FIRE && Math.random() < 0.5) this.clearCell(i - w);
+    // Изолятор рядом растворяется в чёрные соли (sim/chemistry.js).
+    this.dissolveInsulator(x, y, i);
+    // Чистая вода забирает грязь с испачканных соседей (sim/mud.js).
+    if (this.dirtyNear(x, y, i)) this.mudStick(x, y, i);
   }
 
   reactVoid(x, y, i) {

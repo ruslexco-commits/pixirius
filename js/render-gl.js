@@ -37,6 +37,10 @@ uniform usampler2D uBeam;
 uniform usampler2D uBeamExtra;
 uniform usampler2D uSol;
 uniform usampler2D uSol2;
+uniform usampler2D uStain;
+// Грязь на пикселе (sim/mud.js). Шестнадцатая текстура — больше WebGL2 не
+// обещает: новое поле придётся упаковывать вместе с другим.
+uniform usampler2D uDirt;
 uniform isampler2D uShade;
 uniform isampler2D uLife;
 uniform isampler2D uStab;
@@ -58,6 +62,9 @@ uniform ivec2 uAirSize;
 uniform bool uDebugStab;
 uniform bool uDebugTherm;
 uniform bool uDebugWind;
+// Цвета протагонистов игроков мультиплеера по номеру (life клетки), см.
+// Sim.playerColors; номер 0 — одиночная игра, цвет элемента.
+uniform vec3 uPlayerColor[16];
 
 out vec4 outColor;
 
@@ -131,9 +138,9 @@ vec3 blendColor(vec3 c, vec3 tint, float weight) {
 }
 
 // solColor (data/oxides.js): средний цвет вещественных долей, а чёрные
-// соли поверх тянут к цвету ржавчины (до SALT_RUST_AT долей) и дальше к
-// чёрному.
-const vec3 SALT_RUST = vec3(${SALT_RUST_COLOR.map((v) => v.toFixed(1)).join(', ')});
+// соли поверх уводят цвет в серый (к SALT_GREY_AT долям — полностью) и
+// дальше понемногу к чёрному.
+const vec3 SALT_GREY = vec3(${SALT_GREY_COLOR.map((v) => v.toFixed(1)).join(', ')});
 const vec3 SALT_BLACK = vec3(${SALT_BLACK_COLOR.map((v) => v.toFixed(1)).join(', ')});
 // Ячейка состава s (см. data/composition.js): lo — ячейки 0..2, hi — 3..4.
 uint compSlot(uint lo, uint hi, int s) {
@@ -144,30 +151,38 @@ float compMatter(uint lo, uint hi) {
   for (int s = 0; s < ${SOL_SLOTS}; s++) m += float(compSlot(lo, hi, s) >> 6);
   return m;
 }
+// Грязь — как solColor: к MUD_FULL_AT долям цвет грязи, дальше темнее.
+const vec3 MUD_C = vec3(${ELEMENTS[EL.MUD].color.map((v) => v.toFixed(1)).join(', ')});
+const vec3 MUD_DARK = vec3(${MUD_DARK_COLOR.map((v) => v.toFixed(1)).join(', ')});
 vec3 partsColor(uint lo, uint hi) {
   float matter = compMatter(lo, hi);
   if (matter <= 0.0) return BG;
-  float s = 0.0;
+  float s = 0.0, m = 0.0;
   for (int k = 0; k < ${SOL_SLOTS}; k++) {
     uint slot = compSlot(lo, hi, k);
     if (int(slot & 63u) == ${P_SALT}) s = float(slot >> 6);
+    if (int(slot & 63u) == ${EL.MUD}) m = float(slot >> 6);
   }
-  float other = matter - s;
-  vec3 base = SALT_RUST;
+  float other = matter - s - m;
+  vec3 base = m > 0.0 ? MUD_C : SALT_GREY;
   if (other > 0.0) {
     vec3 acc = vec3(0.0);
     for (int k = 0; k < ${SOL_SLOTS}; k++) {
       uint slot = compSlot(lo, hi, k);
       if (slot == 0u) break;
       int id = int(slot & 63u);
-      if (id == ${P_SALT}) continue;
+      if (id == ${P_SALT} || id == ${EL.MUD}) continue;
       acc += texelFetch(uElem, ivec2(id, 0), 0).rgb * float(slot >> 6);
     }
     base = acc / other;
   }
+  if (m > 0.0) {
+    if (m <= ${MUD_FULL_AT.toFixed(1)}) base = base + (MUD_C - base) * (m / ${MUD_FULL_AT.toFixed(1)});
+    else base = MUD_C + (MUD_DARK - MUD_C) * ((m - ${MUD_FULL_AT.toFixed(1)}) / ${(SOL_PARTS - MUD_FULL_AT).toFixed(1)});
+  }
   if (s == 0.0) return base;
-  if (s <= ${SALT_RUST_AT.toFixed(1)}) return base + (SALT_RUST - base) * (s / ${SALT_RUST_AT.toFixed(1)});
-  return SALT_RUST + (SALT_BLACK - SALT_RUST) * ((s - ${SALT_RUST_AT.toFixed(1)}) / ${(SOL_PARTS - SALT_RUST_AT).toFixed(1)});
+  if (s <= ${SALT_GREY_AT.toFixed(1)}) return base + (SALT_GREY - base) * (s / ${SALT_GREY_AT.toFixed(1)});
+  return SALT_GREY + (SALT_BLACK - SALT_GREY) * ((s - ${SALT_GREY_AT.toFixed(1)}) / ${(SOL_PARTS - SALT_GREY_AT).toFixed(1)});
 }
 
 // Renderer.residueColor.
@@ -221,7 +236,12 @@ void main() {
     else if (uDebugWind) { if (windColor(p, tint)) { emit(tint); return; } }
     uint bm = texelFetch(uBeam, p, 0).r;
     if (bm != 0u) {
-      float sh = float(texelFetch(uShade, p, 0).r);
+      // Renderer: beamShade — свой оттенок у каждой клетки балки.
+      uint hs = uint(i) * 0x9E3779B1u;
+      hs ^= hs >> 15u;
+      hs *= 0x85EBCA6Bu;
+      hs ^= hs >> 13u;
+      float sh = float(int((hs >> 24u) % 31u) - 15);
       vec3 bc = beamColor(int(bm), texelFetch(uBeamExtra, p, 0).r);
       emit(clamp8(BG + (bc - BG) * 0.42 + sh));
     } else {
@@ -240,8 +260,20 @@ void main() {
   else if (kind == KIND_RESIDUE) base = residueColor(extra);
   else if (kind == KIND_OXIDE) base = oxideColor(id, extra, p);
   else if (kind == KIND_HUMAN && extra != 0u) base = vec3(58.0, 52.0, 48.0);
+  else if (id == ${EL.PROTAGONIST}) {
+    int pl = texelFetch(uLife, p, 0).r;
+    base = (pl > 0 && pl < 16) ? uPlayerColor[pl] : e0.rgb;
+  }
   else base = e0.rgb;
   vec3 c = clamp8(base + float(texelFetch(uShade, p, 0).r));
+  // Пятно крови — как в Renderer.cellColor; у живых — отравление, жёлтым.
+  uint stn = texelFetch(uStain, p, 0).r;
+  if (stn != 0u && kind == KIND_HUMAN) c = clamp8(c + (vec3(${POISON_COLOR[0].toFixed(1)}, ${POISON_COLOR[1].toFixed(1)}, ${POISON_COLOR[2].toFixed(1)}) - c) * (float(stn) / 255.0 * ${POISON_TINT_MAX.toFixed(2)}));
+  else if (stn != 0u) c = clamp8(c + (vec3(${BLOOD_COLOR[0].toFixed(1)}, ${BLOOD_COLOR[1].toFixed(1)}, ${BLOOD_COLOR[2].toFixed(1)}) - c) * (float(stn) / 255.0 * 0.75));
+  // Грязь — как в Renderer.cellColor.
+  uint drt = texelFetch(uDirt, p, 0).r;
+  if (drt != 0u && kind == KIND_HUMAN) c = clamp8(c + (vec3(${HURT_COLOR[0].toFixed(1)}, ${HURT_COLOR[1].toFixed(1)}, ${HURT_COLOR[2].toFixed(1)}) - c) * (float(drt) / 255.0 * ${HURT_TINT_MAX.toFixed(2)}));
+  else if (drt != 0u) c = clamp8(c + (vec3(${DIRT_COLOR[0].toFixed(1)}, ${DIRT_COLOR[1].toFixed(1)}, ${DIRT_COLOR[2].toFixed(1)}) - c) * (min(float(drt), ${DIRT_TINT_FULL.toFixed(1)}) / ${DIRT_TINT_FULL.toFixed(1)} * ${DIRT_TINT_MAX.toFixed(2)}));
 
   // Пустота в составе — прозрачность (у любой клетки, см. cellColor).
   if (solLo != 0u || solHi != 0u) {
@@ -313,6 +345,8 @@ class GpuCellPainter {
       uExtra: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uBeam: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uBeamExtra: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
+      uStain: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
+      uDirt: [I.R8UI, I.RED_INTEGER, I.UNSIGNED_BYTE, w, h],
       uSol: [I.R32UI, I.RED_INTEGER, I.UNSIGNED_INT, w, h],
       uSol2: [I.R32UI, I.RED_INTEGER, I.UNSIGNED_INT, w, h],
       uShade: [I.R8I, I.RED_INTEGER, I.BYTE, w, h],
@@ -348,6 +382,8 @@ class GpuCellPainter {
     gl.uniform1i(u('uAirCell'), sim.airCell);
     gl.uniform2i(u('uAirSize'), sim.airW, sim.airH);
     this.uDebugStab = u('uDebugStab');
+    this.uPlayerColor = u('uPlayerColor');
+    this._playerColors = new Float32Array(48);
     this.uDebugTherm = u('uDebugTherm');
     this.uDebugWind = u('uDebugWind');
   }
@@ -394,6 +430,8 @@ class GpuCellPainter {
     this.upload('uBeamExtra', sim.beamExtra);
     this.upload('uSol', sim.sol);
     this.upload('uSol2', sim.sol2);
+    this.upload('uStain', sim.stain);
+    this.upload('uDirt', sim.dirt);
     this.upload('uShade', sim.shade);
     this.upload('uLife', sim.life);
     // sim.temp каждый кадр меняется местами с буфером (см. updateTemp) —
@@ -405,6 +443,13 @@ class GpuCellPainter {
       this.upload('uWindX', sim.windVXFrame);
       this.upload('uWindY', sim.windVYFrame);
     }
+    // Цвета протагонистов игроков (см. uPlayerColor).
+    const pc = this._playerColors, cols = sim.playerColors || [];
+    for (let n = 1; n < 16; n++) {
+      const c = cols[n] || ELEMENTS[EL.PROTAGONIST].color;
+      pc[n * 3] = c[0]; pc[n * 3 + 1] = c[1]; pc[n * 3 + 2] = c[2];
+    }
+    gl.uniform3fv(this.uPlayerColor, pc);
     gl.uniform1i(this.uDebugStab, debug.stability ? 1 : 0);
     gl.uniform1i(this.uDebugTherm, debug.therm ? 1 : 0);
     gl.uniform1i(this.uDebugWind, debug.wind ? 1 : 0);
@@ -444,10 +489,10 @@ function buildElementTable() {
     const el = ELEMENTS[id];
     if (!el) continue;
     let kind = 0;
-    if (id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT) kind = KIND_PARTS;
+    if (id === EL.SOLUTION || id === EL.VAPOR || id === EL.BLACK_SALT || id === EL.MUD) kind = KIND_PARTS;
     else if (id === EL.ACID_RESIDUE) kind = KIND_RESIDUE;
     else if (isOxide(id) && OXIDE_LINE[id]) kind = KIND_OXIDE;
-    else if (id === EL.HUMAN) kind = KIND_HUMAN;
+    else if (id === EL.HUMAN || id === EL.PROTAGONIST) kind = KIND_HUMAN;
     else if (id === EL.FIRE) kind = KIND_FIRE;
     set(id, 0, el.color[0], el.color[1], el.color[2], kind);
     set(id, 1, el.meltPoint || 0, isStructural(id) ? 1 : 0, el.maxStability || 1, hasComposition(id) ? 1 : 0);

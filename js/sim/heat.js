@@ -72,6 +72,14 @@ class SimHeat {
   // — при достаточном остывании застывает обратно в камень), а не
   // действовать как вечная батарейка.
   updateTemp() {
+    this.markHotRows();
+    this.tempRows(0, this.h);
+    this.swapTempBuffers();
+  }
+
+  swapTempBuffers() { const src = this.temp; this.temp = this._temp2; this._temp2 = src; }
+
+  markHotRows() {
     const w = this.w, h = this.h;
     const src = this.temp;
     // Строки, где есть хоть одна ненулевая температура. Клетка, у которой
@@ -83,23 +91,20 @@ class SimHeat {
     // Флаги считаются заново каждый кадр: температуру между вызовами
     // меняют spawn, кисть, а swap переносит её между строками.
     const rowHot = this._tempRowHot || (this._tempRowHot = new Uint8Array(h));
-    let hotRows = 0;
+    // Пометки "кусок пора будить из-за тепла" ставит tempRows заново.
+    if (this._chunkHeatWake) this._chunkHeatWake.fill(0);
     for (let y = 0; y < h; y++) {
       const b = y * w;
       let hot = 0;
       for (let x = 0; x < w; x++) if (src[b + x] !== 0) { hot = 1; break; }
       rowHot[y] = hot;
-      hotRows += hot;
     }
-    // Строки считаются независимо (читают только src, пишут только свою
-    // строку dst), поэтому при запущенных потоках делятся между ними
-    // (sim/threads.js) — результат побитно тот же, что в одном потоке.
-    if (!this.runTempParallel(hotRows)) this.tempRows(0, h);
-    this.temp = this._temp2; this._temp2 = src;
   }
 
   // Диффузия и остывание строк y0..y1-1: из this.temp в this._temp2 (см.
-  // updateTemp и флаги _tempRowHot).
+  // updateTemp и флаги _tempRowHot). Строки считаются независимо (читают
+  // только прошлый кадр, пишут только свою строку), поэтому при запущенных
+  // потоках делятся между ними (sim/threads.js) — побитно так же.
   tempRows(y0, y1) {
     const w = this.w, h = this.h;
     const weight = HEAT_WEIGHT;
@@ -171,13 +176,27 @@ class SimHeat {
     const CONVECTION_BOOST = 3;
     const dst = this._temp2;
     const rowHot = this._tempRowHot;
+    // Новая температура вне безопасных пределов вещества клетки — кусок
+    // пора будить (sim/sleep.js, chunkMustWake). Холодная строка (заливка
+    // нулями ниже) не в счёт: её клетки были нулём и прошлым кадром, а
+    // вещество с нулём вне пределов спать и не ложилось бы (restlessCell).
+    // Проверяются только спящие куски (будит chunkMustWake только их) и
+    // только пока не помечены: строка идёт отрезками по куску, и проверка
+    // включается на весь отрезок разом. На каждую клетку она стоила
+    // проходу тепла трети его времени.
+    const heatWake = this._chunkHeatWake, asleep = this._chunkAsleep, chunkW = this._chunkW;
     for (let y = y0; y < y1; y++) {
       const rowBase = y * w;
       if (!rowHot[y] && (y === 0 || !rowHot[y - 1]) && (y === h - 1 || !rowHot[y + 1])) {
         dst.fill(0, rowBase, rowBase + w);
         continue;
       }
-      for (let x = 0; x < w; x++) {
+      const rowChunk = ((y / SLEEP_CHUNK) | 0) * chunkW;
+      for (let x0 = 0; x0 < w; x0 += SLEEP_CHUNK) {
+      const c = rowChunk + ((x0 / SLEEP_CHUNK) | 0);
+      const watch = asleep[c] === 1 && heatWake[c] === 0;
+      const xe = x0 + SLEEP_CHUNK < w ? x0 + SLEEP_CHUNK : w;
+      for (let x = x0; x < xe; x++) {
         const i = rowBase + x;
         if (!weight[type[i]]) {
           // Теплоизолятор (стена) не обменивается теплом с соседями ни в
@@ -190,6 +209,7 @@ class SimHeat {
           let nt = src[i] * DECAY_MATTER;
           if (Math.abs(nt) < 0.05) nt = 0;
           dst[i] = nt;
+          if (watch) { const t = type[i]; if (!(nt > SAFE_LO[t] && nt < SAFE_HI[t])) heatWake[c] = 1; }
           continue;
         }
         // Вес соседа — насколько он теплопроводен (см. HEAT_WEIGHT):
@@ -246,6 +266,8 @@ class SimHeat {
         let nt = (vi + (avg - vi) * DIFFUSE_RATE) * (gasLike ? DECAY_AIR : DECAY_MATTER);
         if (Math.abs(nt) < 0.05) nt = 0;
         dst[i] = nt;
+        if (watch && !selfAir) { const t = type[i]; if (!(nt > SAFE_LO[t] && nt < SAFE_HI[t])) heatWake[c] = 1; }
+      }
       }
     }
   }

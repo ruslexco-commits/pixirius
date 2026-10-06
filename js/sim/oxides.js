@@ -29,6 +29,9 @@ const RUST_LIMITED_TARGET = 2;
 // в неё, а жидкость занимает её место и ест металл дальше (см. rustFlake).
 const RUST_FLAKE_FROM = 4;
 const RUST_FLAKE_CHANCE = 0.3;
+// Окисление меди воздухом (copperAir): шанс в кадр и предельная стадия.
+const COPPER_AIR_CHANCE = 0.0004;
+const COPPER_AIR_MAX_STAGE = 4;
 
 class SimOxides {
   // Линейка окисления, к которой принадлежит клетка (камень или металл,
@@ -181,7 +184,8 @@ class SimOxides {
   // стадией, и всё это по броску OXIDE_SPREAD_CHANCE.
   reactRust(x, y, i) {
     const id = this.type[i];
-    if (this.meltRoll(i, id)) { this.spawn(i, ELEMENTS[id].meltsInto, false); return; }
+    // Плавится по долям, в расплав своего металла (sim/alloys.js).
+    if (this.meltRoll(i, id)) { this.meltAlloy(i); return; }
     const stage = this.oxideStage(i);
     if (stage < RUST_SPREAD_FROM) return;
     if (Math.random() >= OXIDE_SPREAD_CHANCE) return;
@@ -191,10 +195,11 @@ class SimOxides {
       const nx = x + DX4[k], ny = y + DY4[k];
       if (!this.inBounds(nx, ny)) continue;
       const ni = this.idx(nx, ny);
-      // Металл, сталь и ржавчина любой стадии: сталь воду не боится, но
-      // ржавчину, коснувшуюся её, принимает (просьба пользователя: "точка
-      // ржавения" пойдёт от ржавчины).
-      if (!isRustLine(OXIDE_LINE[this.type[ni]])) continue;
+      // Металл, сталь, приборы и ржавчина любой стадии: сталь воду не
+      // боится, но ржавчину, коснувшуюся её, принимает (просьба
+      // пользователя: "точка ржавения" пойдёт от ржавчины). Медь — так же,
+      // но своей патиной: семьи не смешиваются (sameRustFamily).
+      if (!sameRustFamily(OXIDE_LINE[this.type[ni]], OXIDE_LINE[id])) continue;
       const t = this.oxideStage(ni);
       if (t < 0) continue;
       // 4..5 — только тем, кто ещё не дошёл до второй стадии; 6..7 — как
@@ -205,6 +210,35 @@ class SimOxides {
     if (best < 0) return;
     this.setOxideStage(i, stage - 1);
     this.setOxideStage(best, bestStage + 1);
+  }
+
+  // Медь окисляется сама, от воздуха: пока рядом есть пустота и стадия
+  // ниже COPPER_AIR_MAX_STAGE, раз в среднем в 1/COPPER_AIR_CHANCE кадров
+  // стадия растёт на одну (просьба: "окисляется до 4 стадии просто от
+  // воздуха, если возле неё есть свободный пиксель").
+  copperAir(x, y, i) {
+    if (Math.random() >= COPPER_AIR_CHANCE) return;
+    const stage = this.oxideStage(i);
+    if (stage < 0 || stage >= COPPER_AIR_MAX_STAGE) return;
+    if (!this.hasEmptyNeighbour(x, y)) return;
+    this.setOxideStage(i, stage + 1, OXIDE_LINE_COPPER);
+  }
+
+  // Есть ли среди четырёх соседей пустая клетка.
+  hasEmptyNeighbour(x, y) {
+    const w = this.w, i = y * w + x, type = this.type;
+    return (x > 0 && type[i - 1] === EL.EMPTY) || (x < w - 1 && type[i + 1] === EL.EMPTY)
+      || (y > 0 && type[i - w] === EL.EMPTY) || (y < this.h - 1 && type[i + w] === EL.EMPTY);
+  }
+
+  reactCopper(x, y, i) {
+    this.reactMelt(x, y, i, EL.COPPER);
+    if (this.type[i] === EL.COPPER) this.copperAir(x, y, i);
+  }
+
+  reactCopperOxide(x, y, i) {
+    this.reactRust(x, y, i);
+    if (this.type[i] === EL.COPPER_OXIDE) this.copperAir(x, y, i);
   }
 
   // Балка в клетке i окисляется на стадию дальше по линейке своего

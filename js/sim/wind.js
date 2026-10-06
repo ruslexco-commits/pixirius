@@ -20,6 +20,12 @@
 // её — то есть нагнетённый кистью давления или поднятый взрывом.
 const WIND_PUSH_MIN = 0.45;
 
+// Проходов диффузии ветра за кадр (см. updateWind). Чётное число
+// возвращает результат в тот же буфер, из которого начали: на этом
+// держится расчёт ветра рабочим потоком (sim/threads.js, globalPassesParallel)
+// — главному не нужно узнавать, какой из двух буферов стал текущим.
+const WIND_SUBSTEPS = 4;
+
 // Math.hypot(a, b) побитно, но втрое быстрее встроенного — повтор его же
 // алгоритма из V8 (src/builtins/math.tq: деление на наибольший модуль и
 // сумма квадратов с компенсацией Кэхэна). Встроенный hypot в updateWind
@@ -213,8 +219,15 @@ class SimWind {
   // соседа неотличима от края симуляции. Внутри самой преграды воздуха
   // нет — её результирующая скорость гасится той же долей открытости.
   updateWind() {
-    const aw = this.airW, ah = this.airH, an = aw * ah;
     this.computeAirBlock();
+    this.diffuseWind();
+  }
+
+  // Диффузия и затухание ветра по уже посчитанной непроницаемости
+  // (computeAirBlock). Отдельно от неё — чтобы её мог считать рабочий
+  // поток, пока главный занят другим (sim/threads.js).
+  diffuseWind() {
+    const aw = this.airW, ah = this.airH, an = aw * ah;
     const open = this.airOpen;
     // Трение воздуха. Усилено (0.997 -> 0.992): поток должен затихать за
     // считанные секунды, если его перестали подпитывать, а не жить минуту.
@@ -222,21 +235,43 @@ class SimWind {
     const DIFFUSE_BASE = 0.15;
     const DIFFUSE_GAIN = 0.6;
     const DIFFUSE_MAX = 0.5;
-    const WIND_SUBSTEPS = 4;
     if (!this._windVX2 || this._windVX2.length !== an) {
       this._windVX2 = new Float32Array(an);
       this._windVY2 = new Float32Array(an);
     }
     let vx = this.windVX, vy = this.windVY;
     let vx2 = this._windVX2, vy2 = this._windVY2;
+    // Строки сетки, где есть хоть один ненулевой ветер. Строка, нулевая
+    // вместе с обеими соседними, после прохода остаётся нулевой: сумма
+    // нулей — ноль, и итог обнуляется порогом ниже. Такую строку можно не
+    // считать, а залить нулями (как холодные строки тепла, heat.js).
+    // Знак нуля в промежуточных проходах при этом может выйти другим
+    // (+0 вместо -0), но он ни на что не влияет: ненулевую сумму не меняет,
+    // а нулевой итог последний проход всё равно обнуляет в +0. Ветер в
+    // спокойном мире — несколько сотен клеток из 11664, и почти все строки
+    // пропускаются. Флаги для следующего прохода собираются по ходу этого.
+    let rowAny = this._windRowAny, rowNext = this._windRowNext;
+    if (!rowAny || rowAny.length !== ah) { rowAny = this._windRowAny = new Uint8Array(ah); rowNext = this._windRowNext = new Uint8Array(ah); }
     // Полный штиль (частый случай в спокойном мире: ветер от движения
     // гаснет до нуля) — диффузия нулей даёт нули, её можно не считать.
     let any = false;
-    for (let ai = 0; ai < an; ai++) if (vx[ai] !== 0 || vy[ai] !== 0) { any = true; break; }
+    for (let ay = 0; ay < ah; ay++) {
+      let r = 0;
+      for (let ai = ay * aw, e = ai + aw; ai < e; ai++) if (vx[ai] !== 0 || vy[ai] !== 0) { r = 1; break; }
+      rowAny[ay] = r;
+      if (r) any = true;
+    }
     if (!any) return;
     for (let step = 0; step < WIND_SUBSTEPS; step++) {
       const isLast = step === WIND_SUBSTEPS - 1;
       for (let ay = 0; ay < ah; ay++) {
+        if (!rowAny[ay] && (ay === 0 || !rowAny[ay - 1]) && (ay === ah - 1 || !rowAny[ay + 1])) {
+          vx2.fill(0, ay * aw, ay * aw + aw);
+          vy2.fill(0, ay * aw, ay * aw + aw);
+          rowNext[ay] = 0;
+          continue;
+        }
+        let rowNZ = 0;
         for (let ax = 0; ax < aw; ax++) {
           const ai = ay * aw + ax;
           const selfOpen = open[ai];
@@ -259,8 +294,11 @@ class SimWind {
             if (Math.abs(ny) < 0.001) ny = 0;
           }
           vx2[ai] = nx; vy2[ai] = ny;
+          if (nx !== 0 || ny !== 0) rowNZ = 1;
         }
+        rowNext[ay] = rowNZ;
       }
+      const tr = rowAny; rowAny = rowNext; rowNext = tr;
       const tx = vx; vx = vx2; vx2 = tx;
       const ty = vy; vy = vy2; vy2 = ty;
     }

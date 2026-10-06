@@ -43,7 +43,8 @@ const SLEEP_AFTER = 8;
 const RESTLESS_TYPE = idTable([
   EL.FIRE, EL.SMOKE, EL.LAVA, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.DISSOLVER_GAS,
   EL.STEAM, EL.ACID_GAS, EL.VAPOR, EL.REAGENT_GAS, EL.OIL_GAS,
-  EL.HUMAN, EL.COLONIST, EL.CLONE, EL.VOID, EL.WET_EARTH,
+  EL.HUMAN, EL.COLONIST, EL.CLONE, EL.VOID, EL.WET_EARTH, EL.PROTAGONIST, EL.MOLTEN_COPPER,
+  EL.MOLTEN_METAL, EL.MOLTEN_STEEL, EL.MOLTEN_ALLOY,
 ]);
 
 // Безопасный диапазон температур по типу клетки: SAFE_LO < T < SAFE_HI —
@@ -88,6 +89,12 @@ class SimSleep {
     this._chunkQuiet = new Uint16Array(count);          // кадров подряд без изменений
     this._chunkAsleep = new Uint8Array(count);
     this._chunkActive = new Uint8Array(count).fill(1);  // считать в этом кадре
+    // Кусок, где новая температура клетки вышла за безопасные пределы её
+    // вещества (SAFE_LO/SAFE_HI). Ставит проход тепла (tempRows), который и
+    // так считает каждую клетку каждый кадр, — раньше то же самое искал
+    // chunkMustWake отдельным проходом по всем клеткам спящих кусков, ~1 мс
+    // главного потока каждый кадр даже в покое.
+    this._chunkHeatWake = new Uint8Array(count);
     this._stabRecomputed = true;
     // Выключатель — для сравнения и на случай, если сон что-то проспит.
     this.sleepEnabled = true;
@@ -113,6 +120,9 @@ class SimSleep {
     this._chunkPrevDirty.fill(1);
     this._chunkAsleep.fill(0);
     this._chunkActive.fill(1);
+    // Продавленные (sim/landing.js) могли прийти с отменой или файлом в
+    // обход crushPixel: пусть следующий отсчёт пересчитает их заново.
+    this._crushLive = 1;
   }
 
   // Раз в кадр, после всех общих проходов (устойчивость, ветер, тепло,
@@ -170,16 +180,14 @@ class SimSleep {
   // безопасные пределы, поднялся сильный ветер, после пересчёта
   // устойчивости в нём оказались обломки.
   chunkMustWake(c, stabRecomputed) {
+    if (this._chunkHeatWake[c]) return true;   // тепло за пределами (см. tempRows)
     const [x0, y0, x1, y1] = this.chunkBounds(c);
-    const w = this.w, type = this.type, temp = this.temp, stab = this.stability;
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        const i = y * w + x;
-        const t = type[i];
-        if (t === EL.EMPTY) continue;
-        const T = temp[i];
-        if (!(T > SAFE_LO[t] && T < SAFE_HI[t])) return true;
-        if (stabRecomputed && IS_STRUCTURAL[t] === 1 && stab[i] === 0) return true;
+    if (stabRecomputed) {
+      const w = this.w, type = this.type, stab = this.stability;
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0, i = y * w + x0; x < x1; x++, i++) {
+          if (IS_STRUCTURAL[type[i]] === 1 && stab[i] === 0) return true;
+        }
       }
     }
     return this.chunkWindy(x0, y0, x1, y1);
@@ -243,7 +251,16 @@ class SimSleep {
       const s = this.oxideStage(i);
       if (s >= 2 && this.neighbourOxideBelow(x, y, i, s - 2)) return true;
     }
-    if ((t === EL.METAL_OXIDE || t === EL.METAL_OXIDE_LOOSE) && this.oxideStage(i) >= RUST_SPREAD_FROM) return true;
+    if ((t === EL.METAL_OXIDE || t === EL.METAL_OXIDE_LOOSE || t === EL.COPPER_OXIDE || t === EL.COPPER_OXIDE_LOOSE) && this.oxideStage(i) >= RUST_SPREAD_FROM) return true;
+    // Медный сплав без стали окисляется от воздуха (reactAlloy).
+    if (t === EL.ALLOY) {
+      const comp = this.comp(i);
+      if (solGet(comp, EL.COPPER) >= ALLOY_COPPER_AIR_FROM && solGet(comp, EL.STEEL) === 0 && this.hasEmptyNeighbour(x, y)) return true;
+    }
+    // Горящая лампочка отсчитывает свой срок каждый кадр (reactLamp).
+    if (t === EL.LAMP && this.life[i] > 0) return true;
+    // Медь на воздухе окисляется сама до COPPER_AIR_MAX_STAGE (copperAir).
+    if ((t === EL.COPPER || t === EL.COPPER_OXIDE) && this.oxideStage(i) < COPPER_AIR_MAX_STAGE && this.hasEmptyNeighbour(x, y)) return true;
     return false;
   }
 
@@ -269,6 +286,8 @@ class SimSleep {
       if (t === EL.WATER) {
         const line = OXIDE_LINE[nt];
         if (line && line.waterRusts) return true;
+        if (nt === EL.ALLOY) return true;   // ржавеет по долям (sim/alloys.js)
+        if (nt === EL.INSULATOR) return true;   // растворяется в чёрные соли (dissolveInsulator)
       } else if (nt === EL.WATER) return true;
     }
     return false;

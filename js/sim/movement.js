@@ -98,6 +98,13 @@ class SimMovement {
     const nt = this.type[ni];
     if (nt === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
     if (IS_MOVABLE_ID[nt] !== 1) return false;
+    // Падающий обломок твёрдого (строка ниже — индекс больше i + 1)
+    // раздавливает человека и протагониста на своём пути, а не
+    // проскальзывает сквозь них, как сквозь песок (просьба пользователя).
+    if (!rising && (nt === EL.HUMAN || nt === EL.PROTAGONIST) && ni > i + 1 && IS_STRUCTURAL[this.type[i]] === 1) {
+      this.crushBody(ni);
+      this.swap(i, ni); this.moved[ni] = 1; return true;
+    }
     const nd = DENSITY[nt];
     if (rising ? (nd > el.density) : (nd < el.density)) {
       // Тонущий тяжёлый материал (rising=false — обычное падение, не
@@ -309,6 +316,11 @@ class SimMovement {
     const nt = this.type[ni];
     if (nt === EL.EMPTY) return false;
     if (IS_MOVABLE_ID[nt] !== 1) return false;
+    // Протагонист и человек в воде движутся сами (sim/protagonist.js,
+    // humanSwim): тонут своей гравитацией, всплывают вплавь. Иначе вода под
+    // пловцом, видя над собой тело плотнее себя, в тот же кадр утягивала
+    // его обратно, и всплыть он не мог вовсе.
+    if (nt === EL.PROTAGONIST || nt === EL.HUMAN) return false;
     if (DENSITY[nt] > el.density) {
       // Сверху не жидкость, а тонущее тело/сыпучее — это то же самое
       // вытеснение, что и в attemptSwapOrMove, только увиденное снизу;
@@ -329,7 +341,18 @@ class SimMovement {
     if (this.tryWindPush(x, y, i, el, windScale, 0.35, false)) return;
     if (y + 1 >= h) return;
     const bi = this.idx(x, y + 1);
-    if (this.attemptSwapOrMove(i, bi, el, false)) return;
+    if (this.attemptSwapOrMove(i, bi, el, false)) {
+      // Упало — смешивается с сыпучим, на которое упало (sim/mud.js).
+      if (IS_POWDER_MIX[this.type[bi]] === 1) this.powderMix(bi);
+      return;
+    }
+    // Обе боковые клетки заняты — диагонали ниже не пробуются вовсе (им
+    // нужна свободная боковая), и делать больше нечего. Направление при
+    // windScale берётся из ветра без случайного числа, так что выход здесь
+    // ничего не меняет; без windScale бросок монеты был бы потрачен — тогда
+    // идём прежним путём. Это почти любая клетка лежащей кучи песка.
+    const type = this.type;
+    if (windScale && (x === 0 || type[i - 1] !== EL.EMPTY) && (x === w - 1 || type[i + 1] !== EL.EMPTY)) return;
     const dir = windScale ? this.windDir(x, y, windScale) : (Math.random() < 0.5 ? 1 : -1);
     // Сперва сторона dir, потом противоположная. Раньше здесь и ниже было
     // for (const dx of [dir, -dir]) — новый массив на каждую частицу в
@@ -348,7 +371,10 @@ class SimMovement {
       // эта проверка не касается вовсе, у неё свой, отдельный код растекания.
       if (this.type[this.idx(nx, y)] !== EL.EMPTY) continue;
       const ni = this.idx(nx, y + 1);
-      if (this.attemptSwapOrMove(i, ni, el, false)) return;
+      if (this.attemptSwapOrMove(i, ni, el, false)) {
+        if (IS_POWDER_MIX[this.type[ni]] === 1) this.powderMix(ni);
+        return;
+      }
     }
   }
 
@@ -373,6 +399,14 @@ class SimMovement {
     // "перебивающая" попытка, что и у газа/осыпавшихся тел, только слабее
     // (жидкость тяжелее, гравитацию перебивает не так легко).
     if (this.tryWindPush(x, y, i, el, 0.16, 0.5, false)) return;
+    // Глубина лужи: снизу, по диагоналям снизу, по бокам и сверху — та же
+    // жидкость. Ни падение, ни растекание, ни всплытие тогда не сработают
+    // (обмен с тем же веществом не идёт), а случайных чисел ни одна из этих
+    // попыток не тратит — выходим сразу, не перебирая их по одной.
+    if (x > 0 && x < w - 1 && y > 0 && y + 1 < h) {
+      const type = this.type, t = type[i], b = i + w;
+      if (type[b] === t && type[b - 1] === t && type[b + 1] === t && type[i - 1] === t && type[i + 1] === t && type[i - w] === t) return;
+    }
     if (y + 1 < h) {
       const bi = this.idx(x, y + 1);
       if (this.attemptSwapOrMove(i, bi, el, false)) return;

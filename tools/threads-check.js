@@ -48,6 +48,8 @@ function makeScene(env, kind) {
   } else if (kind === 'люди и взрывы') {
     box(0, 300, 575, 323, EL.STONE);
     for (let x = 30; x < 560; x += 25) sim.setCell(x, 299, EL.HUMAN, false);
+    sim.setCell(250, 299, EL.PROTAGONIST, false);   // его ход — тоже на главном потоке
+    sim.playerInput.right = true;
     box(100, 280, 110, 299, EL.GUNP);
     box(300, 285, 306, 299, EL.BLACK_SALT);
     box(400, 270, 480, 299, EL.WATER);
@@ -104,18 +106,25 @@ async function runScene(kind, steps) {
   // Прогрев, потом замер.
   for (let k = 0; k < 30 + steps; k++) ref.step();
   for (let k = 0; k < 30; k++) { single.step(); multi.step(); }
-  // Тепло по потокам обязано совпасть с однопоточным побитно: тот же мир,
-  // один проход updateTemp там и там.
+  // Общая фаза (ветер, тепло, выходы луж — globalPassesParallel) обязана
+  // совпасть с однопоточными проходами побитно: тот же мир, один проход
+  // там и там.
   {
     const Sim = envT.get('Sim');
     const solo = new Sim(multi.w, multi.h);
     solo.type.set(multi.type); solo.temp.set(multi.temp);
-    const hotBefore = multi.temp.reduce((n, v) => n + (v !== 0), 0);
-    solo.updateTemp(); multi.updateTemp();
-    let diff = 0;
-    for (let i = 0; i < solo.temp.length; i++) if (!Object.is(solo.temp[i], multi.temp[i])) diff++;
-    if (diff) fail(`${kind}: тепло по потокам разошлось с однопоточным в ${diff} клетках`);
-    else console.log(`  тепло по потокам побитно как в одном потоке (${hotBefore} тёплых клеток)`);
+    solo.windVX.set(multi.windVX); solo.windVY.set(multi.windVY);
+    solo._liquidEscape.set(multi._liquidEscape);
+    const hot = multi.temp.reduce((n, v) => n + (v !== 0), 0);
+    const windy = multi.windVX.reduce((n, v) => n + (v !== 0), 0);
+    solo.updateWind(); solo.updateTemp(); solo.computeLiquidEscape();
+    multi.globalPassesParallel();
+    const differ = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) d++; return d; };
+    const dT = differ(solo.temp, multi.temp);
+    const dW = differ(solo.windVX, multi.windVX) + differ(solo.windVY, multi.windVY);
+    const dE = differ(solo._liquidEscape, multi._liquidEscape);
+    if (dT || dW || dE) fail(`${kind}: общая фаза по потокам разошлась с однопоточной: тепло ${dT}, ветер ${dW}, выходы луж ${dE}`);
+    else console.log(`  ветер, тепло и выходы луж по потокам побитно как в одном потоке (${hot} тёплых клеток, ${windy} клеток ветра)`);
   }
   let t0 = process.hrtime.bigint();
   for (let k = 0; k < steps; k++) single.step();

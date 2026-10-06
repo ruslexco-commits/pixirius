@@ -139,6 +139,46 @@ function buildScene(env, w = 240, h = 160) {
   if (EL.BLACK_SALT) box(156, h - 52, 158, h - 50, EL.BLACK_SALT);
   // Растворитель на каменном полу у колонны: меняется долями с камнем.
   if (EL.DISSOLVER) box(3, h - 12, 8, h - 7, EL.DISSOLVER);
+  // Техника у правого края, на полу: камера, медный провод вверх, панели
+  // наверху под открытым небом, провод по полу к монитору, изолятор.
+  if (EL.SOLAR) {
+    sim.setCell(233, h - 7, EL.CAMERA, false);
+    box(233, h - 30, 233, h - 8, EL.COPPER);
+    box(232, h - 31, 238, h - 31, EL.SOLAR);
+    box(234, h - 7, 235, h - 7, EL.COPPER);
+    box(236, h - 8, 237, h - 7, EL.MONITOR);
+    sim.setCell(238, h - 7, EL.INSULATOR, false);
+  }
+  // Генератор, медный провод с усилителем и камера в тупике (отражение).
+  if (EL.GENERATOR) {
+    box(201, h - 37, 202, h - 36, EL.GENERATOR);
+    // Генератор работает на масле: под ним — карман масла в стене.
+    box(200, h - 35, 203, h - 34, EL.WALL);
+    box(201, h - 35, 202, h - 35, EL.OIL);
+    box(203, h - 36, 214, h - 36, EL.COPPER);
+    sim.setCell(207, h - 36, EL.AMPLIFIER, false);
+    sim.setCell(215, h - 36, EL.CAMERA, false);
+  }
+  // Лампочка на ответвлении от того же провода: жёлтый заряд её зажигает,
+  // а развилка делит заряд надвое.
+  if (EL.LAMP) {
+    box(210, h - 38, 210, h - 37, EL.COPPER);
+    sim.setCell(210, h - 39, EL.LAMP, false);
+  }
+  // Тигель в небе: расплавы металла и меди смешиваются в расплав и,
+  // остывая, застывают сплавом (sim/alloys.js).
+  if (EL.MOLTEN_METAL) {
+    box(70, h - 118, 86, h - 118, EL.WALL);
+    box(70, h - 124, 70, h - 119, EL.WALL);
+    box(86, h - 124, 86, h - 119, EL.WALL);
+    box(71, h - 122, 77, h - 119, EL.MOLTEN_METAL);
+    box(78, h - 122, 85, h - 119, EL.MOLTEN_COPPER);
+  }
+  // Грязь на краю бассейна: сползает в воду, мутит её и оседает на дне.
+  if (EL.MUD) box(84, h - 34, 88, h - 31, EL.MUD);
+  // Протагонист на полу у стеклянной стены: ходит и прыгает по команде
+  // (см. poke).
+  if (EL.PROTAGONIST) sim.setCell(210, h - 10, EL.PROTAGONIST, false);
   if (sim.pickBeamMaterial) {
     sim.pickBeamMaterial(100, h - 20);             // от металла
     for (let x = 131; x <= 150; x++) sim.setCell(x, h - 26, EL.BEAM, false);
@@ -153,16 +193,26 @@ function buildScene(env, w = 240, h = 160) {
 function poke(env, sim, step) {
   const EL = env.get('EL');
   if (step === 20) sim.stampBrush(160, sim.h - 20, 'circle', 3, 3, EL.FIRE, false);
+  if (sim.playerInput) {
+    sim.playerInput.left = step >= 40 && step < 80;
+    sim.playerInput.right = step >= 100 && step < 130;
+    if (step === 85 || step === 150) sim.playerInput.jump = true;
+  }
   if (step >= 30 && step < 60) sim.applyPressureBrush(70, sim.h - 15, 6, 6, 1);
   if (step >= 60 && step < 90) sim.applyTempBrush(110, sim.h - 20, 6, 6, 1);
   if (step >= 90 && step < 110) sim.applyTempBrush(30, sim.h - 57, 5, 5, -1);
   if (step === 120) sim.stampLine(100, 20, 140, 40, 'square', 1, 1, EL.WATER, true);
-  if (step === 140) sim.floodFill(60, sim.h - 12, EL.OIL, false);
+  // Заливка маслом лужи в бассейне — у самого дна и только если там не
+  // пусто. Раньше точка стояла выше, на уровне, который гуляет на ряд от
+  // прогона к прогону (вода выкипает от реагента): попав в пустоту над
+  // водой, заливка затапливала маслом всё небо, и замер check.js скакал с
+  // 11 до 20 мс от одного лишь сдвига случайных чисел.
+  if (step === 140 && sim.type[(sim.h - 9) * sim.w + 60] !== EL.EMPTY) sim.floodFill(60, sim.h - 9, EL.OIL, false);
 }
 
 // Поля, из которых складывается отпечаток мира. Отсутствующие в старой
 // версии поля пропускаются.
-const HASHED_FIELDS = ['type', 'life', 'extra', 'shade', 'temp', 'moisture', 'sol', 'beam',
+const HASHED_FIELDS = ['type', 'life', 'extra', 'shade', 'temp', 'moisture', 'sol', 'sol2', 'beam', 'beamExtra', 'stain', 'crushed',
   'stability', 'windVX', 'windVY', 'colonistHomeX', 'colonistHomeY'];
 
 function fnv(arr) {

@@ -183,6 +183,17 @@ section('Быстрые пути');
       if (edit === 6) { fz.beam[beamAt] = fz.beam[beamAt] === 0 ? EL.STONE : fz.beam[beamAt] === EL.STONE ? EL.METAL : 0; fz.markDirty(beamAt); }
       fz.step();
     }
+    // Падающие тела (пропуск по stabChangeHarmless): блок летит, садится на
+    // вылет из камня у стены, рядом летит сито металла, пролетает сквозь
+    // балку и падает на дно; кадры полёта пропускаются, приземления —
+    // пересчитываются, и те и другие сверяются с честным пересчётом.
+    const fb = new Sim(60, 60);
+    for (let y = 10; y < 60; y++) fb.setCell(0, y, EL.WALL, false);
+    for (let x = 1; x <= 14; x++) fb.setCell(x, 40, EL.STONE, false);
+    for (let x = 30; x <= 40; x++) fb.setCell(x, 30, EL.BEAM, false);
+    for (let y = 2; y < 10; y++) for (let x = 5; x < 14; x++) fb.setCell(x, y, EL.METAL, false);
+    for (let y = 2; y < 12; y++) for (let x = 28; x < 44; x++) if ((x + y) % 3) fb.setCell(x, y, EL.STONE, false);
+    for (let s = 0; s < 200; s++) fb.step();
   } finally {
     Sim.prototype.structureChanged = orig;
   }

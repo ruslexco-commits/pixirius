@@ -67,6 +67,21 @@ const PARTICLE_FIELDS = [
   // бита) прочитать как новый нельзя, его переводит deserialize.
   { name: 'sol', saveKey: 'solLo', empty: 0, moves: true },
   { name: 'sol2', saveKey: 'solHi', empty: 0, moves: true },
+  // Пятно крови (0 — нет, 255 — густое): остаётся на клетках вокруг
+  // раздавленного человека (Sim.crushBody) и едет вместе с частицей.
+  { name: 'stain', empty: 0, moves: true },
+  // Грязь на пикселе (0 — чистый, MUD_DIRT_PER_PART за долю, до 10 долей):
+  // мутная вода откладывает её на твёрдое и сыпучее, вода забирает обратно
+  // (sim/mud.js). Едет с частицей.
+  { name: 'dirt', empty: 0, moves: true },
+  // Пятно контакта (sim/landing.js): fall — клетка падала в составе
+  // осыпавшегося тела (по нему видно, какое тело только что приземлилось),
+  // crushed — клетка продавлена приземлившимся телом: сколько кадров ещё
+  // продавлена (0 — нет). Пока продавлена, сама стоит с устойчивостью 0 и
+  // осыпается, если есть куда, но опору дальше передаёт; потом снова
+  // обычная.
+  { name: 'fall', empty: 0, moves: true },
+  { name: 'crushed', empty: 0, moves: true },
   // Балка — второй слой, стоит на месте, частицы проходят сквозь неё.
   // beam — материал балки (id элемента), beamExtra — стадия окисла этого
   // материала (см. Sim.beamStage).
@@ -255,6 +270,15 @@ class Sim {
     // каменными (см. deserialize).
     this.beam = new Uint8Array(n);
     this.beamExtra = new Uint8Array(n);
+    this.stain = new Uint8Array(n);
+    this.dirt = new Uint8Array(n);
+    this.fall = new Uint8Array(n);
+    this.crushed = new Uint8Array(n);
+    // Стадия окисла, которую кисть ставит поставленной клетке (0 — как
+    // обычно, стадия из spawn). Выбирает палитра: во вкладке "Все" есть
+    // кнопка окисла второй стадии, у которой своего элемента нет (см.
+    // PALETTE_VARIANTS в main.js). Не поле клетки, а состояние кисти.
+    this.paintOxideStage = 0;
     // Материал для рисования балки: его выбирает ввод по клетке, с которой
     // начали вести (pickBeamMaterial), рисование (setCell) берёт отсюда.
     // Это состояние кисти, а не мира: в отмену и сохранение не входит.
@@ -272,6 +296,9 @@ class Sim {
     this._threadCount = 0;
     // Сон покоящихся кусков поля (sim/sleep.js).
     this.initSleep();
+    this.initProtagonist();
+    this.initCharges();
+    this.initSpawns();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -291,6 +318,10 @@ class Sim {
     this.shade[i] = 0;
     this.sol[i] = 0;
     this.sol2[i] = 0;
+    this.stain[i] = 0;
+    this.dirt[i] = 0;
+    this.fall[i] = 0;
+    this.crushed[i] = 0;
     this.markDirty(i);
   }
 
@@ -333,6 +364,10 @@ class Sim {
     this.markDirty(i);   // новая частица — кусок не спит
     this.shade[i] = (Math.random() * 30 - 15) | 0;
     this.extra[i] = 0;
+    this.stain[i] = 0;
+    this.dirt[i] = 0;
+    this.fall[i] = 0;
+    this.crushed[i] = 0;
     // Состав принадлежит той частице, что была здесь раньше, — новая о нём
     // знать не должна (та же причина, по которой обнуляется extra). Свежая
     // частица всегда ПОЛНАЯ и чистая: 10 долей своего вещества — у любого
@@ -343,8 +378,11 @@ class Sim {
       // кадрах. Кислота расходуется долями состава (см. dissolveInto), а
       // газы ЖДУТ условий: каждый выпадает, когда остынет ниже своей
       // точки кипения (tickPhase). Срок жизни остался ровно у одного
-      // газа — масляного, и задаётся он при выделении (dissolveInto).
+      // газа — масляного, и задаётся он при выделении (dissolveInto) и
+      // здесь, при рисовании: без срока нарисованный масляный газ в первый
+      // же кадр выпадал маслом (tickPhase: срок 0 — пора).
       case EL.SMOKE: this.life[i] = 50 + (Math.random() * 40 | 0); break;
+      case EL.OIL_GAS: this.life[i] = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0); break;
       case EL.FIRE: this.life[i] = 18 + (Math.random() * 14 | 0); break;
       default: this.life[i] = 0;
     }
@@ -363,10 +401,21 @@ class Sim {
     // вода — кипящей, хотя ни лёд, ни вода своего холода никуда не девали.
     // Знак берётся сам собой: у обычных веществ комнатные +20, у льда и
     // замёрзших жидкостей — минус, так что место остывает.
+    //
+    // Но прибавляется только ДО собственной температуры элемента, не
+    // дальше: место, которое уже не холоднее её (а у льда — не теплее),
+    // остаётся как есть. Раньше прибавлялось всегда, и тепло копилось:
+    // удалил камень, нарисовал заново — уже 40 градусов, ещё раз — 60, а
+    // воду, перерисованную несколько раз на одном месте, так и вовсе
+    // доводило до кипения (сообщил пользователь). Теперь повторный спавн
+    // приносит ровно свою температуру, а горячая или морозная среда своё
+    // сохраняет: камень в печи горячий, лёд на морозе холоднее -20.
     // Источники тепла (лава, огонь) и газы сюда не попадают: у первых свой
     // heatSource ниже, у вторых — gasSpawnTemp.
     if (el && !el.heatSource && el.cat !== CAT.GAS) {
-      this.temp[i] += (el.baseTemp !== undefined) ? el.baseTemp : DEFAULT_BASE_TEMP;
+      const own = (el.baseTemp !== undefined) ? el.baseTemp : DEFAULT_BASE_TEMP;
+      const cur = this.temp[i];
+      if (own >= 0 ? cur < own : cur > own) this.temp[i] = own >= 0 ? Math.min(cur + own, own) : Math.max(cur + own, own);
     }
     if (seedHeat && el && el.heatSource && this.temp[i] < el.heatSource) this.temp[i] = el.heatSource;
     // Пар не бывает холоднее точки кипения в момент появления — иначе пар
@@ -381,22 +430,29 @@ class Sim {
       const want = this.gasSpawnTemp(id);
       if (this.temp[i] < want) this.temp[i] = want;
     }
+    // Солнечные панели при спавне складываются шахматкой (просьба
+    // пользователя): оттенок светлее или темнее по чётности клетки.
+    if (id === EL.SOLAR) this.shade[i] = (((i % this.w) + ((i / this.w) | 0)) & 1) ? 10 : -10;
     // Кислотный остаток появляется первого уровня (см. reactAcidResidue).
     if (id === EL.ACID_RESIDUE) this.extra[i] = 1;
     // Человек получает личный номер и заводит себе память.
     if (id === EL.HUMAN) {
       this.life[i] = ++this._humanSeq;
       this.extra[i] = 0;
-      this._humans.set(this.life[i], { bans: new Set(), banOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0, flee: 0 });
+      this._humans.set(this.life[i], { bans: new Set(), banOrder: [], gas: new Set(), gasOrder: [], dir: Math.random() < 0.5 ? 1 : -1, wet: 0, flee: 0 });
     }
     // Окисел без явно заданной стадии — первой (см. setOxideStage), а
     // рыхлый окисел — сразу последней в своей линейке.
-    if (id === EL.OXIDE || id === EL.METAL_OXIDE) this.extra[i] = 1;
+    if (id === EL.OXIDE || id === EL.METAL_OXIDE || id === EL.COPPER_OXIDE) this.extra[i] = 1;
+    else if (id === EL.COPPER_OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.COPPER_OXIDE_LOOSE].maxStage;
     else if (id === EL.OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.OXIDE_LOOSE].maxStage;
     else if (id === EL.METAL_OXIDE_LOOSE) this.extra[i] = OXIDE_LINE[EL.METAL_OXIDE_LOOSE].maxStage;
   }
 
   clear() {
+    this.resetCharges();
+    // Поле очищено: экраны игроков забывают увиденное (js/play.js).
+    this.mapEpoch = (this.mapEpoch || 0) + 1;
     for (const f of PARTICLE_FIELDS) this[f.name].fill(f.empty);
     this.moved.fill(0);
     this.windVX.fill(0);
@@ -411,6 +467,8 @@ class Sim {
     this._debrisWindVX.fill(0);
     this._windRoll = 1;
     this._humans.clear();
+    this.spawnMarks = [];
+    this.respawnMarks = [];
     this.wakeAll();
   }
 
@@ -465,6 +523,10 @@ class Sim {
     // Состав раствора — тоже свойство частицы, а не точки (как temp).
     t = this.sol[i]; this.sol[i] = this.sol[j]; this.sol[j] = t;
     t = this.sol2[i]; this.sol2[i] = this.sol2[j]; this.sol2[j] = t;
+    t = this.stain[i]; this.stain[i] = this.stain[j]; this.stain[j] = t;
+    t = this.dirt[i]; this.dirt[i] = this.dirt[j]; this.dirt[j] = t;
+    t = this.fall[i]; this.fall[i] = this.fall[j]; this.fall[j] = t;
+    t = this.crushed[i]; this.crushed[i] = this.crushed[j]; this.crushed[j] = t;
     // Движение будит оба куска поля (sim/sleep.js).
     this.markDirty(i);
     this.markDirty(j);
@@ -476,8 +538,22 @@ class Sim {
     this.moved.fill(0);
     this.computeStability();
     this.updateBeams();
-    this.updateWind();
-    this.updateTemp();
+    // Тела, приземлившиеся в прошлом кадре: давление на пятно контакта
+    // (sim/landing.js) — сразу после пересчёта устойчивости.
+    this.updateLanding();
+    // Ветер, тепло и выходы луж друг от друга не зависят и случайных чисел
+    // не тратят: при запущенных потоках они считаются одновременно
+    // (globalPassesParallel, sim/threads.js), побитно так же, как здесь.
+    const par = this._threadCount > 0 && this.threadsReady();
+    // В мультиплеере общая фаза — главным потоком: по потокам ветер за
+    // десятки кадров расходился с одиночным в последних знаках (у рабочих
+    // свои кэши пропуска строк), а мир у вкладок обязан совпадать побайтно.
+    const gpar = par && !this.lockstep;
+    if (gpar) this.globalPassesParallel();
+    else {
+      this.updateWind();
+      this.updateTemp();
+    }
     this.snapshotWindFrame();
     // Один общий "бросок" на весь кадр для ветро-зависимых решений (см.
     // tryWindPush/windDir) — если бы каждая клетка бросала свой Math.random()
@@ -490,16 +566,25 @@ class Sim {
     // срабатывания (в среднем по многим кадрам) остаётся той же chance, что
     // и раньше, просто не независимой по каждой клетке.
     this._windRoll = Math.random();
-    this.computeLiquidEscape();
+    if (!gpar) this.computeLiquidEscape();
     // Какие куски поля считать в этом кадре (см. sim/sleep.js): покоящиеся
     // спят, обход их клеток пропускает. Кэш ветра обломков — после: он
     // считается только для кусков, идущих в обход.
     this.updateSleep();
     this.computeDebrisWindChance();
     // Обход клеток — несколькими потоками, если они запущены и готовы
-    // (sim/threads.js), иначе одним.
-    if (this._threadCount > 0 && this.threadsReady()) this.updateParallel();
+    // (sim/threads.js), иначе одним. В мультиплеере — полосами, одинаково у
+    // всех вкладок, с потоками и без (updateBands, sim/threads.js).
+    if (this.lockstep) this.updateBands(par);
+    else if (par) this.updateParallel();
     else this.updateRows(0, this.h);
+    // Балки, прикреплённые к падающему телу, опускаются вместе с ним
+    // (sim/stability.js) — после обхода: видно, куда тело упало.
+    this.rideBeams();
+    // Заряды (sim/charges.js) — после вещества, на главном потоке.
+    this.updateCharges();
+    // Точки респавна: падение и кислота (sim/spawns.js).
+    this.updateRespawnMarks();
   }
   // Столбцы x0..x1-1 (вертикальная полоса параллельного обхода, см.
   // sim/threads.js) — строками снизу вверх, как updateRows, с тем же
@@ -507,21 +592,22 @@ class Sim {
   // x0 кратно SLEEP_CHUNK, x1 — тоже или правый край поля.
   updateCols(x0, x1) {
     const ltr = (this.frame & 1) === 0;
-    const active = this._chunkActive, cw = this._chunkW;
+    const active = this._chunkActive, cw = this._chunkW, type = this.type, w = this.w;
     const c0 = (x0 / SLEEP_CHUNK) | 0, c1 = Math.ceil(x1 / SLEEP_CHUNK);
     for (let y = this.h - 1; y >= 0; y--) {
       const rowChunk = ((y / SLEEP_CHUNK) | 0) * cw;
+      const row = y * w;
       if (ltr) {
         for (let cx = c0; cx < c1; cx++) {
           if (!active[rowChunk + cx]) continue;
           const xe = Math.min(x1, (cx + 1) * SLEEP_CHUNK);
-          for (let x = cx * SLEEP_CHUNK; x < xe; x++) this.updateCell(x, y);
+          for (let x = cx * SLEEP_CHUNK, i = row + x; x < xe; x++, i++) if (type[i] !== 0) this.updateCell(x, y);
         }
       } else {
         for (let cx = c1 - 1; cx >= c0; cx--) {
           if (!active[rowChunk + cx]) continue;
           const xs = cx * SLEEP_CHUNK;
-          for (let x = Math.min(x1, xs + SLEEP_CHUNK) - 1; x >= xs; x--) this.updateCell(x, y);
+          for (let x = Math.min(x1, xs + SLEEP_CHUNK) - 1, i = row + x; x >= xs; x--, i--) if (type[i] !== 0) this.updateCell(x, y);
         }
       }
     }
@@ -532,22 +618,26 @@ class Sim {
   // порядок остальных — тот же, что и без сна. Отдельной функцией, потому
   // что полосы поля можно считать и в разных потоках (sim/threads.js).
   updateRows(y0, y1) {
-    const w = this.w;
+    const w = this.w, type = this.type;
     const ltr = (this.frame & 1) === 0;
     const active = this._chunkActive, cw = this._chunkW;
+    // Пустые клетки пропускаются прямо здесь, без вызова updateCell (она
+    // для пустой всё равно сразу выходит): в спокойном мире пустота вокруг
+    // бодрствующих кусков — до четырёх пятых всех клеток обхода.
     for (let y = y1 - 1; y >= y0; y--) {
       const rowChunk = ((y / SLEEP_CHUNK) | 0) * cw;
+      const row = y * w;
       if (ltr) {
         for (let cx = 0; cx < cw; cx++) {
           if (!active[rowChunk + cx]) continue;
           const xe = Math.min(w, (cx + 1) * SLEEP_CHUNK);
-          for (let x = cx * SLEEP_CHUNK; x < xe; x++) this.updateCell(x, y);
+          for (let x = cx * SLEEP_CHUNK, i = row + x; x < xe; x++, i++) if (type[i] !== 0) this.updateCell(x, y);
         }
       } else {
         for (let cx = cw - 1; cx >= 0; cx--) {
           if (!active[rowChunk + cx]) continue;
           const xs = cx * SLEEP_CHUNK;
-          for (let x = Math.min(w, xs + SLEEP_CHUNK) - 1; x >= xs; x--) this.updateCell(x, y);
+          for (let x = Math.min(w, xs + SLEEP_CHUNK) - 1, i = row + x; x >= xs; x--, i--) if (type[i] !== 0) this.updateCell(x, y);
         }
       }
     }
@@ -561,7 +651,7 @@ class Sim {
     // В параллельной полосе (sim/threads.js) люди и колонисты
     // откладываются на главный поток: их память — в Map главного потока.
     // Туда же — клонер, который копирует человека.
-    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
+    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || id === EL.PROTAGONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
       this.defer(DEFER_UPDATE, i);
       return;
     }
@@ -570,7 +660,17 @@ class Sim {
 
     const id2 = this.type[i];
     if (id2 === EL.EMPTY || this.moved[i]) return;
+    // Протагонист ходит и падает сам (reactProtagonist): физика сыпучего
+    // скатывала бы его с каждого уступа.
+    if (id2 === EL.PROTAGONIST) return;
     const el2 = ELEMENTS[id2];
+    // Живой человек падает только прямо вниз: физика сыпучего скатывала его
+    // с края уступа по диагонали, и он падал с любой высоты, хотя сам с
+    // уступа выше HUMAN_MAX_DROP не сходит (sim/human.js).
+    if (id2 === EL.HUMAN && !this.extra[i]) {
+      if (y + 1 < this.h) this.attemptSwapOrMove(i, i + this.w, el2, false);
+      return;
+    }
     // windScale=0 у обычного сыпучего (песок и т.п.) — оно и так тяжёлое и
     // осознанно оставлено ветром не сносимым (см. updatePowder).
     if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0.05);
@@ -585,7 +685,11 @@ class Sim {
     // В отличие от обычного песка, ветер ЗАМЕТНО меняет её траекторию
     // падения (windScale>0) — обломки лёгкие и рыхлые в сравнении с целым,
     // ещё держащимся телом.
-    else if (isStructural(id2) && this.stability[i] === 0) this.updatePowder(x, y, i, el2, 0.12);
+    else if (isStructural(id2) && this.stability[i] === 0) {
+      // Падает в составе тела — пометка для пятна контакта (sim/landing.js).
+      this.fall[i] = 1;
+      this.updatePowder(x, y, i, el2, 0.12);
+    }
   }
 
   react(x, y, i, id) {
@@ -603,6 +707,7 @@ class Sim {
       // Сыпучие чёрные соли живут по тем же правилам долей (перемешивание,
       // стягивание, выкипание воды), что и растворы, а сухие — взрываются.
       case EL.BLACK_SALT: this.reactBlackSalt(x, y, i); break;
+      case EL.MUD: this.reactMud(x, y, i); break;
       case EL.ACID_RESIDUE: this.reactAcidResidue(x, y, i); break;
       case EL.OXIDE: case EL.OXIDE_LOOSE: this.reactOxide(x, y, i); break;
       case EL.METAL_OXIDE: case EL.METAL_OXIDE_LOOSE: this.reactRust(x, y, i); break;
@@ -614,7 +719,20 @@ class Sim {
       case EL.WATER: this.reactWater(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
-      case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS: this.reactMelt(x, y, i, id); break;
+      case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS:
+      case EL.CAMERA: case EL.MONITOR: case EL.SOLAR: case EL.GENERATOR: this.reactMelt(x, y, i, id); break;
+      // Усилитель — медь, но на воздухе не зеленеет (copperAir): патина
+      // сменила бы тип, и через минуту усилителя на проводе бы не осталось.
+      case EL.AMPLIFIER: this.reactMelt(x, y, i, id); break;
+      case EL.LAMP: this.reactLamp(x, y, i); break;
+      case EL.COPPER: this.reactCopper(x, y, i); break;
+      case EL.COPPER_OXIDE: this.reactCopperOxide(x, y, i); break;
+      case EL.COPPER_OXIDE_LOOSE: this.reactRust(x, y, i); break;
+      case EL.INSULATOR: this.reactFlammable(x, y, i, id); break;
+      // Расплавы металлов и их смесь — система долей, как у жидкостей (sim/alloys.js).
+      case EL.MOLTEN_COPPER: case EL.MOLTEN_METAL: case EL.MOLTEN_STEEL: case EL.MOLTEN_ALLOY: this.reactMolten(x, y, i); break;
+      case EL.ALLOY: this.reactAlloy(x, y, i); break;
+      case EL.ALLOY_RUST: this.reactAlloyRust(x, y, i); break;
       case EL.EARTH: this.tickMoisture(x, y, i, EL.EARTH); break;
       case EL.WET_EARTH:
         this.tickMoisture(x, y, i, EL.WET_EARTH);
@@ -622,6 +740,7 @@ class Sim {
         break;
       case EL.COLONIST: this.reactColonist(x, y, i); break;
       case EL.HUMAN: this.reactHuman(x, y, i); break;
+      case EL.PROTAGONIST: this.reactProtagonist(x, y, i); break;
     }
   }
 }

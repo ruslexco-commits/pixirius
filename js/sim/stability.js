@@ -31,6 +31,11 @@ for (let id = 0; id < 64; id++) {
   STAB_TOUGHNESS[id] = (ELEMENTS[id] && ELEMENTS[id].toughness) || 1;
 }
 
+// Сколько отдельных групп балок за кадр могут ехать вместе с падающими
+// телами (см. rideBeams). Сверх этого группа просто висит, пока тело не
+// уйдёт, — на практике падающих тел с балками единицы.
+const BEAM_RIDE_MAX_GROUPS = 1024;
+
 class SimStability {
   // Поставить балку из материала mat (стадия окисла extra) во второй слой.
   // Провести её можно только сквозь пустоту, жидкость или газ: в уже
@@ -60,7 +65,9 @@ class SimStability {
       const i = this.idx(x, y);
       const t = this.type[i];
       if (IS_STRUCTURAL[t] === 1 && t !== EL.OILFILM) {
-        mat = t;
+        // У балки нет состава, только материал: со сплава берётся его
+        // преобладающая доля.
+        mat = t === EL.ALLOY ? this.alloyMainPart(i) : t;
         extra = IS_OXIDE[t] === 1 ? this.oxideStage(i) : 0;
       } else if (this.beam[i]) {
         mat = this.beam[i];
@@ -221,6 +228,10 @@ class SimStability {
         }
       }
     }
+    // Продавленные (sim/landing.js) опору дальше передают — тело на них и
+    // остальной пол держатся как обычно, — но сами стоят с устойчивостью 0
+    // и осыпаются, если есть куда.
+    if (this._crushLive) this.zeroCrushedStability();
   }
 
   // Изменился ли с прошлого вызова "скелет" — всё, что читает
@@ -258,11 +269,54 @@ class SimStability {
         for (let x = x0; x < x1; x++) {
           const i = y * w + x;
           const s = this.stabSignature(i);
-          if (sig[i] !== s) { sig[i] = s; changed = true; }
+          if (sig[i] !== s) {
+            if (!changed && !this.stabChangeHarmless(i, sig[i], s)) changed = true;
+            sig[i] = s;
+          }
         }
       }
     }
     return changed;
+  }
+
+  // Смена подписи клетки i (old -> now), которая заведомо не меняет
+  // результат computeStability: пересчёт дал бы те же stability и
+  // sideCounter. Так летящее тело (просьба пользователя: "при падении
+  // подлагивает") не пересчитывает устойчивость всего поля каждый кадр:
+  // пока оно в воздухе, все его клетки — обломки с устойчивостью 0, и ни
+  // одна не касается ничего держащегося. Условия:
+  //  - на месте клетки устойчивость была 0 — ушедшее ничего не держало
+  //    (устойчивость течёт только от клеток с устойчивостью больше нуля);
+  //  - ни до, ни после это не якорь, не балка (её путь рвётся, когда в её
+  //    клетку входит твёрдое), не продавленная клетка (она передаёт опору,
+  //    сама стоя с нулём) и не застывшее масло (своя связь);
+  //  - новое твёрдое — не в нижнем ряду и не рядом с якорем (там его
+  //    засевают) и не касается клетки с устойчивостью больше нуля или
+  //    продавленной: тогда оно и после пересчёта осталось бы с нулём.
+  // Позиционный массив stability после такого кадра по-прежнему верен:
+  // на месте ушедшего обломка был 0, и на месте пришедшего — 0. Проверка —
+  // "Быстрые пути" в tools/check.js: каждый пропуск там пересчитывается
+  // честно и сравнивается.
+  stabChangeHarmless(i, old, now) {
+    const stab = this.stability;
+    if (stab[i] !== 0) return false;
+    if ((old | now) & 0xC000) return false;   // балка (0x8000) или продавленная (0x4000)
+    if (old !== 0) {
+      const ot = (old & 0x7f) - 1;
+      if (IS_ANCHOR[ot] === 1 || ot === EL.OILFILM) return false;
+    }
+    if (now !== 0) {
+      const type = this.type, t = type[i];
+      if (IS_ANCHOR[t] === 1 || t === EL.OILFILM) return false;
+      const w = this.w, h = this.h, x = i % w, y = (i / w) | 0;
+      if (y === h - 1) return false;
+      const crushed = this.crushed;
+      if (x > 0 && (stab[i - 1] !== 0 || IS_ANCHOR[type[i - 1]] === 1 || crushed[i - 1] !== 0)) return false;
+      if (x < w - 1 && (stab[i + 1] !== 0 || IS_ANCHOR[type[i + 1]] === 1 || crushed[i + 1] !== 0)) return false;
+      if (y > 0 && (stab[i - w] !== 0 || IS_ANCHOR[type[i - w]] === 1 || crushed[i - w] !== 0)) return false;
+      if (stab[i + w] !== 0 || IS_ANCHOR[type[i + w]] === 1 || crushed[i + w] !== 0) return false;
+    }
+    return true;
   }
 
   // Подпись одной клетки для structureChanged.
@@ -270,7 +324,12 @@ class SimStability {
     const t = this.type[i];
     if (IS_STRUCTURAL[t] === 1 || IS_ANCHOR[t] === 1) {
       let s = t + 1;
+      if (this.crushed[i]) s |= 0x4000;   // продавленная держится иначе (см. zeroCrushedStability)
       if (t === EL.OILFILM) s |= this.extra[i] << 7;
+      // Устойчивость и стойкость сплава — по его долям: ржавление доли
+      // может их поменять, не меняя типа клетки (4 и 3 бита хватает:
+      // устойчивость до 14, стойкость до 7).
+      else if (t === EL.ALLOY) s |= (this.alloyStability(i) & 15) << 7 | (this.alloyToughness(i) & 7) << 11;
       else if (OXIDE_FRAIL_FROM[t] !== 0 && this.oxideFrail(i)) s |= 1 << 7;
       return s;
     }
@@ -325,26 +384,107 @@ class SimStability {
   // балка действительно стоит.
   updateBeams() {
     const n = this.w * this.h;
+    const beam = this.beam;
+    this._beamGen = (this._beamGen || 0) + 1;
+    // Едущие с падающим телом группы этого кадра (см. beamGroupLoose, rideBeams).
+    if (!this._rideGroups) this._rideGroups = new Int32Array(BEAM_RIDE_MAX_GROUPS * 4);
+    this._rideN = 0; this._rideCellN = 0; this._rideDebN = 0;
+    // Балок на поле обычно единицы, а проход по 187 тыс. байт по одному
+    // стоил полмиллисекунды каждый кадр. Слой читается словами по 4
+    // клетки: нулевое слово — четыре клетки без балок разом. Порядок
+    // клеток тот же (по возрастанию), так что и итог тот же. Вид
+    // заводится заново, если массив заменили (общая память потоков).
+    if (!this._beamWords || this._beamWords.buffer !== beam.buffer) this._beamWords = new Uint32Array(beam.buffer, 0, n >> 2);
+    const words = this._beamWords, nw = n >> 2;
+    for (let k = 0; k < nw; k++) {
+      if (words[k] === 0) continue;
+      for (let i = k << 2, e = i + 4; i < e; i++) if (beam[i]) this.updateBeamCell(i);
+    }
+    for (let i = nw << 2; i < n; i++) if (beam[i]) this.updateBeamCell(i);
+  }
+
+  // Одна клетка с балкой (см. updateBeams).
+  updateBeamCell(i) {
     const beam = this.beam, type = this.type, stab = this.stability;
-    for (let i = 0; i < n; i++) {
-      if (!beam[i]) continue;
-      const t = type[i];
-      const ownStability = IS_STRUCTURAL[t] !== 1 && IS_ANCHOR[t] !== 1;
-      if (ownStability && stab[i] === 0) {
-        // Осыпавшаяся балка становится своим материалом — но только если
-        // клетка свободна. Занятую (водой, газом) не трогаем: балка
-        // исчезает, ничего никуда не вытесняя.
-        if (t === EL.EMPTY) this.dropBeam(i); else this.removeBeam(i);
-        continue;
-      }
-      // У материала без точки плавления (дерево, лёд) meltRoll просто
-      // ложна — и случайное число не тратится.
-      const mat = beam[i];
-      if (t === EL.EMPTY && this.meltRoll(i, mat)) {
-        this.removeBeam(i);
-        this.spawn(i, ELEMENTS[mat].meltsInto, false);
+    const t = type[i];
+    const ownStability = IS_STRUCTURAL[t] !== 1 && IS_ANCHOR[t] !== 1;
+    // Балка осыпается, только когда её связная группа (соседние по
+    // стороне балки) не касается ни одного пикселя вещества (просьба
+    // пользователя). Раньше — как только устойчивость падала до нуля: тело,
+    // к которому она прикреплена, чуть сдвигалось, и балка тут же
+    // становилась камнем, непроходимым для всего. Держит балка, как и
+    // прежде, по устойчивости (computeStability); висеть, пока касается
+    // чего-то, может и без неё.
+    if (ownStability && stab[i] === 0 && this.beamGroupLoose(i)) return;
+    // У материала без точки плавления (дерево, лёд) meltRoll просто
+    // ложна — и случайное число не тратится.
+    const mat = beam[i];
+    if (t === EL.EMPTY && this.meltRoll(i, mat)) {
+      this.removeBeam(i);
+      this.spawn(i, ELEMENTS[mat].meltsInto, false);
+    }
+  }
+
+  // Группа балок клетки i ни к чему не прикасается — тогда она вся
+  // осыпается (true). Касанием считается любой сосед (и содержимое самих
+  // клеток группы), кроме пустоты и газа, а ещё нижний край поля. Группа
+  // обходится один раз за кадр: остальные её клетки видят пометку
+  // _beamSeen и ответ _beamLoose.
+  //
+  // Группа без опоры, которая касается падающего тела (обломков со
+  // стойкостью 0) и ничего держащегося, записывается в "едущие"
+  // (_ride*): после обхода клеток rideBeams опустит её вместе с телом.
+  // Иначе тело проваливалось сквозь свои балки (движение о них не знает),
+  // они оставались висеть и, когда тело уходило, осыпались отдельно
+  // камнем (жалоба "балки вылетают из структуры во время её падения").
+  beamGroupLoose(i) {
+    const n = this.w * this.h, w = this.w, h = this.h;
+    if (!this._beamSeen || this._beamSeen.length !== n) { this._beamSeen = new Int32Array(n); this._beamStack = new Int32Array(n); this._beamList = new Int32Array(n); }
+    const seen = this._beamSeen, gen = this._beamGen;
+    if (seen[i] === gen) return false;   // группа уже решена и оставлена
+    const beam = this.beam, type = this.type, stab = this.stability, stack = this._beamStack, list = this._beamList;
+    if (!this._rideDebris || this._rideDebris.length !== n) { this._rideDebris = new Int32Array(n); this._rideCells = new Int32Array(n); }
+    const debris = this._rideDebris, deb0 = this._rideDebN;
+    let sp = 0, cnt = 0, touches = false, held = false, debN = deb0;
+    stack[sp++] = i; seen[i] = gen;
+    while (sp > 0) {
+      const c = stack[--sp];
+      list[cnt++] = c;
+      const x = c % w, y = (c / w) | 0;
+      if (y === h - 1) { touches = true; held = true; }
+      const ct = type[c];
+      if (ct !== EL.EMPTY && IS_GASLIKE[ct] !== 1) touches = true;
+      // Своя стойкость больше нуля (часть группы держится) или в клетке
+      // лежит держащееся твёрдое — группа стоит, никуда не едет.
+      if (IS_ANCHOR[ct] === 1 || stab[c] > 0) held = true;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX4[k], ny = y + DY4[k];
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const j = ny * w + nx;
+        if (beam[j]) { if (seen[j] !== gen) { seen[j] = gen; stack[sp++] = j; } continue; }
+        const nt = type[j];
+        if (nt !== EL.EMPTY && IS_GASLIKE[nt] !== 1) touches = true;
+        if (IS_ANCHOR[nt] === 1 || (IS_STRUCTURAL[nt] === 1 && stab[j] > 0)) held = true;
+        else if (IS_STRUCTURAL[nt] === 1) debris[debN++] = j;
       }
     }
+    if (touches && !held && debN > deb0 && this._rideN < BEAM_RIDE_MAX_GROUPS) {
+      const g = this._rideN++ * 4, groups = this._rideGroups, cells = this._rideCells;
+      groups[g] = this._rideCellN; groups[g + 1] = cnt;
+      groups[g + 2] = deb0; groups[g + 3] = debN - deb0;
+      cells.set(list.subarray(0, cnt), this._rideCellN);
+      this._rideCellN += cnt;
+      this._rideDebN = debN;
+    }
+    if (touches) return false;
+    // Осыпавшаяся балка становится своим материалом — но только если
+    // клетка свободна. Занятую (газом) не трогаем: балка исчезает, ничего
+    // никуда не вытесняя.
+    for (let k = 0; k < cnt; k++) {
+      const c = list[k];
+      if (type[c] === EL.EMPTY) this.dropBeam(c); else this.removeBeam(c);
+    }
+    return true;
   }
 
   // Балка в пустой клетке осыпается своим материалом (окисел — со своей
@@ -357,14 +497,70 @@ class SimStability {
     if (IS_OXIDE[mat] === 1) this.setOxideStage(i, stage);
   }
 
+  // После обхода клеток: группы, записанные в beamGroupLoose как едущие
+  // с падающим телом, опускаются на клетку, если тело рядом с ними в этом
+  // кадре действительно упало (не меньше половины соседних обломков
+  // оказались клеткой ниже: moved и fall). Решать после обхода, а не до
+  // него, — чтобы балка не обгоняла тело, которое застряло или легло.
+  // Опускается группа целиком, только если под ней нет ничего, куда балку
+  // не ставят (твёрдое держащееся, сыпучее, люди): в падающее тело —
+  // можно, оно и так проходит сквозь балки.
+  rideBeams() {
+    const nGroups = this._rideN;
+    if (!nGroups) return;
+    const w = this.w, n = w * this.h;
+    const beam = this.beam, beamExtra = this.beamExtra, type = this.type, moved = this.moved, fall = this.fall;
+    const groups = this._rideGroups, cells = this._rideCells, debris = this._rideDebris;
+    if (!this._rideMark || this._rideMark.length !== n) { this._rideMark = new Int32Array(n); this._rideStamp = 0; }
+    const mark = this._rideMark;
+    for (let g = 0; g < nGroups; g++) {
+      const c0 = groups[g * 4], cn = groups[g * 4 + 1], d0 = groups[g * 4 + 2], dn = groups[g * 4 + 3];
+      let fell = 0;
+      for (let k = d0; k < d0 + dn; k++) {
+        const j = debris[k] + w;
+        if (j < n && moved[j] && fall[j] && IS_STRUCTURAL[type[j]] === 1) fell++;
+      }
+      if (fell * 2 < dn) continue;
+      const stamp = ++this._rideStamp;
+      for (let k = c0; k < c0 + cn; k++) mark[cells[k]] = stamp;
+      let blocked = false;
+      for (let k = c0; k < c0 + cn; k++) {
+        const c = cells[k];
+        // Группу могла сдвинуть на себя соседняя едущая — тогда клетки уже нет.
+        if (!beam[c]) { blocked = true; break; }
+        const j = c + w;
+        if (j >= n) { blocked = true; break; }
+        if (mark[j] === stamp) continue;
+        if (beam[j]) { blocked = true; break; }
+        const t = type[j];
+        if (t === EL.EMPTY || IS_GASLIKE[t] === 1 || IS_LIQUID[t] === 1) continue;
+        if (IS_STRUCTURAL[t] === 1 && fall[j] && moved[j]) continue;
+        blocked = true; break;
+      }
+      if (blocked) continue;
+      // Снизу вверх: клетка под балкой группы освобождается раньше, чем в
+      // неё переедет верхняя.
+      const list = cells.subarray(c0, c0 + cn).sort();
+      for (let k = cn - 1; k >= 0; k--) {
+        const c = list[k], j = c + w;
+        beam[j] = beam[c]; beamExtra[j] = beamExtra[c];
+        beam[c] = 0; beamExtra[c] = 0;
+        this.markDirty(c); this.markDirty(j);
+      }
+    }
+    this._rideN = 0;
+  }
+
   // maxStability/toughness клетки с поправкой на стадию окисления (у балки
   // — по стадии её материала, см. stabFrail).
   cellStability(i, id) {
+    if (id === EL.ALLOY) return this.alloyStability(i);   // средняя по долям (sim/alloys.js)
     if (this.stabFrail(i)) return OXIDE_FRAIL_STABILITY;
     return STAB_MAX[id];
   }
 
   cellToughness(i, id) {
+    if (id === EL.ALLOY) return this.alloyToughness(i);
     if (this.stabFrail(i)) return OXIDE_FRAIL_TOUGHNESS;
     return STAB_TOUGHNESS[id];
   }

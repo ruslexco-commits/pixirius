@@ -3,8 +3,25 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Пиксилиус</title>
+<title>Пиксириус</title>
 <link rel="stylesheet" href="css/style.css">
+<script>
+// На статическом хостинге (GitHub Pages) нет заголовков COOP/COEP, без них
+// нет SharedArrayBuffer и потоков симуляции. Их добавляет сервис-воркер
+// coi-sw.js: ставим его и один раз перезагружаемся, чтобы страница пришла
+// уже через него. Локально (tools/serve.js шлёт заголовки сам) страница
+// изолирована сразу, и воркер не ставится. Не вышло — игра идёт в одном
+// потоке, как и раньше без заголовков; метка в sessionStorage не даёт
+// перезагружаться по кругу.
+(function () {
+  if (window.crossOriginIsolated || !window.isSecureContext || !('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('coi-sw.js').then(function (reg) {
+    if (navigator.serviceWorker.controller) return;
+    try { if (sessionStorage.getItem('pixCoiReload')) return; sessionStorage.setItem('pixCoiReload', '1'); } catch (e) { return; }
+    navigator.serviceWorker.ready.then(function () { location.reload(); });
+  }).catch(function () {});
+})();
+</script>
 </head>
 <body>
 <div id="app">
@@ -60,9 +77,16 @@
     'js/sim/chemistry.js',
     'js/sim/oxides.js',
     'js/sim/explosion.js',
+    'js/sim/mud.js',
+    'js/sim/alloys.js',
+    'js/sim/landing.js',
     'js/sim/sleep.js',
     'js/sim/threads.js',
     'js/sim/human.js',
+    'js/sim/protagonist.js',
+    'js/sim/charges.js',
+    'js/sim/spawns.js',
+    'js/sim/lockstep.js',
     'js/sim/colonist.js',
     'js/sim/painting.js',
     'js/sim/persistence.js',
@@ -70,6 +94,10 @@
     'js/render-gl.js',
     'js/input.js',
     'js/inspect.js',
+    'js/play.js',
+    'js/mp-wire.js',
+    'js/net.js',
+    'js/lobby.js',
     'js/main.js'
   ];
   var v = Date.now();
