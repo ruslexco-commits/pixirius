@@ -39,7 +39,7 @@
 // мультиплеере не работают); замер "обход тяжёлый" — по часам вкладки;
 // состояние кисти (стадия окисла, материал балки) — у каждого игрока своё,
 // с действием оно идёт отдельно (net.js, MP_PAINT_CTX).
-const LOCKSTEP_SKIP = new Set(['paused', 'timeScale', 'lockstep', '_rngFn', 'paintOxideStage', 'beamPaintMaterial', 'beamPaintExtra',
+const LOCKSTEP_SKIP = new Set(['paused', 'timeScale', 'lockstep', '_rngFn', 'paintOxideStage', 'beamPaintMaterial', 'beamPaintExtra', 'loadWanted',
   '_tctrl', '_tstripes', '_tparams', '_deferQ', '_threadCount', '_threadHandles', '_rowsHeavy']);
 
 class SimLockstep {

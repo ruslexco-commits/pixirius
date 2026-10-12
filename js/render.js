@@ -1180,6 +1180,7 @@ class Renderer {
     this.debugWind = !!cursor.debugWind;
     this.debugTherm = !!cursor.debugTherm;
     this.debugLoad = !!cursor.debugLoad;
+    this.sim.loadWanted = this.debugLoad;
     this.drawFrame();
     this.updateLighting();
     if (this.lightOn) {

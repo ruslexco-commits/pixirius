@@ -1932,5 +1932,45 @@ console.log('40. Отравление реагентом, сыпучие рас�
   ok(inCave === 0, `спавн из 40 раз ни разу не в закрытой пещере (${inCave})`);
 }
 
+console.log('41. Нагрузка на пиксели (sim/load.js): вся масса доходит до опор; перешеек под тяжёлым блоком не выдерживает, столб на полу стоит');
+{
+  const mk = () => {
+    const s = new Sim(120, 140);
+    box(s, 0, 137, 119, 139, EL.STONE);            // пол
+    box(s, 50, 116, 70, 136, EL.METAL);            // нижний кусок
+    box(s, 59, 112, 61, 115, EL.METAL);            // перешеек в три пикселя
+    box(s, 30, 42, 90, 111, EL.METAL);             // тяжёлый блок
+    s.lookColor = () => [0, 0, 0];
+    return s;
+  };
+  const s = mk();
+  s.loadWanted = true;
+  s.step(); s.step();
+  let mass = 0, root = 0;
+  for (let i = 0; i < s.type.length; i++) {
+    if (s._loadDist[i] >= 0) mass += g('PIXEL_MASS')[s.type[i]];
+    if (s._loadDist[i] === 0) root += s.load[i];
+  }
+  ok(mass > 0 && Math.abs(mass - root) < 1e-3 * mass, `масса твёрдого ${mass.toFixed(2)}, дошло до опор ${root.toFixed(2)}`);
+  // Блок давит на боковые пиксели перешейка (средний несёт лишь свой столб).
+  let neck = s.idx(59, 113);
+  for (const x of [60, 61]) if (s.load[s.idx(x, 113)] > s.load[neck]) neck = s.idx(x, 113);
+  ok(s.load[neck] > 3 * s.loadCap(neck), `перешеек перегружен: ${s.load[neck].toFixed(1)} при пределе ${s.loadCap(neck).toFixed(1)}`);
+  // Сплошной столб на полу: нагрузка большая, но деваться ему некуда.
+  const col = new Sim(40, 140);
+  box(col, 0, 137, 39, 139, EL.STONE); box(col, 10, 10, 29, 136, EL.METAL);
+  col.loadYieldOn = true; col.lookColor = () => [0, 0, 0];
+  const before = col.type.slice();
+  for (let k = 0; k < 60; k++) col.step();
+  let diff = 0; for (let i = 0; i < before.length; i++) if (before[i] !== col.type[i]) diff++;
+  ok(diff === 0, `сплошной столб металла 127 в высоту на полу стоит: изменилось клеток ${diff}`);
+  // Выключено — перешеек стоит; включено — лопается, блок оседает.
+  const off = mk(); for (let k = 0; k < 150; k++) off.step();
+  const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 150; k++) on.step();
+  // Центр масс металла по высоте: оседание блока сдвигает его вниз (y растёт).
+  const comY = (sim) => { let n = 0, sy = 0; for (let i = 0; i < sim.type.length; i++) if (sim.type[i] === EL.METAL) { n++; sy += (i / sim.w) | 0; } return sy / n; };
+  ok(comY(on) > comY(off) + 0.3 && count(on, EL.METAL) === count(off, EL.METAL), `центр масс металла по высоте: без сдвигов ${comY(off).toFixed(2)}, со сдвигами ${comY(on).toFixed(2)}; металла ${count(on, EL.METAL)} и ${count(off, EL.METAL)}`);
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);

@@ -181,6 +181,14 @@ function togglePause() { sim.paused = !sim.paused; refreshPauseIcon(); }
 btnPause.addEventListener('click', togglePause);
 btnClear.addEventListener('click', () => { sim.clear(); });
 
+// Клавиша 5 — сдвиги под нагрузкой (sim/load.js): тяжёлое продавливает и
+// выдавливает опору, нависшее проседает. Пока выключено по умолчанию.
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Digit5' || e.repeat || (lobby && lobby.visible) || document.body.classList.contains('start')) return;
+  sim.loadYieldOn = !sim.loadYieldOn;
+  statusLabel.textContent = sim.loadYieldOn ? 'Нагрузка: сдвиги вкл (клавиша 5)' : 'Нагрузка: сдвиги выкл (клавиша 5)';
+});
+
 window.addEventListener('keydown', (e) => {
   // В лобби паузы нет (пробел — прыжок протагониста, js/lobby.js), на
   // стартовом экране — тоже.
