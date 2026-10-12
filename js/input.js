@@ -84,6 +84,7 @@ class InputController {
     this.debugStability = false;
     this.debugWind = false;
     this.debugTherm = false;
+    this.debugLoad = false;
 
     // (gx, gy, clientX, clientY) => void — щелчок лупой по клетке. Задаёт
     // main.js: что показать, решает интерфейс, а не ввод.
@@ -417,6 +418,8 @@ class InputController {
       if (!e.repeat) this.debugWind = !this.debugWind;
     } else if (e.code === 'Digit3') {
       if (!e.repeat) this.debugTherm = !this.debugTherm;
+    } else if (e.code === 'Digit4') {
+      if (!e.repeat) this.debugLoad = !this.debugLoad;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -717,6 +720,7 @@ class InputController {
       debugStability: this.debugStability,
       debugWind: this.debugWind,
       debugTherm: this.debugTherm,
+      debugLoad: this.debugLoad,
     };
   }
 }

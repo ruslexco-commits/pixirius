@@ -171,6 +171,7 @@ class Renderer {
     this.debugStability = false;
     this.debugWind = false;
     this.debugTherm = false;
+    this.debugLoad = false;
     // Вспышки мониторов (updateMonitorGlow): номер монитора → { seq, start }
     // и клетки, светящиеся в этом кадре, → сила 0..1.
     this._glowSeen = new Map();
@@ -538,6 +539,7 @@ class Renderer {
     const sim = this.sim;
     const id = sim.type[i];
     if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
+    if (this.debugLoad && isStructural(id)) return this.loadColor(i);
     const x = i % sim.w, y = (i / sim.w) | 0;
 
     if (id === EL.EMPTY) {
@@ -736,6 +738,18 @@ class Renderer {
     return [r, g, 40];
   }
 
+  // Нагрузка (клавиша 4, sim/load.js): доля от предела пикселя — от зелёного
+  // (почти не нагружен) через жёлтый к красному (у предела); перегруженный
+  // (больше предела) — белый. Не держащееся твёрдое (обломок) — серое.
+  loadColor(i) {
+    const sim = this.sim;
+    if (sim.load[i] <= 0) return [90, 90, 96];
+    const r = sim.load[i] / sim.loadCap(i);
+    if (r > 1) return [255, 255, 255];
+    if (r < 0.5) return [Math.round(255 * (r / 0.5)), 255, 40];
+    return [255, Math.round(255 * (1 - (r - 0.5) / 0.5)), 40];
+  }
+
   // Направление и сила локального ветра как цвет: угол вектора (vx,vy) -
   // оттенок по цветовому кругу (вправо - красный, вверх - жёлто-зелёный,
   // влево - голубой, вниз - сине-фиолетовый), величина - яркость. Совсем
@@ -794,12 +808,14 @@ class Renderer {
   }
 
   drawFrame() {
-    if (this.gpu && this.gpu.paint(this.debugFlags())) {
+    // Вид нагрузки есть только на CPU-пути (отладка, шейдер ему не нужен):
+    // видеокарта на это время просто пропускается, а не отключается.
+    if (this.gpu && !this.debugLoad && this.gpu.paint(this.debugFlags())) {
       this.frameSource = this.gpu.canvas;
     } else {
       // Нет видеокарты или потерян контекст — рисуем на CPU. Потерянный
       // контекст сам не вернётся, поэтому GPU-путь отключается совсем.
-      if (this.gpu) { console.warn('WebGL-контекст потерян, рисуем на CPU'); this.gpu = null; }
+      if (this.gpu && !this.debugLoad) { console.warn('WebGL-контекст потерян, рисуем на CPU'); this.gpu = null; }
       this.buildImage();
       this.offCtx.putImageData(this.imageData, 0, 0);
       this.frameSource = this.off;
@@ -1163,6 +1179,7 @@ class Renderer {
     this.debugStability = !!cursor.debugStability;
     this.debugWind = !!cursor.debugWind;
     this.debugTherm = !!cursor.debugTherm;
+    this.debugLoad = !!cursor.debugLoad;
     this.drawFrame();
     this.updateLighting();
     if (this.lightOn) {
@@ -1215,7 +1232,7 @@ class Renderer {
       this.lastZoomBoxRect = null;
     }
 
-    if (this.debugStability || this.debugWind || this.debugTherm) {
+    if (this.debugStability || this.debugWind || this.debugTherm || this.debugLoad) {
       const hovering = cursor.zoomHoverGX !== null && cursor.zoomHoverGX !== undefined;
       if (hovering) this.drawDebugInfo(cursor.zoomHoverGX, cursor.zoomHoverGY);
       else if (cursor.showBrush) this.drawDebugInfo(cursor.gx, cursor.gy);
@@ -1230,6 +1247,14 @@ class Renderer {
     if (!isStructural(id)) return ELEMENTS[id].name;
     const maxS = ELEMENTS[id].maxStability || 0;
     return `${ELEMENTS[id].name}: заземлённость ${sim.stability[i]}/${maxS}`;
+  }
+
+  loadInfoText(gx, gy) {
+    const sim = this.sim;
+    const i = sim.idx(gx, gy);
+    if (!isStructural(sim.type[i])) return 'Нагрузка: не твёрдое';
+    const cap = sim.loadCap(i);
+    return `Нагрузка ${sim.load[i].toFixed(2)} из ${cap.toFixed(2)} (${Math.round(100 * sim.load[i] / cap)}%), давит (${sim.loadFX[i].toFixed(2)}; ${sim.loadFY[i].toFixed(2)})`;
   }
 
   windInfoText(gx, gy) {
@@ -1253,6 +1278,7 @@ class Renderer {
     if (this.debugStability) lines.push(this.stabilityInfoText(gx, gy));
     if (this.debugWind) lines.push(this.windInfoText(gx, gy));
     if (this.debugTherm) lines.push(this.tempInfoText(gx, gy));
+    if (this.debugLoad) lines.push(this.loadInfoText(gx, gy));
     if (!lines.length) return;
 
     const ctx = this.ctx;

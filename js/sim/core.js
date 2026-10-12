@@ -299,6 +299,7 @@ class Sim {
     this.initProtagonist();
     this.initCharges();
     this.initSpawns();
+    this.initLoad();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -538,6 +539,8 @@ class Sim {
     this.moved.fill(0);
     this.computeStability();
     this.updateBeams();
+    // Нагрузка на пиксели (sim/load.js): пересчёт при смене скелета.
+    this.updateLoad();
     // Тела, приземлившиеся в прошлом кадре: давление на пятно контакта
     // (sim/landing.js) — сразу после пересчёта устойчивости.
     this.updateLanding();
