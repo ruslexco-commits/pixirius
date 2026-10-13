@@ -591,6 +591,51 @@ lobby = new Lobby({
   document.getElementById('tools').appendChild(btn);
 }
 
+// ---- настройки (шестерёнка) ----
+
+// Кнопка в ряду инструментов открывает окно настроек (просьба пользователя:
+// "добавь шестерню в кнопки наряду со скачкой, остановкой времени,
+// мультиплеером; там можно будет это выбрать"). Пока в нём физика нагрузки
+// (sim/load.js): сдвиги под нагрузкой и вид нагрузки — то же, что клавиши 5 и
+// 4; окно читает состояние при открытии, так что клавиши и окно не расходятся.
+{
+  ICONS.gear = ['0010100', '0111110', '1110111', '1100011', '1110111', '0111110', '0010100'];
+  const menu = document.createElement('div');
+  menu.className = 'lb-menu st-menu';
+  document.body.appendChild(menu);
+  const btn = document.createElement('button');
+  btn.id = 'btnSettings';
+  btn.className = 'tool-btn';
+  btn.type = 'button';
+  btn.title = 'Настройки';
+  btn.innerHTML = pixelSvg(ICONS.gear, ICON_COLOR);
+  document.getElementById('tools').appendChild(btn);
+
+  const row = (key, title, hint) => `<label class="st-row"><input type="checkbox" data-k="${key}"><span><b>${title}</b><small>${hint}</small></span></label>`;
+  function openSettings() {
+    menu.innerHTML = '<div class="lb-menu-title">Настройки</div>'
+      + '<div class="st-group">Физика нагрузки</div>'
+      + row('yield', 'Сдвиги под нагрузкой', 'Перегруженный пиксель продавливается и выдавливается, нависшее проседает (клавиша 5). Тяжёлые постройки, вроде «Вышки», при этом оседают, и кадр дорожает.')
+      + row('view', 'Показывать нагрузку', 'Твёрдое красится от зелёного к красному, перегруженное — белым (клавиша 4).')
+      + '<div class="lb-menu-hint">В мультиплеере сдвиги задаёт хост.</div>';
+    const yieldBox = menu.querySelector('[data-k=yield]'), viewBox = menu.querySelector('[data-k=view]');
+    yieldBox.checked = sim.loadYieldOn;
+    yieldBox.disabled = !!(mp && mp.role === 'client');
+    viewBox.checked = input.debugLoad;
+    yieldBox.addEventListener('change', () => { sim.loadYieldOn = yieldBox.checked; });
+    viewBox.addEventListener('change', () => { input.debugLoad = viewBox.checked; });
+    const r = btn.getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + 'px';
+    menu.style.left = Math.max(8, Math.min(window.innerWidth - 300, r.right - 280)) + 'px';
+    menu.classList.add('visible');
+  }
+  btn.addEventListener('click', () => { if (menu.classList.contains('visible')) menu.classList.remove('visible'); else openSettings(); });
+  document.addEventListener('mousedown', (e) => {
+    if (menu.classList.contains('visible') && !menu.contains(e.target) && !e.target.closest('#btnSettings')) menu.classList.remove('visible');
+  });
+  window.addEventListener('keydown', (e) => { if (e.code === 'Escape' && menu.classList.contains('visible')) menu.classList.remove('visible'); });
+}
+
 // ---- стартовый экран ----
 
 // При заходе в игру — две кнопки (просьба пользователя): "Выживание"

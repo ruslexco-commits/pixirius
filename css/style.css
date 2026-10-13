@@ -426,3 +426,11 @@ body.mp-client #btnClear, body.mp-client #btnSave, body.mp-client #btnLoad { dis
 .lb-stats-t th { color: #a8a8b4; font-weight: 600; }
 #lobbySide .lb-statbtn { background: #24242c; color: #e8e8ec; border: 1px solid #4a4a54; padding: 6px 12px; cursor: pointer; font: inherit; }
 #mpChat .ch-death { color: #ff5a4a !important; font-style: normal; font-weight: 600; }
+
+/* Окно настроек (шестерёнка в ряду инструментов, js/main.js) */
+.st-menu { width: 300px; }
+.st-group { font-size: 12px; color: #8a8a94; text-transform: uppercase; letter-spacing: 0.05em; }
+.st-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 14px; }
+.st-row input { margin-top: 3px; }
+.st-row b { display: block; font-weight: 600; }
+.st-row small { display: block; font-size: 12px; color: #8a8a94; line-height: 1.4; margin-top: 2px; }
