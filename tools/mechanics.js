@@ -1178,8 +1178,8 @@ console.log('25. Сплавы: расплавы смешиваются, свой
     const b = alloyAt(s, 4, 2, mix(EL.COPPER, 5, EL.METAL, 5));
     const c = alloyAt(s, 6, 2, mix(EL.STONE, 5, EL.METAL, 5));
     const d = alloyAt(s, 8, 2, mix(EL.STONE, 4, EL.COPPER, 6));
-    ok(s.type[a] === EL.ALLOY && s.cellStability(a, EL.ALLOY) === 12 && s.cellToughness(a, EL.ALLOY) === 6,
-      `металл 5 + сталь 5: устойчивость ${s.cellStability(a, EL.ALLOY)} (10 и 14 → 12), стойкость ${s.cellToughness(a, EL.ALLOY)} (5 и 7 → 6)`);
+    ok(s.type[a] === EL.ALLOY && s.cellStability(a, EL.ALLOY) === 12 && s.cellToughness(a, EL.ALLOY) === 10,
+      `металл 5 + сталь 5: устойчивость ${s.cellStability(a, EL.ALLOY)} (10 и 14 → 12), стойкость ${s.cellToughness(a, EL.ALLOY)} (5 и 14 → 9,5, округляется до 10; сталь вдвое стойче прежней)`);
     ok(s.chargeStepAt(b) === 2 && s.chargeStepAt(c) === 0 && s.chargeStepAt(d) === 1,
       `ток: медь 5 + металл 5 — ${s.chargeStepAt(b)} кадр. на клетку (1 и 2), камень 5 + металл 5 — ${s.chargeStepAt(c)} (не проводит), камень 4 + медь 6 — ${s.chargeStepAt(d)}`);
     ok(Math.abs(s.alloyAcidChance(c) - 0.0375) < 1e-9, `кислота: камень 5 + металл 5 — шанс ${s.alloyAcidChance(c)} (0.06 и 0.015 → 0.0375)`);
@@ -2027,6 +2027,32 @@ console.log('43. Балки в нагрузке: несут вес, не дви�
   const off = mk(); for (let k = 0; k < 120; k++) off.step();
   const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 120; k++) on.step();
   ok(beams(off) === n0 && beams(on) < n0, `балок: было ${n0}, без сдвигов ${beams(off)}, со сдвигами ${beams(on)}`);
+}
+
+console.log('44. Давление жидкостей в нагрузке; сталь вдвое стойче');
+{
+  const mk = (water) => {
+    const s = new Sim(60, 120);
+    box(s, 0, 116, 59, 119, EL.STONE);              // дно
+    box(s, 10, 40, 10, 115, EL.STONE);              // левая стенка
+    box(s, 30, 40, 30, 115, EL.STONE);              // правая стенка
+    if (water) box(s, 11, 60, 29, 115, EL.WATER);   // столб воды глубиной 56
+    s.lookColor = () => [0, 0, 0];
+    s.loadWanted = true;
+    return s;
+  };
+  const w0 = mk(false), w1 = mk(true);
+  w0.refreshLoad(); w1.refreshLoad();
+  const floor = (s) => s.load[s.idx(20, 116)];
+  const gain = floor(w1) - floor(w0);
+  // Пиксель дна под столбом: прибавка — вес столба 56 клеток воды.
+  ok(Math.abs(gain - 56 * 10 * 0.0035) < 0.05, `дно под водой: нагрузка ${floor(w0).toFixed(2)} -> ${floor(w1).toFixed(2)}, прибавка ${gain.toFixed(2)} (вес столба ${(56 * 10 * 0.0035).toFixed(2)})`);
+  // Стенка у дна: боковое давление уходит вправо (правая стенка) и влево (левая).
+  const lf = w1.loadFX[w1.idx(10, 110)], rt = w1.loadFX[w1.idx(30, 110)];
+  ok(lf < 0 && rt > 0, `боковое давление на стенки: левая ${lf.toFixed(2)}, правая ${rt.toFixed(2)}`);
+  // Сталь стойче металла вдвое по стойкости.
+  const E = g('ELEMENTS');
+  ok(E[EL.STEEL].toughness === 14 && E[EL.STEEL].toughness === 2 * 7, `стойкость стали ${E[EL.STEEL].toughness}`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');

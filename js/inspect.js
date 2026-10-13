@@ -184,7 +184,7 @@ function loadRows(sim, i) {
   const cap = sim.loadCap(i), r = load / cap;
   let out = ipRow('Нагрузка', `${+load.toFixed(2)} из ${+cap.toFixed(2)} (${Math.round(r * 100)}%)`)
     + ipRow('Вектор давления', `(${+sim.loadFX[i].toFixed(1)}; ${+sim.loadFY[i].toFixed(1)})`);
-  out += ipNote('Вес всего, что держится через этот пиксель, к опоре; предел — стойкость * ' + LOAD_PER_TOUGHNESS + ' (около 50 себе подобных). Сдвигается, если включены сдвиги под нагрузкой (шестерёнка) и нагрузка не меньше ' + LOAD_YIELD_MIN_RATIO + ' пределов' + (r >= LOAD_YIELD_MIN_RATIO ? ' — сейчас да' : ''));
+  out += ipNote('Вес всего, что держится через этот пиксель, к опоре, и давление жидкостей, которых он касается; предел — стойкость * ' + LOAD_PER_TOUGHNESS + ' (около 50 себе подобных). Сдвигается, если включены сдвиги под нагрузкой (шестерёнка) и нагрузка не меньше ' + LOAD_YIELD_MIN_RATIO + ' пределов' + (r >= LOAD_YIELD_MIN_RATIO ? ' — сейчас да' : ''));
   return out;
 }
 

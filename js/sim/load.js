@@ -58,6 +58,22 @@
 // следовала за ней.
 const LOAD_PER_TOUGHNESS = 1.75;
 
+// Давление жидкостей (просьба пользователя: "учитывай давление жидкостей").
+// Вес одной клетки жидкости — по плотности: у камня плотность 40 и масса 0.14,
+// так что 0.0035 на единицу (вода 0.035, лава 0.105). Жидкость давит на
+// твёрдое, которого касается: сверху — весом всего столба над пикселем (до
+// первой не жидкой клетки), с боков — давлением на глубине (глубина столба *
+// масса клетки), в сторону от жидкости. Боковое давление уходит в нагрузку
+// пикселя так же, как вес, и отдельной составляющей — в его вектор (fx), а в
+// нагрузку балок жидкость не входит: она их проходит насквозь. Снизу вверх
+// (потолок затопленной полости) не считается.
+const LOAD_LIQUID_MASS_PER_DENSITY = 0.0035;
+const LOAD_LIQUID_MASS = new Float64Array(64);
+for (let id = 0; id < 64; id++) LOAD_LIQUID_MASS[id] = IS_LIQUID[id] === 1 ? DENSITY[id] * LOAD_LIQUID_MASS_PER_DENSITY : 0;
+// Жидкость течёт, а скелет при этом не меняется — пересчёт нагрузки по ней
+// идёт ещё и раз в столько кадров (если жидкость на поле есть).
+const LOAD_LIQUID_PERIOD = 30;
+
 // Очерёдность соседей волны (см. шапку): вниз, вниз-влево, вниз-вправо,
 // влево, вправо, вверх, вверх-влево, вверх-вправо. Пары 1-2, 3-4 и 6-7
 // равноправны — внутри пары порядок зависит от чётности клетки.
@@ -113,6 +129,9 @@ class SimLoad {
     this._loadDist = new Int32Array(n);
     this._loadQ = new Int32Array(n);
     this._loadN = 0;
+    this._loadDepth = new Int32Array(this.w);
+    this._loadAge = 0;
+    this._loadLiquid = false;
     // Сдвиги под нагрузкой (клавиша 5 в игре). По умолчанию выключены: на карте
     // "Вышка" они перестраивают нижние постройки и удорожают кадр в 4-5 раз,
     // пока это не решено — включает игрок. loadWanted — вид нагрузки (клавиша
@@ -137,7 +156,8 @@ class SimLoad {
     // Ничего не нужно — ничего не считаем (и при следующем включении
     // посчитаем заново: скелет мог поменяться, пока было выключено).
     if (!this.loadYieldOn && !this.loadWanted) { this._loadFresh = false; return; }
-    if (!this._stabRecomputed && this._loadFresh) return;
+    this._loadAge++;
+    if (!this._stabRecomputed && this._loadFresh && !(this._loadLiquid && this._loadAge >= LOAD_LIQUID_PERIOD)) return;
     this._loadFresh = true;
     this.computeLoad();
     if (!this.loadYieldOn) return;
@@ -182,7 +202,9 @@ class SimLoad {
     this.computeStability();
     const changed = this._stabRecomputed;
     this._stabRecomputed = was || changed;
-    if (needLoad && (changed || !this._loadFresh)) { this.computeLoad(); this._loadFresh = true; }
+    // С жидкостью — каждый раз: на паузе её правят кистью, скелет при этом не
+    // меняется, а давление меняется.
+    if (needLoad && (changed || !this._loadFresh || this._loadLiquid)) { this.computeLoad(); this._loadFresh = true; }
   }
 
   // Двигаемое под нагрузкой твёрдое: не якорь и не застывшее масло (у него
@@ -297,6 +319,26 @@ class SimLoad {
         q[tail++] = i;
       }
     }
+    // Давление жидкостей (см. LOAD_LIQUID_MASS): столбец за столбцом сверху
+    // вниз считается глубина жидкости над клеткой, каждая клетка жидкости
+    // давит на твёрдых соседей снизу и по бокам.
+    const depth = this._loadDepth;
+    depth.fill(0);
+    let liquid = false;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = row + x, t = type[i];
+        if (IS_LIQUID[t] !== 1) { depth[x] = 0; continue; }
+        liquid = true;
+        const p = ++depth[x] * LOAD_LIQUID_MASS[t];
+        if (y + 1 < h && dist[i + w] === -1 && IS_STRUCTURAL[type[i + w]] === 1) { load[i + w] += p; fy[i + w] += p; }
+        if (x > 0 && dist[i - 1] === -1 && IS_STRUCTURAL[type[i - 1]] === 1) { load[i - 1] += p; fx[i - 1] -= p; }
+        if (x < w - 1 && dist[i + 1] === -1 && IS_STRUCTURAL[type[i + 1]] === 1) { load[i + 1] += p; fx[i + 1] += p; }
+      }
+    }
+    this._loadLiquid = liquid;
+    this._loadAge = 0;
     // Поиск в ширину: глубина до опоры.
     for (let head = 0; head < tail; head++) {
       const i = q[head];
