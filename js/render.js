@@ -1181,6 +1181,8 @@ class Renderer {
     this.debugTherm = !!cursor.debugTherm;
     this.debugLoad = !!cursor.debugLoad;
     this.sim.loadWanted = this.debugLoad;
+    // На паузе шаг не идёт, а кистью мир правят: данные видов — свежие.
+    if (this.sim.paused && (this.debugLoad || this.debugStability)) this.sim.refreshLoad(this.debugLoad);
     this.drawFrame();
     this.updateLighting();
     if (this.lightOn) {

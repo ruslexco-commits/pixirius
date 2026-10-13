@@ -1972,5 +1972,32 @@ console.log('41. Нагрузка на пиксели (sim/load.js): вся ма
   ok(comY(on) > comY(off) + 0.3 && count(on, EL.METAL) === count(off, EL.METAL), `центр масс металла по высоте: без сдвигов ${comY(off).toFixed(2)}, со сдвигами ${comY(on).toFixed(2)}; металла ${count(on, EL.METAL)} и ${count(off, EL.METAL)}`);
 }
 
+console.log('42. Правила мира в отмене; на паузе нагрузка и устойчивость освежаются по запросу');
+{
+  const s = new Sim(40, 40);
+  box(s, 0, 37, 39, 39, EL.STONE);
+  s.lookColor = () => [0, 0, 0];
+  // Правило сдвигов входит в снимок: отмена возвращает его вместе с миром.
+  s.loadYieldOn = false;
+  const before = s.snapshot();
+  s.loadYieldOn = true;
+  const after = s.snapshot();
+  ok(before.rules.loadYieldOn === false && after.rules.loadYieldOn === true, 'снимок хранит правило сдвигов');
+  s.restore(before);
+  ok(s.loadYieldOn === false, 'отмена вернула правило сдвигов');
+  s.restore(after);
+  ok(s.loadYieldOn === true, 'повтор вернул правило сдвигов');
+  s.loadYieldOn = false;
+  // Пауза: шага нет, а колонну дорисовали — refreshLoad даёт свежие числа.
+  s.paused = true;
+  s.refreshLoad();
+  const top = s.idx(20, 37);
+  const empty = s.load[top];
+  box(s, 20, 20, 20, 36, EL.STONE);
+  s.refreshLoad();
+  ok(s.load[top] > empty + 16 * 0.1, `после дорисовки колонны нагрузка выросла: ${empty.toFixed(2)} -> ${s.load[top].toFixed(2)}`);
+  ok(s.stability[s.idx(20, 25)] > 0, 'устойчивость дорисованной колонны посчитана на паузе');
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);

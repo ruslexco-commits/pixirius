@@ -177,6 +177,17 @@ function landingRows(sim, i, id) {
     + ipNote(`Упавшее тело давит на пятно контакта: масса тела / число касающихся пикселей. Больше ${sim.cellStability(i, id)} на пиксель — от касания волной, и в поверхность, и в само тело, расходится стойкость 0, пока пятно не станет достаточным. Продавленное осыпается, если есть куда (тонкий пол над пустотой проламывается, край тела у удара обсыпается), остальное держится как держалось; через 30 кадров всё снова обычное`);
 }
 
+// Нагрузка на пиксель (sim/load.js): вес над ним, предел, вектор давления.
+function loadRows(sim, i) {
+  const load = sim.load[i];
+  if (!(load > 0)) return '';
+  const cap = sim.loadCap(i), r = load / cap;
+  let out = ipRow('Нагрузка', `${+load.toFixed(2)} из ${+cap.toFixed(2)} (${Math.round(r * 100)}%)`)
+    + ipRow('Вектор давления', `(${+sim.loadFX[i].toFixed(1)}; ${+sim.loadFY[i].toFixed(1)})`);
+  out += ipNote('Вес всего, что держится через этот пиксель, к опоре; предел — стойкость * ' + LOAD_PER_TOUGHNESS + ' (около 50 себе подобных). Сдвигается, если включены сдвиги под нагрузкой (шестерёнка) и нагрузка не меньше ' + LOAD_YIELD_MIN_RATIO + ' пределов' + (r >= LOAD_YIELD_MIN_RATIO ? ' — сейчас да' : ''));
+  return out;
+}
+
 // Прочность твёрдого: устойчивость и стойкость (на сколько клеток его
 // можно вывести в сторону от опоры). Хрупкий окисел держит не по своим
 // числам, а по "деревянным" (см. cellStability) — они и показываются.
@@ -458,8 +469,8 @@ function buildInspectHTML(sim, gx, gy) {
     html += ipSection('Температуры', temperaturesSection(sim, i, id));
     const alloy = alloySection(sim, i, id);
     if (alloy) html += ipSection(IS_MOLTEN[id] === 1 ? 'Расплав' : 'Сплав', alloy);
-    if (isStructural(id) && id !== EL.ALLOY) html += ipSection('Прочность', strengthRows(el.maxStability, el.toughness, sim.oxideFrail(i)) + landingRows(sim, i, id));
-    else if (id === EL.ALLOY) html += ipSection('Прочность', landingRows(sim, i, id));
+    if (isStructural(id) && id !== EL.ALLOY) html += ipSection('Прочность', strengthRows(el.maxStability, el.toughness, sim.oxideFrail(i)) + loadRows(sim, i) + landingRows(sim, i, id));
+    else if (id === EL.ALLOY) html += ipSection('Прочность', loadRows(sim, i) + landingRows(sim, i, id));
     if (id !== EL.ALLOY && id !== EL.ALLOY_RUST && IS_MOLTEN[id] !== 1) {
       html += ipSection('Кислота', acidSection(id, stage));
       html += ipSection('Вода, реагент, коррозия', corrosionSection(id, stage));
@@ -672,8 +683,12 @@ class InspectPanel {
       else if (b.dataset.setting === 'playerRays') this.sim.playerRays = v === 1;
       this.show(this.gx, this.gy);
     });
+    this.over = false;
+    this._tickN = 0;
+    this._lastHTML = '';
+    this.el.addEventListener('mouseenter', () => { this.over = true; });
     this.el.addEventListener('mousemove', (e) => this.onHover(e));
-    this.el.addEventListener('mouseleave', () => this.clearHover());
+    this.el.addEventListener('mouseleave', () => { this.over = false; this.clearHover(); });
     this.el.addEventListener('mousedown', (e) => this.onPartClick(e));
     this.el.addEventListener('contextmenu', (e) => { if (e.target.closest('[data-k]')) e.preventDefault(); });
     document.addEventListener('keydown', (e) => { if (e.code === 'Escape') this.hide(); });
@@ -715,7 +730,7 @@ class InspectPanel {
     // значилась бы "без опоры". Пересчёт безопасен: computeStability не
     // тратит случайных чисел и зависит только от скелета мира, поэтому
     // следующий шаг получит ровно то же (и сам пересчёт просто пропустит).
-    this.sim.computeStability();
+    this.sim.refreshLoad();
     const html = buildInspectHTML(this.sim, gx, gy);
     if (!html) return;
     this.gx = gx;
@@ -723,11 +738,27 @@ class InspectPanel {
     // Прокрутка панели переживает перерисовку после замены доли.
     const scroll = this.el.scrollTop;
     this.el.innerHTML = html;
+    this._lastHTML = html;
     this.el.scrollTop = scroll;
     this.el.classList.add('visible');
   }
 
   hide() { this.el.classList.remove('visible'); this.clearHover(); }
+
+  // Раз в кадр: открытая справка обновляется сама, пока мир идёт или его
+  // правят (стойкость, нагрузка, состав — свежие). Раз в 10 кадров
+  // и только если текст изменился, и не под курсором: перерисовка панели
+  // сбросила бы наведённый сектор и щелчок по нему.
+  tick() {
+    if (!this.visible() || this.over || ++this._tickN % 10 !== 0) return;
+    this.sim.refreshLoad();
+    const html = buildInspectHTML(this.sim, this.gx, this.gy);
+    if (!html || html === this._lastHTML) return;
+    const scroll = this.el.scrollTop;
+    this.el.innerHTML = html;
+    this._lastHTML = html;
+    this.el.scrollTop = scroll;
+  }
 
   // ---- наведение на сектор или полосу ----
 

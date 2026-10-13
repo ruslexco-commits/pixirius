@@ -181,11 +181,21 @@ function togglePause() { sim.paused = !sim.paused; refreshPauseIcon(); }
 btnPause.addEventListener('click', togglePause);
 btnClear.addEventListener('click', () => { sim.clear(); });
 
+// Правило мира — шаг отмены (просьба пользователя: "изменение правил мира
+// считалось как действие и его можно было отматывать"): снимок до смены, в
+// нём же правила (Sim.snapshot, rules). В лобби — отмена комнатки.
+function setLoadYield(on) {
+  if (sim.loadYieldOn === on) return;
+  (lobby && lobby.visible && lobby.roomInput ? lobby.roomInput : input).pushUndo();
+  sim.loadYieldOn = on;
+}
+
 // Клавиша 5 — сдвиги под нагрузкой (sim/load.js): тяжёлое продавливает и
 // выдавливает опору, нависшее проседает. Пока выключено по умолчанию.
 window.addEventListener('keydown', (e) => {
   if (e.code !== 'Digit5' || e.repeat || (lobby && lobby.visible) || document.body.classList.contains('start')) return;
-  sim.loadYieldOn = !sim.loadYieldOn;
+  if (mp && mp.role === 'client') return;
+  setLoadYield(!sim.loadYieldOn);
   statusLabel.textContent = sim.loadYieldOn ? 'Нагрузка: сдвиги вкл (клавиша 5)' : 'Нагрузка: сдвиги выкл (клавиша 5)';
 });
 
@@ -622,12 +632,22 @@ lobby = new Lobby({
     yieldBox.checked = sim.loadYieldOn;
     yieldBox.disabled = !!(mp && mp.role === 'client');
     viewBox.checked = input.debugLoad;
-    yieldBox.addEventListener('change', () => { sim.loadYieldOn = yieldBox.checked; });
+    yieldBox.addEventListener('change', () => setLoadYield(yieldBox.checked));
     viewBox.addEventListener('change', () => { input.debugLoad = viewBox.checked; });
     const r = btn.getBoundingClientRect();
     menu.style.top = (r.bottom + 6) + 'px';
     menu.style.left = Math.max(8, Math.min(window.innerWidth - 300, r.right - 280)) + 'px';
     menu.classList.add('visible');
+    // Отмена и повтор (Ctrl+Z/Y), клавиши 4 и 5 и настройки хоста меняют те же
+    // правила, пока окно открыто: флажки догоняют их.
+    const sync = () => {
+      if (!menu.classList.contains('visible')) return;
+      if (yieldBox.checked !== sim.loadYieldOn) yieldBox.checked = sim.loadYieldOn;
+      yieldBox.disabled = !!(mp && mp.role === 'client');
+      if (viewBox.checked !== input.debugLoad) viewBox.checked = input.debugLoad;
+      requestAnimationFrame(sync);
+    };
+    requestAnimationFrame(sync);
   }
   btn.addEventListener('click', () => { if (menu.classList.contains('visible')) menu.classList.remove('visible'); else openSettings(); });
   document.addEventListener('mousedown', (e) => {
@@ -752,6 +772,7 @@ function loop() {
   lastFrameAt = performance.now();
   try {
     simFrame();
+    inspectPanel.tick();
     if (lobby.visible) { pixDiag('отрисовка комнатки'); lobby.render(); }
     else if (playMode.active) { pixDiag('экран игры'); playMode.frame(); }
     else {

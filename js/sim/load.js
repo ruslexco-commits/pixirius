@@ -152,6 +152,22 @@ class SimLoad {
     }
   }
 
+  // Свежая устойчивость и нагрузка вне шага: между шагами (и на паузе) мир
+  // перерисовывают кистью, а пересчёт идёт только в step() — вид нагрузки и
+  // лупа показывали бы данные до правки (жалоба пользователя: "вся стойкость
+  // должна обновляться на карте, чтобы я видел свежие данные"). Пересчёт
+  // безопасен (случайных чисел не тратит, зависит только от скелета): шаг
+  // после него получит то же и сам пропустит. needLoad=false — нужна только
+  // устойчивость (вид на клавише 1).
+  refreshLoad(needLoad = true) {
+    const was = this._stabRecomputed;
+    this._stabRecomputed = false;
+    this.computeStability();
+    const changed = this._stabRecomputed;
+    this._stabRecomputed = was || changed;
+    if (needLoad && (changed || !this._loadFresh)) { this.computeLoad(); this._loadFresh = true; }
+  }
+
   // Двигаемое под нагрузкой твёрдое: не якорь и не застывшее масло (у него
   // направление связи в extra, при сдвиге оно бы врало).
   loadCanMove(i) {

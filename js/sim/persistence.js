@@ -47,6 +47,10 @@ class SimPersistence {
     const snap = {};
     for (const f of PARTICLE_FIELDS) snap[f.name] = this[f.name].slice();
     for (const name of UNDO_WIND_FIELDS) snap[name] = this[name].slice();
+    // Правила мира (просьба пользователя: "изменение правил мира считалось как
+    // действие и его можно было отматывать"): отмена возвращает и их, а не
+    // только клетки. Новое правило — сюда.
+    snap.rules = { loadYieldOn: this.loadYieldOn };
     return snap;
   }
 
@@ -64,6 +68,7 @@ class SimPersistence {
     // что и откатанный ветер, а не ветер отменённого будущего.
     this.windVXFrame.set(this.windVX);
     this.windVYFrame.set(this.windVY);
+    if (snap.rules) this.loadYieldOn = snap.rules.loadYieldOn;
     this.moved.fill(0);
     // Мир переписан целиком в обход обычных записей — будим все куски.
     this.wakeAll();

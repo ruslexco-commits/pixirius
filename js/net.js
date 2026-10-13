@@ -113,7 +113,7 @@ const MP_PAINT_CTX = ['paintOxideStage', 'beamPaintMaterial', 'beamPaintExtra'];
 // "Огонь по своим" (настройка хоста) — тоже: от него зависит, бьёт ли
 // протагонист другого игрока (sim/protagonist.js, hittable).
 // И скорость копания (множитель хоста, sim/protagonist.js, MINE_SPEED_NORMAL).
-const MP_CFG = ['darkness', 'lightSmooth', 'playerVision', 'playerRays', 'friendlyFire', 'digSpeed'];
+const MP_CFG = ['darkness', 'lightSmooth', 'playerVision', 'playerRays', 'friendlyFire', 'digSpeed', 'loadYieldOn'];
 // Методы, которыми хост меняет мир целиком: после них мир идёт вкладкам
 // заново.
 const MP_WORLD_RESETS = ['restore', 'deserialize', 'clear'];
