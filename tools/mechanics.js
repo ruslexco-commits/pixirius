@@ -2055,5 +2055,47 @@ console.log('44. Давление жидкостей в нагрузке; ста
   ok(E[EL.STEEL].toughness === 14 && E[EL.STEEL].toughness === 2 * 7, `стойкость стали ${E[EL.STEEL].toughness}`);
 }
 
+console.log('45. Полый герметичный куб падает в воду — вода внутрь не телепортируется');
+{
+  // Куб падает на глубину и тонет; пока корпус цел (заливка пустоты от центра не выходит за габарит), воды внутри быть не должно.
+  // Жалоба пользователя: вода затекала в щель стенки, которую падающее тело оставляет на долю кадра (пиксель ушёл вниз, соседний над ним ещё нет).
+  const W = 120, H = 140;
+  let leaks = 0, closedFrames = 0;
+  for (const [wall, inner] of [[1, 14], [1, 20], [2, 20]]) {
+    const s = new Sim(W, H); s.lookColor = () => [0, 0, 0];
+    box(s, 0, H - 3, W - 1, H - 1, EL.STONE);
+    box(s, 0, H - 83, 0, H - 4, EL.WALL); box(s, W - 1, H - 83, W - 1, H - 4, EL.WALL);
+    box(s, 1, H - 74, W - 2, H - 4, EL.WATER);
+    const size = inner + 2 * wall;
+    box(s, 50, 10, 50 + size - 1, 10 + size - 1, EL.STONE);
+    box(s, 50 + wall, 10 + wall, 50 + wall + inner - 1, 10 + wall + inner - 1, EL.EMPTY);
+    const stone = (i) => s.type[i] === EL.STONE;
+    let open = false;
+    for (let f = 0; f < 120 && !open; f++) {
+      s.step();
+      let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+      for (let i = 0; i < W * H; i++) if (stone(i) && ((i / W) | 0) < H - 3 && i % W > 2 && i % W < W - 3) { const x = i % W, y = (i / W) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+      const start = ((y0 + y1) >> 1) * W + ((x0 + x1) >> 1);
+      const seen = new Set([start]), st = [start];
+      let water = 0;
+      while (st.length) {
+        const c = st.pop();
+        if (s.type[c] === EL.WATER) water++;
+        const x = c % W, y = (c / W) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < x0 || nx > x1 || ny < y0 || ny > y1) { open = true; continue; }
+          const j = ny * W + nx;
+          if (!seen.has(j) && !stone(j)) { seen.add(j); st.push(j); }
+        }
+      }
+      if (open) break;
+      closedFrames++;
+      if (water > 0) { leaks++; break; }
+    }
+  }
+  ok(leaks === 0 && closedFrames > 200, `вода в закрытом корпусе: ${leaks} из 3 кубов (кадров с целым корпусом ${closedFrames})`);
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);

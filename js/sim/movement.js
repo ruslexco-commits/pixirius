@@ -96,7 +96,20 @@ class SimMovement {
 
   attemptSwapOrMove(i, ni, el, rising) {
     const nt = this.type[ni];
-    if (nt === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
+    if (nt === EL.EMPTY) {
+      // Жидкость не заходит в клетку, над которой стоит тело, ещё только
+      // собирающееся упасть в этом кадре (isPendingFaller): это щель от
+      // пикселя, уже ушедшего вниз, — тело падает по клеткам снизу вверх, и
+      // на долю кадра в его стенке оказывается пустая клетка. Втёкшая в неё
+      // вода касалась пустоты по другую сторону стенки, а поиск вытеснения
+      // (displaceLiquidThroughBody) принимает любую пустую клетку у лужи за
+      // свободную поверхность и переносил воду туда: полый герметичный куб,
+      // падая в воду, наполнялся водой сквозь стенки (жалоба пользователя:
+      // "вода телепортируется в закрытые участки"). Прямо вниз (ni - w === i
+      // — над клеткой сама жидкость) и вверх не касается.
+      if (!rising && IS_LIQUID[this.type[i]] === 1 && ni - this.w !== i && ni >= this.w && this.isPendingFaller(ni - this.w)) return false;
+      this.swap(i, ni); this.moved[ni] = 1; return true;
+    }
     if (IS_MOVABLE_ID[nt] !== 1) return false;
     // Падающий обломок твёрдого (строка ниже — индекс больше i + 1)
     // раздавливает человека и протагониста на своём пути, а не
@@ -428,7 +441,12 @@ class SimMovement {
       for (let step = 1; step <= disp; step++) {
         const nx = x + dx0 * step;
         if (nx < 0 || nx >= w) break;
-        if (this.type[this.idx(nx, y)] !== EL.EMPTY) break;
+        const ci = this.idx(nx, y);
+        if (this.type[ci] !== EL.EMPTY) break;
+        // Щель в падающем теле (см. attemptSwapOrMove) — не только не цель, а
+        // преграда: прыжок воды на несколько клеток за ход пролетал сквозь
+        // щель в стенке куба и садился внутри.
+        if (ci >= w && this.isPendingFaller(ci - w)) break;
         targetStep = step;
       }
       if (targetStep > 0) {
