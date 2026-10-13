@@ -104,6 +104,9 @@ const TASK_CELLS = 0, TASK_GLOBAL = 1;
 // взяли первыми, потом строки тепла.
 const GLOBAL_WIND = 0, GLOBAL_ESCAPE = 1, GLOBAL_TEMP0 = 2;
 const DEFER_UPDATE = 0, DEFER_GUNPOWDER = 1, DEFER_SALT = 2;
+// Вход тела в жидкость, которому в полосе не хватило пути (sinkIntoLiquid):
+// дела DEFER_SINK0..DEFER_SINK0+7, номер — направление к жидкости по DX8/DY8.
+const DEFER_SINK0 = 3;
 const DEFER_CAP = 65536;
 
 // Ячейки общего управляющего массива.
@@ -431,6 +434,13 @@ class SimThreads {
       if (kind === DEFER_UPDATE) this.updateCell(x, y);
       else if (kind === DEFER_GUNPOWDER) { if (this.type[i] === EL.GUNP) this.detonateGunpowder(x, y); }
       else if (kind === DEFER_SALT) { if (this.type[i] === EL.BLACK_SALT && this.isDrySalt(i)) this.detonateSalt(x, y); }
+      else if (kind >= DEFER_SINK0) {
+        // К этому часу всё могло сдвинуться — условия входа проверяются заново.
+        const k = kind - DEFER_SINK0, nx = x + DX8[k], ny = y + DY8[k];
+        if (nx < 0 || nx >= w || ny < 0 || ny >= this.h || this.moved[i]) continue;
+        const j = ny * w + nx, ts = this.type[i], tl = this.type[j];
+        if (IS_LIQUID[tl] === 1 && !this.moved[j] && IS_MOVABLE_ID[ts] === 1 && IS_LIQUID[ts] !== 1 && DENSITY[ts] > DENSITY[tl]) this.sinkIntoLiquid(i, j);
+      }
     }
   }
 }
