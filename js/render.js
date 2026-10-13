@@ -552,6 +552,7 @@ class Renderer {
       // чтобы она читалась как конструкция позади, а не как материал, по
       // которому что-то ходит или течёт. Цвет — её материала (beamColor).
       if (sim.beam[i]) {
+        if (this.debugLoad && sim.load[i] > 0) return this.loadColor(i);
         // Шероховатость балки — своя у каждой клетки, как у материала
         // (светлее, темнее, в том же размахе ±15), а не оттенок пустоты, в
         // которой она стоит: у пустоты он нулевой, и балка выходила ровной
@@ -1255,7 +1256,7 @@ class Renderer {
   loadInfoText(gx, gy) {
     const sim = this.sim;
     const i = sim.idx(gx, gy);
-    if (!isStructural(sim.type[i])) return 'Нагрузка: не твёрдое';
+    if (!isStructural(sim.type[i]) && !sim.beam[i]) return 'Нагрузка: не твёрдое';
     const cap = sim.loadCap(i);
     return `Нагрузка ${sim.load[i].toFixed(2)} из ${cap.toFixed(2)} (${Math.round(100 * sim.load[i] / cap)}%), давит (${sim.loadFX[i].toFixed(2)}; ${sim.loadFY[i].toFixed(2)})`;
   }

@@ -520,7 +520,7 @@ function buildInspectHTML(sim, gx, gy) {
     const bStage = sim.beamStage(i);
     let b = ipRow('Материал', bel.name + (bStage > 0 ? `, стадия ${bStage}` : ''));
     if (!isStructural(id)) b += ipRow('Устойчивость сейчас', sim.stability[i] || 'нет опоры — осыпется');
-    b += strengthRows(bel.maxStability, bel.toughness, sim.beamFrail(i));
+    b += strengthRows(bel.maxStability, bel.toughness, sim.beamFrail(i)) + loadRows(sim, i);
     if (bel.meltPoint !== undefined) b += ipRow('Плавление', `${deg(bel.meltPoint)} → ${elName(bel.meltsInto)}`);
     const bStep = CHARGE_STEP[beamMat];
     if (bStep) {

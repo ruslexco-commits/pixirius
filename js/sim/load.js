@@ -42,8 +42,10 @@
 // Поля нагрузки не двигаются с частицей — как stability, они принадлежат
 // месту и пересчитываются при смене скелета (structureChanged, по нему же
 // _stabRecomputed). Мелочь вроде песка или воды скелет не меняет, так что
-// пересчёт идёт редко, а не каждый кадр. Без балок: второй слой пока в
-// нагрузке не участвует.
+// пересчёт идёт редко, а не каждый кадр.
+// Балки (второй слой) в нагрузке участвуют: клетка с балкой без твёрдого — узел с
+// материалом балки (stabId), несёт вес, но двигаться не может и перегруженная
+// осыпается своим материалом (dropBeam).
 //
 // Методы класса Sim, вынесенные в отдельный файл: класс ниже — только
 // контейнер, extendSim переносит его методы в Sim.prototype (см. core.js).
@@ -123,9 +125,11 @@ class SimLoad {
   // Предел пикселя i: нагрузка, больше которой он перегружен. Для якоря и
   // не-твёрдого — бесконечность (якорь держит сколько угодно).
   loadCap(i) {
-    const t = this.type[i];
-    if (IS_STRUCTURAL[t] !== 1) return Infinity;
-    return this.cellToughness(i, t) * LOAD_PER_TOUGHNESS;
+    // Несущий материал клетки с учётом второго слоя: твёрдое, а если его нет —
+    // материал балки (stabId): балка несёт вес и сама может быть перегружена.
+    const id = this.stabId(i);
+    if (IS_STRUCTURAL[id] !== 1) return Infinity;
+    return this.cellToughness(i, id) * LOAD_PER_TOUGHNESS;
   }
 
   // Раз в кадр после computeStability: пересчёт только если скелет сменился.
@@ -144,10 +148,23 @@ class SimLoad {
       if (moved[i]) continue;
       const cap = this.loadCap(i);
       const over = load[i] - cap;
-      if (over <= 0 || load[i] < LOAD_YIELD_MIN_RATIO * cap || !this.loadCanMove(i)) continue;
+      if (over <= 0 || load[i] < LOAD_YIELD_MIN_RATIO * cap) continue;
+      // Балка (в клетке нет твёрдого) двигаться не может — второй слой стоит на
+      // месте, — поэтому перегруженная ломается: осыпается своим материалом
+      // (как балка без опоры, dropBeam), и дальше это обычное твёрдое, которое
+      // уступает нагрузке, как любое другое.
+      const beamOnly = IS_STRUCTURAL[this.type[i]] !== 1;
+      if (!beamOnly && !this.loadCanMove(i)) continue;
       // Шанс растёт с перегрузкой: чуть выше предела — ползучесть, на порядок
       // выше — перешеек лопается сразу.
       if (Math.random() >= LOAD_YIELD_RATE * over / cap) continue;
+      if (beamOnly) {
+        if (this.beam[i] === 0) continue;
+        if (this.type[i] === EL.EMPTY) this.dropBeam(i); else this.removeBeam(i);
+        moved[i] = 1;
+        if (++done >= LOAD_YIELD_MAX_PER_FRAME) break;
+        continue;
+      }
       if (this.loadYield(i, fx[i], fy[i], over, 0) && ++done >= LOAD_YIELD_MAX_PER_FRAME) break;
     }
   }
@@ -255,13 +272,17 @@ class SimLoad {
     const dist = this._loadDist, q = this._loadQ;
     load.fill(0); fx.fill(0); fy.fill(0);
     // Узлы волны: твёрдое, которое держится (продавленное тоже: опору оно
-    // передаёт, см. computeStability). -1 — узел ещё не достигнут, -2 — не
-    // узел.
+    // передаёт, см. computeStability), и клетка с балкой, в которой твёрдого
+    // нет, — так же, как это читает устойчивость (stabId): балка несёт вес
+    // своим материалом. -1 — узел ещё не достигнут, -2 — не узел.
+    const beam = this.beam;
     let tail = 0;
     for (let i = 0; i < n; i++) {
-      if (IS_STRUCTURAL[type[i]] === 1 && (stab[i] > 0 || crushed[i] !== 0)) {
+      const t = type[i];
+      const sid = (IS_STRUCTURAL[t] === 1 || IS_ANCHOR[t] === 1) ? t : beam[i];
+      if (IS_STRUCTURAL[sid] === 1 && (stab[i] > 0 || crushed[i] !== 0)) {
         dist[i] = -1;
-        load[i] = type[i] === EL.ALLOY ? this.alloyMass(i) : PIXEL_MASS[type[i]];
+        load[i] = t === EL.ALLOY ? this.alloyMass(i) : PIXEL_MASS[sid];
         fy[i] = load[i];   // собственный вес давит вниз
       } else dist[i] = -2;
     }

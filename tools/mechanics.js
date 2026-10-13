@@ -1999,5 +1999,35 @@ console.log('42. Правила мира в отмене; на паузе наг
   ok(s.stability[s.idx(20, 25)] > 0, 'устойчивость дорисованной колонны посчитана на паузе');
 }
 
+console.log('43. Балки в нагрузке: несут вес, не двигаются, перегруженная ломается');
+{
+  const mk = () => {
+    const s = new Sim(60, 200);
+    box(s, 0, 196, 59, 199, EL.STONE);
+    box(s, 10, 100, 12, 195, EL.STONE); box(s, 40, 100, 42, 195, EL.STONE);   // опоры
+    s.pickBeamMaterial(-1, -1);
+    for (let x = 13; x <= 39; x++) s.setCell(x, 100, EL.BEAM, false);        // пролёт из балки
+    box(s, 13, 20, 39, 99, EL.METAL);                                           // тяжёлый блок на пролёте
+    s.lookColor = () => [0, 0, 0];
+    return s;
+  };
+  const beams = (s) => { let n = 0; for (let i = 0; i < s.beam.length; i++) if (s.beam[i]) n++; return n; };
+  const s = mk();
+  s.loadWanted = true;
+  s.step(); s.step();
+  let mass = 0, root = 0, beamLoad = 0;
+  for (let i = 0; i < s.type.length; i++) {
+    if (s._loadDist[i] >= 0) mass += s.type[i] === EL.EMPTY ? g('PIXEL_MASS')[s.beam[i]] : g('PIXEL_MASS')[s.type[i]];
+    if (s._loadDist[i] === 0) root += s.load[i];
+  }
+  for (let x = 13; x <= 39; x++) beamLoad = Math.max(beamLoad, s.load[s.idx(x, 100)]);
+  ok(mass > 0 && Math.abs(mass - root) < 1e-3 * mass, `масса с балками ${mass.toFixed(2)}, дошло до опор ${root.toFixed(2)}`);
+  ok(beamLoad > 3 * s.loadCap(s.idx(13, 100)), `балка у опоры перегружена: ${beamLoad.toFixed(1)} при пределе ${s.loadCap(s.idx(13, 100)).toFixed(1)}`);
+  const n0 = beams(s);
+  const off = mk(); for (let k = 0; k < 120; k++) off.step();
+  const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 120; k++) on.step();
+  ok(beams(off) === n0 && beams(on) < n0, `балок: было ${n0}, без сдвигов ${beams(off)}, со сдвигами ${beams(on)}`);
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);
