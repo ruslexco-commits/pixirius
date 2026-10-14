@@ -184,11 +184,12 @@ btnClear.addEventListener('click', () => { sim.clear(); });
 // Правило мира — шаг отмены (просьба пользователя: "изменение правил мира
 // считалось как действие и его можно было отматывать"): снимок до смены, в
 // нём же правила (Sim.snapshot, rules). В лобби — отмена комнатки.
-function setLoadYield(on) {
-  if (sim.loadYieldOn === on) return;
+function setRule(key, on) {
+  if (sim[key] === on) return;
   (lobby && lobby.visible && lobby.roomInput ? lobby.roomInput : input).pushUndo();
-  sim.loadYieldOn = on;
+  sim[key] = on;
 }
+function setLoadYield(on) { setRule('loadYieldOn', on); }
 
 // Клавиша 5 — сдвиги под нагрузкой (sim/load.js): тяжёлое продавливает и
 // выдавливает опору, нависшее проседает. Пока выключено по умолчанию.
@@ -627,8 +628,13 @@ lobby = new Lobby({
       + '<div class="st-group">Физика нагрузки</div>'
       + row('yield', 'Сдвиги под нагрузкой', 'Перегруженный пиксель продавливается и выдавливается, нависшее проседает (клавиша 5). Тяжёлые постройки, вроде «Вышки», при этом оседают, и кадр дорожает.')
       + row('view', 'Показывать нагрузку', 'Твёрдое красится от зелёного к красному, перегруженное — белым (клавиша 4).')
-      + '<div class="lb-menu-hint">В мультиплеере сдвиги задаёт хост.</div>';
-    const yieldBox = menu.querySelector('[data-k=yield]'), viewBox = menu.querySelector('[data-k=view]');
+      + '<div class="st-group">Живые</div>'
+      + row('regen', 'Регенерация', 'Полученный урон понемногу заживает (у протагониста и людей). Выключено — раны остаются до смерти.')
+      + '<div class="lb-menu-hint">В мультиплеере правила задаёт хост.</div>';
+    const yieldBox = menu.querySelector('[data-k=yield]'), viewBox = menu.querySelector('[data-k=view]'), regenBox = menu.querySelector('[data-k=regen]');
+    regenBox.checked = sim.regenOn;
+    regenBox.disabled = !!(mp && mp.role === 'client');
+    regenBox.addEventListener('change', () => setRule('regenOn', regenBox.checked));
     yieldBox.checked = sim.loadYieldOn;
     yieldBox.disabled = !!(mp && mp.role === 'client');
     viewBox.checked = input.debugLoad;
@@ -643,6 +649,8 @@ lobby = new Lobby({
     const sync = () => {
       if (!menu.classList.contains('visible')) return;
       if (yieldBox.checked !== sim.loadYieldOn) yieldBox.checked = sim.loadYieldOn;
+      if (regenBox.checked !== sim.regenOn) regenBox.checked = sim.regenOn;
+      regenBox.disabled = !!(mp && mp.role === 'client');
       yieldBox.disabled = !!(mp && mp.role === 'client');
       if (viewBox.checked !== input.debugLoad) viewBox.checked = input.debugLoad;
       requestAnimationFrame(sync);

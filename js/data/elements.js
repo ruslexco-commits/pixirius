@@ -78,6 +78,10 @@ const EL = {
   LAMP: 61,
   // Грязь: растворяется в воде, оседает у поверхностей (sim/mud.js).
   MUD: 62,
+  // Кровь (просьба пользователя): жидкость, вытекает из раненых и раздавленных
+  // (sim/human.js); смешивается с водой и растворами по долям. Последний
+  // свободный id: таблицы по id рассчитаны на id < 64.
+  BLOOD: 63,
 };
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
@@ -136,6 +140,10 @@ const ELEMENTS = {
   // Грязь (sim/mud.js): сыпучая, растворяется в воде долями — вода
   // мутнеет (раствор цвета среднего долей), — и оседает у поверхностей
   // обратно; текущая вода её смывает. Тяжелее воды — тонет.
+  // Кровь: чуть тяжелее воды (11 против 10) — тонет в ней, пока не смешается; в
+  // растворе с водой розовеет (цвет — среднее долей, solColor). Не кипит и не
+  // замерзает: фазовых переходов у неё нет (как у масла по температуре).
+  [EL.BLOOD]: { id: EL.BLOOD, name: 'Кровь', cat: CAT.LIQUID, color: [158, 14, 26], density: 11, flammable: false, dispersion: 5 },
   [EL.MUD]: { id: EL.MUD, name: 'Грязь', cat: CAT.POWDER, color: [104, 76, 50], density: 15, flammable: false },
   [EL.WET_EARTH]: { id: EL.WET_EARTH, name: 'Мокрая земля', cat: CAT.SOLID, color: [68, 46, 32], density: 40, flammable: false, maxStability: 3, toughness: 2 },
   // Полностью повторяет камень (тот же вес/бюджет устойчивости/плавление) —
@@ -384,7 +392,7 @@ for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltCha
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST,
+  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST,
   EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке

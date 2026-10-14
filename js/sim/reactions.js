@@ -269,6 +269,16 @@ class SimReactions {
     if (this.dirtyNear(x, y, i)) this.mudStick(x, y, i);
   }
 
+  // Кровь (EL.BLOOD): жидкость системы долей — смешивается с соседней водой и
+  // растворами (вода розовеет), как они, живёт покомпонентно (tickComposition).
+  // Сама ничего не разъедает; чистая кровь на воде не ржавит металл (ржавит
+  // только вода).
+  reactBlood(x, y, i) {
+    this.mixParts(x, y, i);
+    if (this.type[i] !== EL.BLOOD) return;   // смешалась — стала раствором
+    this.tickComposition(x, y, i);
+  }
+
   reactVoid(x, y, i) {
     for (let k = 0; k < 4; k++) {
       const nx = x + DX4[k], ny = y + DY4[k];

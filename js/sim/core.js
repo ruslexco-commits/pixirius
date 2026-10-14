@@ -723,6 +723,7 @@ class Sim {
       case EL.SAND: this.reactSand(x, y, i); break;
       case EL.SALT: this.reactSalt(x, y, i); break;
       case EL.WATER: this.reactWater(x, y, i); break;
+      case EL.BLOOD: this.reactBlood(x, y, i); break;
       case EL.VOID: this.reactVoid(x, y, i); break;
       case EL.CLONE: this.reactClone(x, y, i); break;
       case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS:

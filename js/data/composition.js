@@ -214,7 +214,7 @@ function pureCompFor(id) {
 // своя физика (горение, застывание в плёнку). Лава — тем более отдельно.
 // Таблицы по id — по той же причине, что и у предикатов в data/elements.js
 // (idTable там): зовутся на горячем пути.
-const IS_SOLUTION_FAMILY = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER]);
+const IS_SOLUTION_FAMILY = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.BLOOD]);
 function isSolutionFamily(id) { return IS_SOLUTION_FAMILY[id] === 1; }
 
 // "Растворительная область" — всё, что обменивается долями с растворами:
@@ -227,7 +227,7 @@ function isSolutionFamily(id) { return IS_SOLUTION_FAMILY[id] === 1; }
 // движении (Sim.powderMix, sim/mud.js; просьба пользователя: "растворы из
 // сыпучих веществ: грязи, земли и чёрной соли").
 const IS_POWDER_MIX = idTable([EL.MUD, EL.EARTH, EL.BLACK_SALT]);
-const IS_SOLUTION_MEDIUM = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.BLACK_SALT, EL.MUD]);
+const IS_SOLUTION_MEDIUM = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.DISSOLVER, EL.BLACK_SALT, EL.MUD, EL.BLOOD]);
 function isSolutionMedium(id) { return IS_SOLUTION_MEDIUM[id] === 1; }
 
 // Газовое семейство: всё, что умеет перемешиваться, стягиваться и
@@ -242,7 +242,7 @@ function isVaporFamily(id) { return IS_VAPOR_FAMILY[id] === 1; }
 // извне (растворитель, окисление) и сам ничего не делает.
 // Грязь — тоже: вода в мокрой грязи кипит и мёрзнет (sim/mud.js).
 const HAS_COMPOSITION = idTable([EL.WATER, EL.ACID, EL.REAGENT, EL.SOLUTION, EL.STEAM, EL.ACID_GAS, EL.VAPOR,
-  EL.OIL, EL.BLACK_SALT, EL.DISSOLVER, EL.REAGENT_GAS, EL.OIL_GAS, EL.DISSOLVER_GAS, EL.MUD]);
+  EL.OIL, EL.BLACK_SALT, EL.DISSOLVER, EL.REAGENT_GAS, EL.OIL_GAS, EL.DISSOLVER_GAS, EL.MUD, EL.BLOOD]);
 function hasComposition(id) { return HAS_COMPOSITION[id] === 1; }
 
 // С чем меняется долями растворитель: любое вещество с фазой, кроме

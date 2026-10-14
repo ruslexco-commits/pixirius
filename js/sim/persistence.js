@@ -50,7 +50,7 @@ class SimPersistence {
     // Правила мира (просьба пользователя: "изменение правил мира считалось как
     // действие и его можно было отматывать"): отмена возвращает и их, а не
     // только клетки. Новое правило — сюда.
-    snap.rules = { loadYieldOn: this.loadYieldOn };
+    snap.rules = { loadYieldOn: this.loadYieldOn, regenOn: this.regenOn };
     return snap;
   }
 
@@ -68,7 +68,7 @@ class SimPersistence {
     // что и откатанный ветер, а не ветер отменённого будущего.
     this.windVXFrame.set(this.windVX);
     this.windVYFrame.set(this.windVY);
-    if (snap.rules) this.loadYieldOn = snap.rules.loadYieldOn;
+    if (snap.rules) { this.loadYieldOn = snap.rules.loadYieldOn; if (snap.rules.regenOn !== undefined) this.regenOn = snap.rules.regenOn; }
     this.moved.fill(0);
     // Мир переписан целиком в обход обычных записей — будим все куски.
     this.wakeAll();

@@ -1969,11 +1969,12 @@ console.log('41. Нагрузка на пиксели (sim/load.js): вся ма
   let diff = 0; for (let i = 0; i < before.length; i++) if (before[i] !== col.type[i]) diff++;
   ok(diff === 0, `сплошной столб металла 127 в высоту на полу стоит: изменилось клеток ${diff}`);
   // Выключено — перешеек стоит; включено — лопается, блок оседает.
-  const off = mk(); for (let k = 0; k < 150; k++) off.step();
-  const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 150; k++) on.step();
-  // Центр масс металла по высоте: оседание блока сдвигает его вниз (y растёт).
-  const comY = (sim) => { let n = 0, sy = 0; for (let i = 0; i < sim.type.length; i++) if (sim.type[i] === EL.METAL) { n++; sy += (i / sim.w) | 0; } return sy / n; };
-  ok(comY(on) > comY(off) + 0.3 && count(on, EL.METAL) === count(off, EL.METAL), `центр масс металла по высоте: без сдвигов ${comY(off).toFixed(2)}, со сдвигами ${comY(on).toFixed(2)}; металла ${count(on, EL.METAL)} и ${count(off, EL.METAL)}`);
+  const off = mk(); for (let k = 0; k < 300; k++) off.step();
+  const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 300; k++) on.step();
+  // Перешеек под тяжёлым блоком не выдерживает: сплющивается и расползается вширь (стоит) или рвётся и блок оседает на нижний кусок — по зерну
+  // случая; в обоих — клеток металла в рядах перешейка не 12, а металл сохраняется. Без сдвигов — ровно 12.
+  const neckCells = (sim) => { let n = 0; for (let y = 112; y <= 115; y++) for (let x = 40; x <= 80; x++) if (sim.type[sim.idx(x, y)] === EL.METAL) n++; return n; };
+  ok(neckCells(off) === 12 && neckCells(on) !== 12 && count(on, EL.METAL) === count(off, EL.METAL), `клеток металла в рядах перешейка: без сдвигов ${neckCells(off)}, со сдвигами ${neckCells(on)}; металла ${count(on, EL.METAL)} и ${count(off, EL.METAL)}`);
 }
 
 console.log('42. Правила мира в отмене; на паузе нагрузка и устойчивость освежаются по запросу');
@@ -2132,6 +2133,47 @@ console.log('46. Падающее тело — одно целое (sim/body.js)
   for (let k = 0; k < 50; k++) s.step();   // крошке до пола 70 клеток
   const crumb = []; for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.STONE && (i % 60) < 10 && ((i / 60) | 0) < 76) crumb.push(i);
   ok(crumb.length === 2 && crumb.every((i) => ((i / 60) | 0) === 75), `крошка из двух пикселей упала на пол по-старому: ${crumb.map((i) => (i % 60) + ',' + ((i / 60) | 0)).join(' ')}`);
+}
+
+console.log('47. Кровь (EL.BLOOD): течёт, смешивается с водой; удар проливает кровь; регенерация выключается; стойкость в 5 раз выше');
+{
+  // Кровь — жидкость: падает и растекается.
+  const s = new Sim(30, 30); s.lookColor = () => [0, 0, 0];
+  box(s, 0, 26, 29, 29, EL.STONE);
+  s.setCell(10, 5, EL.BLOOD, false);
+  for (let k = 0; k < 80; k++) s.step();
+  let onFloor = 0; for (let x = 0; x < 30; x++) if (s.type[s.idx(x, 25)] === EL.BLOOD) onFloor++;
+  ok(onFloor === 1 && count(s, EL.BLOOD) === 1, `капля крови упала на пол и растеклась по нему: на полу ${onFloor}, всего ${count(s, EL.BLOOD)}`);
+  // Смешивается с водой в раствор: в одной клетке и кровь, и вода.
+  const m = new Sim(30, 30); m.lookColor = () => [0, 0, 0];
+  box(m, 0, 26, 29, 29, EL.STONE); box(m, 9, 20, 20, 25, EL.WATER); box(m, 14, 20, 15, 25, EL.BLOOD);
+  for (let k = 0; k < 400; k++) m.step();
+  let mixed = 0;
+  for (let i = 0; i < m.type.length; i++) { const c = m.comp(i); if (solGet(c, EL.BLOOD) > 0 && solGet(c, EL.WATER) > 0) mixed++; }
+  ok(mixed > 0, `кровь смешалась с водой: клеток с обоими ${mixed}`);
+  // Удар по человеку проливает кровь; раздавленный — больше.
+  const h = new Sim(30, 20); h.lookColor = () => [0, 0, 0];
+  box(h, 0, 17, 29, 19, EL.WALL); h.setCell(10, 16, EL.HUMAN, false);
+  const hi = h.idx(10, 16);
+  h.hitCreature(hi, h.idx(9, 16));
+  ok(count(h, EL.BLOOD) > 0, `удар пролил кровь: ${count(h, EL.BLOOD)} капель`);
+  h.crushBody(hi);
+  ok(count(h, EL.BLOOD) >= 4, `раздавленный пролил больше: ${count(h, EL.BLOOD)} капель`);
+  // Регенерация: включена — рана заживает, выключена — остаётся.
+  const run = (on) => {
+    const r = new Sim(20, 10); r.lookColor = () => [0, 0, 0];
+    box(r, 0, 8, 19, 9, EL.WALL); r.setCell(5, 7, EL.HUMAN, false); r.dirt[r.idx(5, 7)] = 85;
+    r.regenOn = on;
+    for (let k = 0; k < 300; k++) r.step();
+    let d = -1; for (let i = 0; i < r.type.length; i++) if (r.type[i] === EL.HUMAN) d = r.dirt[i];
+    return d;
+  };
+  ok(run(true) === 0 && run(false) === 85, `регенерация: вкл — урон ${run(true)}, выкл — урон ${run(false)}`);
+  // Правило входит в снимок отмены.
+  const q = new Sim(10, 10); const sn = q.snapshot(); q.regenOn = false; const sn2 = q.snapshot(); q.restore(sn);
+  ok(sn.rules.regenOn === true && sn2.rules.regenOn === false && q.regenOn === true, 'правило регенерации входит в отмену');
+  // Предел нагрузки в 5 раз выше прежнего (1.75 -> 8.75).
+  ok(Math.abs(g('LOAD_PER_TOUGHNESS') - 8.75) < 1e-9, `предел нагрузки на единицу стойкости ${g('LOAD_PER_TOUGHNESS')}`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');

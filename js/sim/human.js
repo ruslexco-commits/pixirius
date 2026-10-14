@@ -76,8 +76,11 @@ const SWIM_FRAMES = 3;
 // Как часто пловец ищет ближайший берег и как далеко вдоль ряда смотрит.
 const SWIM_LOOK = 12;
 const SWIM_SHORE_RANGE = 80;
-// Радиус пятна крови вокруг раздавленного (crushBody).
+// Радиус пятна крови вокруг раздавленного (crushBody) и сколько капель крови
+// (EL.BLOOD) выливается при этом; удар — HIT_BLOOD_DROPS капель.
 const CRUSH_RADIUS = 2;
+const CRUSH_BLOOD = 9;
+const HIT_BLOOD_DROPS = 2;
 
 // Отравление (просьба пользователя): реагент и окисел камня не убивают
 // касанием сразу. Пока живой (человек или протагонист) касается яда, он
@@ -449,7 +452,7 @@ class SimHuman {
     // 2. Вода над головой или завален со всех сторон: терпит, пока хватает
     //    дыхания.
     const above = y > 0 ? this.type[this.idx(x, y - 1)] : EL.EMPTY;
-    if (above === EL.WATER || above === EL.SOLUTION || this.walledIn(x, y)) {
+    if (above === EL.WATER || above === EL.SOLUTION || above === EL.BLOOD || this.walledIn(x, y)) {
       mind.wet++;
       if (mind.wet >= HUMAN_DROWN_FRAMES) { this.humanDie(i); return; }
     } else if (mind.wet > 0) {
@@ -674,6 +677,8 @@ class SimHuman {
       st.deathKind = 'crushed';
     }
     this.clearCell(vi);
+    // Кровь — настоящей жидкостью (EL.BLOOD) на свободных клетках рядом.
+    this.spillBlood(x0, y0, CRUSH_BLOOD);
     const R = CRUSH_RADIUS;
     for (let dy = -R; dy <= R; dy++) {
       const y = y0 + dy;
@@ -687,6 +692,20 @@ class SimHuman {
         const v = 255 - d2 * 40;
         if (v > this.stain[k]) { this.stain[k] = v; this.markDirty(k); }
       }
+    }
+  }
+
+  // Капли крови (EL.BLOOD): n штук на случайных свободных клетках в радиусе
+  // CRUSH_RADIUS от (x0, y0). Мало места — меньше капель.
+  spillBlood(x0, y0, n) {
+    const w = this.w, h = this.h, R = CRUSH_RADIUS;
+    for (let k = 0; k < n * 3 && n > 0; k++) {
+      const x = x0 + ((Math.random() * (2 * R + 1)) | 0) - R, y = y0 + ((Math.random() * (2 * R + 1)) | 0) - R;
+      if (x < 0 || x >= w || y < 0 || y >= h) continue;
+      const j = y * w + x;
+      if (this.type[j] !== EL.EMPTY) continue;
+      this.spawn(j, EL.BLOOD);
+      n--;
     }
   }
 
@@ -721,9 +740,10 @@ class SimHuman {
     return false;
   }
 
-  // Урон живого (dirt, см. HIT_DAMAGE) понемногу заживает.
+  // Урон живого (dirt, см. HIT_DAMAGE) понемногу заживает — если регенерация
+  // включена (sim.regenOn, настройки).
   healTick(i) {
-    if (this.dirt[i] === 0 || this.frame % HEAL_PERIOD !== 0) return;
+    if (!this.regenOn || this.dirt[i] === 0 || this.frame % HEAL_PERIOD !== 0) return;
     this.dirt[i]--;
     this.markDirty(i);
   }
@@ -739,6 +759,7 @@ class SimHuman {
     }
     this.dirt[j] = d;
     this.markDirty(j);
+    this.spillBlood(j % this.w, (j / this.w) | 0, HIT_BLOOD_DROPS);
     // Лужица крови под ним (клетки ниже, не живые).
     const w = this.w, x = j % w, y = (j / w) | 0;
     if (y + 1 < this.h) {

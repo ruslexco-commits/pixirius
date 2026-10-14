@@ -122,6 +122,9 @@ class SimProtagonist {
     // для интерфейса это новый персонаж, и его память о карте начинается
     // заново (см. js/play.js). У игроков мультиплеера — свой serial.
     this.playerSerial = 0;
+    // Регенерация урона живых (healTick, sim/human.js): правило мира, в
+    // настройках (шестерёнка), входит в отмену (rules) и идёт вкладкам с тиком.
+    this.regenOn = true;
   }
 
   // Управление и состояние игрока n (создаются при первом обращении).
@@ -385,11 +388,11 @@ class SimProtagonist {
       // 2. Вода над головой или завален со всех сторон: задыхается за то же
       //    время, что и человек.
       const above = y > 0 ? type[i - w] : EL.EMPTY;
-      if (alive && (above === EL.WATER || above === EL.SOLUTION || this.walledIn(x, y))) {
+      if (alive && (above === EL.WATER || above === EL.SOLUTION || above === EL.BLOOD || this.walledIn(x, y))) {
         st.wet++;
         if (st.wet >= HUMAN_DROWN_FRAMES) {
           this.extra[i] = 1; alive = false;
-          const drowned = above === EL.WATER || above === EL.SOLUTION;
+          const drowned = above === EL.WATER || above === EL.SOLUTION || above === EL.BLOOD;
           st.death = drowned ? 'Утонул' : 'Задохнулся под завалом';
           st.deathKind = drowned ? 'drown' : 'buried';
         }
