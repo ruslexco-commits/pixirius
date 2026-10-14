@@ -300,6 +300,7 @@ class Sim {
     this.initCharges();
     this.initSpawns();
     this.initLoad();
+    this.initBody();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -575,6 +576,8 @@ class Sim {
     // считается только для кусков, идущих в обход.
     this.updateSleep();
     this.computeDebrisWindChance();
+    // Крупные падающие тела — целиком (sim/body.js), до обхода клеток.
+    this.updateBodies();
     // Обход клеток — несколькими потоками, если они запущены и готовы
     // (sim/threads.js), иначе одним. В мультиплеере — полосами, одинаково у
     // всех вкладок, с потоками и без (updateBands, sim/threads.js).

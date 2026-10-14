@@ -76,13 +76,18 @@ function loadSim({ ref = null, seed = 1 } = {}) {
     + 'const Math = Object.create(globalThis.Math); Math.random = __random;\n'
     + parts.join('\n')
     + `\nreturn { ${[...names].join(', ')} };`;
-  const api = new Function('__random', body)(makeRandom(seed));
+  // Поток случайных чисел можно начать заново (reseed): проверки, которым важен
+  // исход броска (трещины взрыва, отражённая волна камеры), не должны зависеть
+  // от того, сколько чисел до них потратили предыдущие.
+  let rnd = makeRandom(seed);
+  const api = new Function('__random', body)(() => rnd());
   return {
     get(name) {
       if (!(name in api)) throw new Error(`в загруженных скриптах нет имени ${name}`);
       return api[name];
     },
     has(name) { return name in api; },
+    reseed(s) { rnd = makeRandom(s); },
   };
 }
 
