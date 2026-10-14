@@ -121,7 +121,7 @@ const TC_SIZE = 16;
 const THREAD_SHARED_FIELDS = [
   'type', 'life', 'extra', 'shade', 'temp', '_temp2', 'moisture', 'sol', 'sol2', 'beam', 'beamExtra',
   'colonistHomeX', 'colonistHomeY', 'moved', 'stability', '_liquidEscape', '_debrisWindVX',
-  'windVXFrame', 'windVYFrame', 'windVX', 'windVY', '_windVX2', '_windVY2', '_chunkActive', '_chunkDirty', '_tempRowHot', '_chunkHeatWake', '_chunkAsleep', 'stain', 'dirt', 'fall', 'crushed',
+  'windVXFrame', 'windVYFrame', 'windVX', 'windVY', '_windVX2', '_windVY2', '_chunkActive', '_chunkDirty', '_tempRowHot', '_chunkHeatWake', '_chunkAsleep', 'stain', 'dirt', 'burn', 'acid', 'fall', 'crushed',
 ];
 
 // Случайные числа полосы в мультиплеере (см. шапку): mulberry32 от сида.

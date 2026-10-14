@@ -222,6 +222,9 @@ void main() {
   ivec2 p = ivec2(int(gl_FragCoord.x), uSize.y - 1 - int(gl_FragCoord.y));
   int i = p.y * uSize.x + p.x;
   int id = int(texelFetch(uType, p, 0).r);
+  // Живых (протагонист, человек) рисует спрайт поверх поля (js/creature-draw.js):
+  // здесь их клетки — пустота.
+  if (id == ${EL.HUMAN} || id == ${EL.PROTAGONIST}) id = 0;
   vec4 e0 = texelFetch(uElem, ivec2(id, 0), 0);
   vec4 e1 = texelFetch(uElem, ivec2(id, 1), 0);
 

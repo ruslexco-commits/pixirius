@@ -116,18 +116,27 @@ class SimSpawns {
   // Безопасно ли встать протагонисту в клетку i: она пустая, под ней
   // опора — не газ, не жидкость, не пустота, — и ни сама опора, ни соседи
   // не смертельны.
+  // Клетка i — главная (низ по центру) тела: оно целиком помещается в
+  // пустоту, под низом опора, и вокруг тела нет смертельного.
   safeSpot(i) {
     const w = this.w, type = this.type;
     if (type[i] !== EL.EMPTY) return false;
     const x = i % w, y = (i / w) | 0;
     if (y + 1 >= this.h) return false;
-    const below = type[i + w];
-    if (below === EL.EMPTY || IS_GASLIKE[below] === 1 || IS_LIQUID[below] === 1 || below === EL.PROTAGONIST || below === EL.HUMAN) return false;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = x + dx, ny = y + dy;
-        if (nx < 0 || nx >= w || ny < 0 || ny >= this.h) continue;
-        if (this.humanDeadly(type[ny * w + nx])) return false;
+    // Опора: хотя бы под одной клеткой низа твёрдое (не пустота, газ,
+    // жидкость и не другое живое).
+    let ground = false;
+    for (let dx = -PERSON_PIVOT_COL; dx < PERSON_COLS - PERSON_PIVOT_COL && !ground; dx++) {
+      const nx = x + dx;
+      if (nx < 0 || nx >= w) continue;
+      const below = type[(y + 1) * w + nx];
+      ground = !(below === EL.EMPTY || IS_GASLIKE[below] === 1 || IS_LIQUID[below] === 1 || IS_CREATURE[below] === 1);
+    }
+    if (!ground || !this.creatureFitsEmpty(x, y)) return false;
+    const y0 = y - PERSON_ROWS, y1 = y + 1, x0 = x - PERSON_PIVOT_COL - 1, x1 = x + PERSON_COLS - PERSON_PIVOT_COL;
+    for (let yy = Math.max(0, y0); yy <= Math.min(this.h - 1, y1); yy++) {
+      for (let xx = Math.max(0, x0); xx <= Math.min(w - 1, x1); xx++) {
+        if (this.humanDeadly(type[yy * w + xx])) return false;
       }
     }
     return true;
@@ -178,8 +187,7 @@ class SimSpawns {
   // над ней (метка "на заднем плане", клетка может быть занята). -1 — некуда.
   spotAtMark(x, y) {
     for (let yy = y; yy >= 0; yy--) {
-      const i = yy * this.w + x;
-      if (this.type[i] === EL.EMPTY) return i;
+      if (this.creatureFitsEmpty(x, yy)) return yy * this.w + x;
     }
     return -1;
   }
@@ -208,7 +216,7 @@ class SimSpawns {
   // новый, живой, с прежним номером.
   respawnPlayer(n, i) {
     const old = this.findProtagonist(n);
-    if (old >= 0 && old !== i) this.clearCell(old);
+    if (old >= 0 && old !== i) this.removeCreature(old);
     this.placePlayer(n, i);
   }
 }

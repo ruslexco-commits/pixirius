@@ -74,6 +74,10 @@ const PARTICLE_FIELDS = [
   // мутная вода откладывает её на твёрдое и сыпучее, вода забирает обратно
   // (sim/mud.js). Едет с частицей.
   { name: 'dirt', empty: 0, moves: true },
+  // Ожог и кислотная язва клетки тела живого (sim/creature.js): 0 — чисто,
+  // 255 — обуглено / растворено. Едут вместе с клеткой; у прочего — 0.
+  { name: 'burn', empty: 0, moves: true },
+  { name: 'acid', empty: 0, moves: true },
   // Пятно контакта (sim/landing.js): fall — клетка падала в составе
   // осыпавшегося тела (по нему видно, какое тело только что приземлилось),
   // crushed — клетка продавлена приземлившимся телом: сколько кадров ещё
@@ -272,6 +276,8 @@ class Sim {
     this.beamExtra = new Uint8Array(n);
     this.stain = new Uint8Array(n);
     this.dirt = new Uint8Array(n);
+    this.burn = new Uint8Array(n);
+    this.acid = new Uint8Array(n);
     this.fall = new Uint8Array(n);
     this.crushed = new Uint8Array(n);
     // Стадия окисла, которую кисть ставит поставленной клетке (0 — как
@@ -301,6 +307,7 @@ class Sim {
     this.initSpawns();
     this.initLoad();
     this.initBody();
+    this.initCreature();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -322,6 +329,8 @@ class Sim {
     this.sol2[i] = 0;
     this.stain[i] = 0;
     this.dirt[i] = 0;
+    this.burn[i] = 0;
+    this.acid[i] = 0;
     this.fall[i] = 0;
     this.crushed[i] = 0;
     this.markDirty(i);
@@ -368,6 +377,8 @@ class Sim {
     this.extra[i] = 0;
     this.stain[i] = 0;
     this.dirt[i] = 0;
+    this.burn[i] = 0;
+    this.acid[i] = 0;
     this.fall[i] = 0;
     this.crushed[i] = 0;
     // Состав принадлежит той частице, что была здесь раньше, — новая о нём
@@ -527,6 +538,8 @@ class Sim {
     t = this.sol2[i]; this.sol2[i] = this.sol2[j]; this.sol2[j] = t;
     t = this.stain[i]; this.stain[i] = this.stain[j]; this.stain[j] = t;
     t = this.dirt[i]; this.dirt[i] = this.dirt[j]; this.dirt[j] = t;
+    t = this.burn[i]; this.burn[i] = this.burn[j]; this.burn[j] = t;
+    t = this.acid[i]; this.acid[i] = this.acid[j]; this.acid[j] = t;
     t = this.fall[i]; this.fall[i] = this.fall[j]; this.fall[j] = t;
     t = this.crushed[i]; this.crushed[i] = this.crushed[j]; this.crushed[j] = t;
     // Движение будит оба куска поля (sim/sleep.js).
@@ -657,7 +670,7 @@ class Sim {
     // В параллельной полосе (sim/threads.js) люди и колонисты
     // откладываются на главный поток: их память — в Map главного потока.
     // Туда же — клонер, который копирует человека.
-    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || id === EL.PROTAGONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
+    if (this._inBand && ((IS_CREATURE[id] === 1 && (this.extra[i] & 127) === PERSON_PIVOT) || id === EL.COLONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
       this.defer(DEFER_UPDATE, i);
       return;
     }
@@ -666,17 +679,11 @@ class Sim {
 
     const id2 = this.type[i];
     if (id2 === EL.EMPTY || this.moved[i]) return;
-    // Протагонист ходит и падает сам (reactProtagonist): физика сыпучего
-    // скатывала бы его с каждого уступа.
-    if (id2 === EL.PROTAGONIST) return;
+    // Протагонист и человек — тела из многих клеток (sim/creature.js): ходят
+    // и падают целиком сами (reactProtagonist, reactHuman), физика сыпучего
+    // разорвала бы тело по клеткам.
+    if (IS_CREATURE[id2] === 1) return;
     const el2 = ELEMENTS[id2];
-    // Живой человек падает только прямо вниз: физика сыпучего скатывала его
-    // с края уступа по диагонали, и он падал с любой высоты, хотя сам с
-    // уступа выше HUMAN_MAX_DROP не сходит (sim/human.js).
-    if (id2 === EL.HUMAN && !this.extra[i]) {
-      if (y + 1 < this.h) this.attemptSwapOrMove(i, i + this.w, el2, false);
-      return;
-    }
     // windScale=0 у обычного сыпучего (песок и т.п.) — оно и так тяжёлое и
     // осознанно оставлено ветром не сносимым (см. updatePowder).
     if (el2.cat === CAT.POWDER) this.updatePowder(x, y, i, el2, 0.05);
@@ -746,8 +753,7 @@ class Sim {
         this.tryEvaporateMoisture(x, y, i);
         break;
       case EL.COLONIST: this.reactColonist(x, y, i); break;
-      case EL.HUMAN: this.reactHuman(x, y, i); break;
-      case EL.PROTAGONIST: this.reactProtagonist(x, y, i); break;
+      case EL.HUMAN: case EL.PROTAGONIST: this.reactCreature(x, y, i, id); break;
     }
   }
 }

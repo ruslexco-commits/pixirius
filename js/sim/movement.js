@@ -110,14 +110,20 @@ class SimMovement {
       if (!rising && IS_LIQUID[this.type[i]] === 1 && ni - this.w !== i && ni >= this.w && this.isPendingFaller(ni - this.w)) return false;
       this.swap(i, ni); this.moved[ni] = 1; return true;
     }
-    if (IS_MOVABLE_ID[nt] !== 1) return false;
     // Падающий обломок твёрдого (строка ниже — индекс больше i + 1)
     // раздавливает человека и протагониста на своём пути, а не
     // проскальзывает сквозь них, как сквозь песок (просьба пользователя).
-    if (!rising && (nt === EL.HUMAN || nt === EL.PROTAGONIST) && ni > i + 1 && IS_STRUCTURAL[this.type[i]] === 1) {
-      this.crushBody(ni);
-      this.swap(i, ni); this.moved[ni] = 1; return true;
+    // Тело живого — много клеток (sim/creature.js): раздавливается оно всё, а
+    // клетка уходит из-под обломка пустой. Остальное — преграда: клетки тела
+    // никто не сдвигает, оно ходит само.
+    if (IS_CREATURE[nt] === 1) {
+      if (!rising && ni > i + 1 && IS_STRUCTURAL[this.type[i]] === 1) {
+        this.crushBody(ni);
+        if (this.type[ni] === EL.EMPTY) { this.swap(i, ni); this.moved[ni] = 1; return true; }
+      }
+      return false;
     }
+    if (IS_MOVABLE_ID[nt] !== 1) return false;
     const nd = DENSITY[nt];
     if (rising ? (nd > el.density) : (nd < el.density)) {
       // Тонущий тяжёлый материал (rising=false — обычное падение, не

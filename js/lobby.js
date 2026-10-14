@@ -504,7 +504,7 @@ class Lobby {
       ctx.textBaseline = 'bottom';
       if (!this.nameTags || this.nameTags.sim !== s) { this.nameTags = new NameTags(); this.nameTags.sim = s; }
       this.nameTags.update(s);
-      this.nameTags.draw(ctx, s, names, (j) => [(j % s.w + 0.5) * z, ((j / s.w) | 0) * z - z * 0.6, true], (k) => this.mp.sayOf(k));
+      this.nameTags.draw(ctx, s, names, (j) => [(j % s.w + 1) * z, (((j / s.w) | 0) - PERSON_HEIGHT) * z - z * 0.6, true], (k) => this.mp.sayOf(k));
       ctx.restore();
     }
     if (this.isHost && (!this.previewTick || ++this.previewTick > 60)) { this.previewTick = 1; this.drawHostPreview(); }
