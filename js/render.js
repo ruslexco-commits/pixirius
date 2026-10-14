@@ -537,10 +537,7 @@ class Renderer {
 
   cellColor(i) {
     const sim = this.sim;
-    let id = sim.type[i];
-    // Живых (протагонист, человек) рисует спрайт поверх поля (js/creature-draw.js):
-    // клетки их тела здесь — пустота.
-    if (id === EL.HUMAN || id === EL.PROTAGONIST) id = EL.EMPTY;
+    const id = sim.type[i];
     if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
     if (this.debugLoad && isStructural(id)) return this.loadColor(i);
     const x = i % sim.w, y = (i / sim.w) | 0;
@@ -1179,21 +1176,6 @@ class Renderer {
     ctx.restore();
   }
 
-  // Живые поверх поля, плавно (js/creature-draw.js): положение каждого тела
-  // догоняет настоящее, а не прыгает по клетке.
-  drawCreatures() {
-    const sim = this.sim, ctx = this.ctx, z = this.zoom;
-    const anim = this.creatureAnim || (this.creatureAnim = new CreatureAnim());
-    anim.begin(performance.now());
-    for (const p of creaturePivots(sim)) {
-      const s = anim.at(sim.type[p] * 65536 + sim.life[p], p % sim.w, (p / sim.w) | 0);
-      const sway = sim.creatureDeadAt(p) ? 0 : creatureSway(s, anim.last, sim.life[p]);
-      drawCreatureSprite(ctx, sim, p, s.x * z, s.y * z, z, null, sway);
-    }
-    drawCreaturePieces(ctx, sim, 0, 0, 0, 0, z, null);
-    anim.end();
-  }
-
   render(cursor) {
     this.debugStability = !!cursor.debugStability;
     this.debugWind = !!cursor.debugWind;
@@ -1203,7 +1185,6 @@ class Renderer {
     // На паузе шаг не идёт, а кистью мир правят: данные видов — свежие.
     if (this.sim.paused && (this.debugLoad || this.debugStability)) this.sim.refreshLoad(this.debugLoad);
     this.drawFrame();
-    this.drawCreatures();
     this.updateLighting();
     if (this.lightOn) {
       this.buildLightImage();

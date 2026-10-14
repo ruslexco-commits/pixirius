@@ -266,9 +266,9 @@ class Multiplayer {
   protagonistToSpawn(s) {
     s.protagonistAsSpawn = this.me;
     for (let i = 0; i < s.type.length; i++) {
-      if (s.type[i] !== EL.PROTAGONIST || s.life[i] !== 0 || (s.extra[i] & 127) !== PERSON_PIVOT) continue;
+      if (s.type[i] !== EL.PROTAGONIST || s.life[i] !== 0) continue;
       s.setSpawnMark(i % s.w, (i / s.w) | 0, this.me);
-      s.removeCreature(i);
+      s.clearCell(i);
     }
   }
 
@@ -579,7 +579,7 @@ class Multiplayer {
     const st = this.state;
     for (const p of st.players) {
       const i = s.findProtagonist(p.n);
-      const dead = i < 0 || s.creatureDeadAt(i);
+      const dead = i < 0 || s.extra[i] === 1;
       const key = (lobby ? 'l' : 'g') + p.n;
       if (!dead) { delete this.deadSince[key]; if (!lobby) this.status[p.n] = ''; continue; }
       if (this.deadSince[key] === undefined) {

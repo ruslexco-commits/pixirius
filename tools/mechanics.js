@@ -666,182 +666,175 @@ console.log('19. Спавн не копит тепло: прибавляет т�
     `камень в 300° — ${s.temp[hot]}; лёд ${tIce1}, после перерисовок ${tIce3}; лёд на морозе -60 — ${s.temp[cold]}`);
 }
 
-// ---- живые: тела в мире (sim/creature.js) ----
-// Мир для живых: пол с y = floor (камень), тело ростом 16 стоит на ряду floor - 1.
-const WORLD = (w = 80, h = 80, floor = 70) => { const s = new Sim(w, h); s.lookColor = () => [0, 0, 0]; box(s, 0, floor, w - 1, h - 1, EL.STONE); return s; };
-// Главная клетка (низ по центру) живого типа t с номером n.
-const pivotOf = (s, t, n) => { for (let i = 0; i < s.type.length; i++) if (s.type[i] === t && (s.extra[i] & 127) === g('PERSON_PIVOT') && (n === undefined || s.life[i] === n) && s.life[i] >= 0) return i; return -1; };
-const xyOf = (s, i) => (i < 0 ? [-1, -1] : [i % s.w, (i / s.w) | 0]);
-
-console.log('20. Протагонист: тело 16x6, одно на поле, падает, ходит, прыгает, гибнет');
+console.log('20. Протагонист: один на поле, падает, ходит, прыгает, гибнет как человек');
 {
-  const P = EL.PROTAGONIST, N = g('PERSON_N');
-  const s = WORLD();
-  s.setCell(10, 40, P, false);
-  s.setCell(20, 40, P, false);
-  ok(N === 92 && count(s, P) === N && s.findProtagonist() === s.idx(20, 40), `после двух постановок на поле одно тело (${count(s, P)} клеток из ${N}), главная клетка — где поставили вторым`);
-  for (let k = 0; k < 60; k++) s.step();
+  const P = EL.PROTAGONIST;
+  const s = new Sim(40, 30);
+  box(s, 0, 25, 39, 29, EL.STONE);
+  s.setCell(10, 5, P, false);
+  s.setCell(20, 5, P, false);
+  ok(count(s, P) === 1 && s.type[s.idx(20, 5)] === P, `после двух постановок на поле ${count(s, P)}, стоит там, где поставили вторым`);
+  for (let k = 0; k < 40; k++) s.step();
   let p = s.findProtagonist();
-  ok(p === s.idx(20, 69) && count(s, P) === N, `упал на пол целиком: (${xyOf(s, p)}), клеток ${count(s, P)}, ждали (20,69)`);
+  ok(p === s.idx(20, 24), `упал на пол: (${p % s.w}, ${(p / s.w) | 0}), ждали (20, 24)`);
   s.playerInput.right = true;
   for (let k = 0; k < 10; k++) s.step();
   s.playerInput.right = false;
   p = s.findProtagonist();
   ok(p % s.w === 25, `10 кадров вправо (шаг раз в 2 кадра): x = ${p % s.w}, ждали 25`);
-  // Ступенька в две клетки — перешагивает без прыжка, стена в шесть — нет.
-  box(s, 27, 68, 27, 69, EL.STONE);
-  box(s, 40, 64, 40, 69, EL.STONE);
+  // Ступенька в одну клетку — перешагивает, стена в две — нет.
+  s.setCell(27, 24, EL.STONE, false);
+  s.setCell(33, 24, EL.STONE, false); s.setCell(33, 23, EL.STONE, false);
   s.playerInput.right = true;
-  for (let k = 0; k < 60; k++) s.step();
+  for (let k = 0; k < 30; k++) s.step();
   s.playerInput.right = false;
   p = s.findProtagonist();
-  ok(p % s.w === 36, `перешагнул ступеньку в 2 и упёрся в стену в 6: x = ${p % s.w}, ждали 36 (правый край тела — главная клетка + 3, стена на x = 40)`);
-  // Прыжок: плавно на 4 клетки вверх (не за один кадр), зависание, падение.
+  ok(p % s.w === 32, `перешагнул ступеньку и упёрся в стену: x = ${p % s.w}, ждали 32`);
+  // Прыжок: плавно на 2 клетки вверх (не за один кадр), зависание,
+  // падение обратно.
   for (let k = 0; k < 5; k++) s.step();
   const y0 = (s.findProtagonist() / s.w) | 0;
   s.playerInput.jump = true;
   const path = [];
-  for (let k = 0; k < 40; k++) { s.step(); path.push((s.findProtagonist() / s.w) | 0); }
+  for (let k = 0; k < 30; k++) { s.step(); path.push((s.findProtagonist() / s.w) | 0); }
   const top = Math.min(...path), atTop = path.filter((v) => v === top).length;
-  ok(top === y0 - 4 && path[0] === y0 - 1 && atTop >= 4 && path[path.length - 1] === y0,
-    `прыжок: стоял на ${y0}, путь по кадрам ${path.slice(0, 18).join(' ')}… — вершина ${top} (${atTop} кадров), приземлился на ${path[path.length - 1]}`);
+  ok(top === y0 - 2 && path[0] === y0 - 1 && atTop >= 4 && path[path.length - 1] === y0,
+    `прыжок: стоял на ${y0}, путь по кадрам ${path.slice(0, 16).join(' ')}… — вершина ${top} (${atTop} кадров), приземлился на ${path[path.length - 1]}`);
 
-  // Лестница из уступов в клетку — проходится шагом, без прыжков.
-  const st = WORLD();
-  for (let k = 0; k < 6; k++) box(st, 30 + 8 * k, 69 - k, 79, 69 - k, EL.STONE);
-  st.setCell(20, 69, P, false);
+  // Лестница из уступов в пиксель — проходится шагом, без прыжков, и с
+  // края уступа он не скатывается.
+  const st = new Sim(40, 30);
+  box(st, 0, 25, 39, 29, EL.STONE);
+  for (let k = 0; k < 6; k++) box(st, 10 + 3 * k, 24 - k, 39, 24 - k, EL.STONE);
+  st.setCell(5, 24, P, false);
   st.playerInput.right = true;
-  for (let k = 0; k < 200; k++) st.step();
+  for (let k = 0; k < 60; k++) st.step();
   st.playerInput.right = false;
-  const sp = st.findProtagonist();
-  ok(((sp / st.w) | 0) === 63, `лестница в 6 уступов: поднялся на y = ${(sp / st.w) | 0} (верх лестницы — 63), x = ${sp % st.w}`);
-  // Стоит на опоре в одну клетку (кочка под краем низа) — и остаётся.
-  const edge = WORLD();
-  edge.setCell(8, 69, EL.STONE, false);
-  edge.setCell(8, 68, P, false);
+  let sp = st.findProtagonist();
+  ok(((sp / st.w) | 0) === 18, `лестница в 6 уступов: поднялся на y = ${(sp / st.w) | 0} (верх лестницы — 18), x = ${sp % st.w}`);
+  // Стоит на самом краю уступа — и остаётся.
+  const edge = new Sim(20, 20);
+  box(edge, 0, 15, 19, 19, EL.STONE);
+  edge.setCell(8, 14, EL.STONE, false);
+  edge.setCell(8, 13, P, false);
   for (let k = 0; k < 40; k++) edge.step();
-  ok(edge.findProtagonist() === edge.idx(8, 68), 'на кочке в одну клетку стоит, не скатывается');
+  ok(edge.findProtagonist() === edge.idx(8, 13), 'на кочке в пиксель стоит, не скатывается');
 
-  // Стена в 4 клетки: встать вплотную, прыгнуть и шагнуть — оказаться на ней.
-  const wall = WORLD();
-  box(wall, 40, 66, 79, 69, EL.STONE);
-  wall.setCell(34, 69, P, false);
+  // Стена в 2 пикселя: встать вплотную, прыгнуть и шагнуть — оказаться на ней.
+  const wall = new Sim(30, 20);
+  box(wall, 0, 15, 29, 19, EL.STONE);
+  box(wall, 12, 13, 29, 14, EL.STONE);   // стена высотой 2, верх на y = 12 свободен
+  wall.setCell(11, 14, P, false);
   for (let k = 0; k < 5; k++) wall.step();
   wall.playerInput.right = true;
   wall.playerInput.jump = true;
-  for (let k = 0; k < 60; k++) wall.step();
+  for (let k = 0; k < 30; k++) wall.step();
   wall.playerInput.right = false;
   const wp = wall.findProtagonist();
-  ok(((wp / wall.w) | 0) === 65 && wp % wall.w > 38, `стена в 4 клетки: после прыжка со шагом стоит на (${xyOf(wall, wp)}), верх стены — y = 66`);
-  // А на стену в 5 клеток прыжка не хватает.
-  const high = WORLD();
-  box(high, 40, 65, 79, 69, EL.STONE);
-  high.setCell(34, 69, P, false);
+  ok(((wp / wall.w) | 0) === 12 && wp % wall.w > 12, `стена в 2 пикселя: после прыжка со шагом стоит на (${wp % wall.w}, ${(wp / wall.w) | 0}), верх стены — y = 12`);
+  // А на стену в 3 пикселя прыжка не хватает.
+  const high = new Sim(30, 20);
+  box(high, 0, 15, 29, 19, EL.STONE);
+  box(high, 12, 12, 29, 14, EL.STONE);
+  high.setCell(11, 14, P, false);
   for (let k = 0; k < 5; k++) high.step();
   high.playerInput.right = true;
   high.playerInput.jump = true;
-  for (let k = 0; k < 60; k++) high.step();
+  for (let k = 0; k < 30; k++) high.step();
   const hp = high.findProtagonist();
-  ok(((hp / high.w) | 0) === 69, `стена в 5 клеток: остался внизу (${xyOf(high, hp)})`);
-
-  // Касание лавы жжёт клетки, которые касаются; сумма ожогов — смерть.
-  const d = WORLD();
-  d.setCell(20, 69, P, false);
-  box(d, 24, 60, 30, 69, EL.LAVA);
-  let dd = -1;
-  for (let k = 1; k <= 300 && dd < 0; k++) { d.step(); const q = d.findProtagonist(); if (q >= 0 && d.creatureDeadAt(q)) dd = k; }
-  const dq = d.findProtagonist();
-  let burnt = 0; for (let i = 0; i < d.type.length; i++) if (d.type[i] === P && d.burn[i] > 0) burnt++;
-  ok(dd > 0 && dd < 200 && burnt >= 8, `касание лавы — погиб на ${dd}-м кадре, обожжённых клеток тела ${burnt}`);
-  // Захлёбывается под водой за то же время, что и человек: вода над головой.
-  const wtr = WORLD();
-  box(wtr, 0, 50, 79, 69, EL.WATER);
-  wtr.setCell(40, 50, P, false);
+  ok(hp === high.idx(11, 14), `стена в 3 пикселя: остался внизу (${hp % high.w}, ${(hp / high.w) | 0})`);
+  // Смертельное касание — лава рядом.
+  const d = new Sim(20, 20);
+  box(d, 0, 15, 19, 19, EL.STONE);
+  d.setCell(5, 14, P, false);
+  box(d, 6, 13, 12, 14, EL.LAVA);
+  for (let k = 0; k < 10; k++) d.step();
+  const dp = d.findProtagonist();
+  ok(dp >= 0 && d.extra[dp] === 1, 'касание лавы — погиб');
+  // Захлёбывается под водой за то же время, что и человек.
+  const wtr = new Sim(20, 20);
+  box(wtr, 0, 15, 19, 19, EL.STONE);
+  box(wtr, 0, 5, 19, 14, EL.WATER);
+  wtr.setCell(5, 14, P, false);
   let died = -1;
-  for (let k = 0; k < 500 && died < 0; k++) { wtr.step(); const q = wtr.findProtagonist(); if (q >= 0 && wtr.creatureDeadAt(q)) died = k + 1; }
-  ok(died >= 220 && died <= 290, `под водой погиб на ${died}-м кадре (${g('HUMAN_DROWN_FRAMES')} кадров с водой над головой плюс погружение с поверхности)`);
-  // Зажатый пробел ("вверх") в воде: всплывает до уровня воды (голова над
-  // водой, тело в воде) и держится, пока хватает выносливости; кончилась — тонет.
-  const sw = WORLD();
-  box(sw, 0, 50, 79, 69, EL.WATER);
-  sw.setCell(40, 69, P, false);
-  for (let k = 0; k < 5; k++) sw.step();
+  for (let k = 0; k < 400 && died < 0; k++) { wtr.step(); const q = wtr.findProtagonist(); if (q >= 0 && wtr.extra[q]) died = k + 1; }
+  ok(died >= 170 && died <= 200, `под водой погиб на ${died}-м кадре (человек — через ${g('HUMAN_DROWN_FRAMES')})`);
+  // Зажатый пробел ("вверх") в воде: всплывает до уровня воды и держится,
+  // пока хватает выносливости; кончилась — тонет.
+  const sw = new Sim(20, 30);
+  box(sw, 0, 25, 19, 29, EL.STONE);
+  box(sw, 0, 10, 19, 24, EL.WATER);
+  sw.setCell(8, 24, P, false);
   sw.playerInput.up = true;
-  let surfaced = -1, level250 = false, stam250 = 0;
+  let surfaced = -1, levelAt250 = false, stamAt250 = 0;
   for (let k = 0; k < 520; k++) {
     sw.step();
     const q = sw.findProtagonist();
-    if (surfaced < 0 && q >= 0 && !sw.bodyHeadUnder(q)) surfaced = k + 1;
-    if (k === 249) { level250 = q >= 0 && !sw.bodyHeadUnder(q) && sw.bodyInWater(q); stam250 = sw.playerState.stamina; }
+    if (surfaced < 0 && q >= 0 && sw.type[q - sw.w] === EL.EMPTY) surfaced = k + 1;
+    if (k === 249) { levelAt250 = q >= 0 && sw.type[q - sw.w] === EL.EMPTY && IS_LIQ(sw, q - 1) && IS_LIQ(sw, q + 1); stamAt250 = sw.playerState.stamina; }
   }
   const sq = sw.findProtagonist();
-  ok(surfaced > 0 && surfaced < 100 && level250, `плавание: всплыл за ${surfaced} кадров, на 250-м кадре на уровне воды (голова над водой, тело в воде), сил осталось ${stam250}`);
-  // Утонувшее тело потом заваливается набок (sim/pieces.js) — главной клетки уже нет,
-  // поэтому "ушёл под воду" читается по причине смерти.
-  ok(sw.playerState.exhausted && sw.playerState.death === 'Утонул', `выносливость кончилась (${sw.playerState.stamina}) — ушёл под воду и утонул (${sw.playerState.death})`);
-  // По воде не ходит: над водой он не держится и погружается.
-  const ww = WORLD();
-  box(ww, 0, 50, 79, 69, EL.WATER);
-  ww.setCell(40, 49, P, false);
+  ok(surfaced > 0 && surfaced < 100 && levelAt250,
+    `плавание: всплыл за ${surfaced} кадров, на 250-м кадре на уровне воды (по бокам вода, сверху воздух), сил осталось ${stamAt250}`);
+  ok(sw.playerState.exhausted && sq >= 0 && sw.type[sq - sw.w] !== EL.EMPTY,
+    `выносливость кончилась (${sw.playerState.stamina}) — ушёл под воду (y = ${(sq / sw.w) | 0})`);
+
+  // По воде не ходит: над водой с зажатым "вверх" он не держится —
+  // сбоку пустота, уходит на уровень воды.
+  const ww = new Sim(30, 20);
+  box(ww, 0, 15, 29, 19, EL.STONE);
+  box(ww, 0, 10, 29, 14, EL.WATER);
+  ww.setCell(15, 9, P, false);
   ww.playerInput.up = true;
   ww.playerInput.right = true;
   for (let k = 0; k < 40; k++) ww.step();
   const wq = ww.findProtagonist();
-  ok(((wq / ww.w) | 0) >= 50, `по воде не ходит: шёл вправо над водой — оказался на y = ${(wq / ww.w) | 0} (поверхность воды — 50)`);
-  // Завален со всех сторон — задыхается, как под водой.
-  const bur = WORLD();
-  box(bur, 6, 52, 16, 69, EL.STONE);
-  const bp = bur.idx(10, 69);
-  const cellsOf = (p0) => { const out = []; for (let k = 0; k < g('PERSON_N'); k++) out.push((((p0 / bur.w) | 0) + g('PERSON_DY')[k]) * bur.w + (p0 % bur.w) + g('PERSON_DX')[k]); return out; };
-  for (const c of cellsOf(bp)) bur.clearCell(c);
-  bur.placePlayer(0, bp);
+  ok(((wq / ww.w) | 0) >= 10, `по воде не ходит: шёл вправо над водой — оказался на y = ${(wq / ww.w) | 0} (поверхность воды — 10)`);
+
+  // Завален со всех сторон, считая углы, — задыхается, как под водой.
+  const bur = new Sim(20, 20);
+  box(bur, 0, 15, 19, 19, EL.STONE);
+  box(bur, 7, 13, 9, 14, EL.STONE);
+  bur.setCell(8, 14, P, false);
   let buried = -1;
-  for (let k = 0; k < 400 && buried < 0; k++) { bur.step(); const q = bur.findProtagonist(); if (q >= 0 && bur.creatureDeadAt(q)) buried = k + 1; }
+  for (let k = 0; k < 300 && buried < 0; k++) { bur.step(); const q = bur.findProtagonist(); if (q >= 0 && bur.extra[q]) buried = k + 1; }
   ok(buried >= 170 && buried <= 200, `завален камнем — задохнулся на ${buried}-м кадре`);
   // Мёртвый не слушается.
-  // Две одинаковые сцены с мёртвым: в одной зажата стрелка влево, в другой нет —
-  // мир должен совпасть побайтно.
-  const deadRun = (left) => {
-    const d = WORLD();
-    d.placeProtagonist(d.idx(40, 69));
-    d.creatureKill(d.findProtagonist(0));
-    d.playerInput.left = left;
-    env.reseed(7);
-    for (let k = 0; k < 10; k++) d.step();
-    return d;
-  };
-  const dl = deadRun(true), dn = deadRun(false);
-  let same = true;
-  for (let i = 0; i < dl.type.length && same; i++) same = dl.type[i] === dn.type[i] && dl.life[i] === dn.life[i] && dl.extra[i] === dn.extra[i];
-  ok(same && count(dl, EL.PROTAGONIST) > 0, 'мёртвый не двигается по команде');
+  const q = wtr.findProtagonist();
+  wtr.playerInput.left = true;
+  for (let k = 0; k < 10; k++) wtr.step();
+  ok(wtr.findProtagonist() === q, 'мёртвый не двигается по команде');
 }
 
 console.log('21. Люди плавают; падающее твёрдое давит');
 {
   // Бассейн с берегом на уровне воды справа: человек со дна всплывает и
   // выбирается на берег.
-  const s = WORLD();
-  box(s, 0, 50, 79, 69, EL.WATER);
-  box(s, 41, 64, 79, 69, EL.STONE);   // берег: человеку по плечи (голова над водой на ступеньку выше)
-  s.placeHuman(20, 69);
+  const s = new Sim(30, 20);
+  box(s, 0, 15, 29, 19, EL.STONE);
+  box(s, 0, 10, 14, 14, EL.WATER);
+  box(s, 15, 11, 29, 14, EL.STONE);
+  s.setCell(5, 14, EL.HUMAN, false);
   let out = -1;
-  for (let k = 0; k < 1500 && out < 0; k++) {
+  for (let k = 0; k < 900 && out < 0; k++) {
     s.step();
-    const p = pivotOf(s, EL.HUMAN);
-    if (p >= 0 && (p % s.w) >= 41 && !s.creatureDeadAt(p)) out = k + 1;
+    for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.HUMAN && (i % s.w) >= 15 && !s.extra[i]) out = k + 1;
   }
   ok(out > 0, `человек со дна выплыл на берег за ${out} кадров`);
 
   // Незакреплённая каменная плита падает на человека: он раздавлен, вокруг
-  // кровь (клетками жидкой крови).
-  const c = WORLD();
-  const hp = c.placeHuman(30, 69);
-  c.creatureKill(hp);   // погибший не уходит из-под плиты, как ушёл бы живой
-  c.toppleOn = false;   // и не заваливается набок раньше, чем плита долетит
-  box(c, 28, 20, 32, 21, EL.STONE);
+  // кровь.
+  const c = new Sim(30, 30);
+  box(c, 0, 25, 29, 29, EL.STONE);
+  // Погибший человек: он не уходит из-под плиты, как ушёл бы живой.
+  c.setCell(12, 24, EL.HUMAN, false);
+  c.extra[c.idx(12, 24)] = 1;
+  box(c, 10, 8, 14, 9, EL.STONE);
   let crushed = -1;
-  for (let k = 0; k < 120 && crushed < 0; k++) { c.step(); if (count(c, EL.HUMAN) === 0) crushed = k + 1; }
-  ok(crushed > 0 && count(c, EL.BLOOD) > 0, `плита раздавила человека на ${crushed}-м кадре, крови (клеток жидкости) ${count(c, EL.BLOOD)}`);
+  for (let k = 0; k < 80 && crushed < 0; k++) { c.step(); if (count(c, EL.HUMAN) === 0) crushed = k + 1; }
+  let stained = 0;
+  for (let i = 0; i < c.stain.length; i++) if (c.stain[i] > 0) stained++;
+  ok(crushed > 0 && stained > 0, `плита раздавила человека на ${crushed}-м кадре, в крови ${stained} клеток`);
 }
 
 console.log('22. Техника: медь, изолятор, приборы, панели');
@@ -860,7 +853,6 @@ console.log('22. Техника: медь, изолятор, приборы, п�
   box(m, 0, 8, 11, 11, EL.WALL);
   m.setCell(5, 7, EL.COPPER, false);
   const mi = m.idx(5, 7);
-  env.reseed(3);   // исход зависит от потока случайных чисел: не от предыдущих проверок
   let melted = false;
   for (let k = 0; k < 600 && !melted; k++) { m.temp.fill(g('ELEMENTS')[EL.COPPER].meltPoint + 5); m.step(); if (count(m, EL.MOLTEN_COPPER)) melted = true; }
   for (let i = 0; i < m.temp.length; i++) m.temp[i] = 20;
@@ -1455,13 +1447,14 @@ console.log('29. Лампочка: жёлтый зажигает на 7 секу
 console.log('30. Протагонист: причина смерти; темнота и видимость — в сохранении');
 {
   const cause = (setup) => {
-    const s = WORLD();
+    const s = new Sim(20, 20);
+    box(s, 0, 15, 19, 19, EL.STONE);
     setup(s);
-    for (let k = 0; k < 500 && !s.playerState.death; k++) s.step();
+    for (let k = 0; k < 400 && !s.playerState.death; k++) s.step();
     return s.playerState.death;
   };
-  const lava = cause((s) => { s.placeProtagonist(s.idx(20, 69)); box(s, 24, 60, 30, 69, EL.LAVA); });
-  const water = cause((s) => { box(s, 0, 50, 79, 69, EL.WATER); s.placeProtagonist(s.idx(40, 69)); });
+  const lava = cause((s) => { s.placeProtagonist(s.idx(8, 14)); s.setCell(7, 14, EL.LAVA, false); s.setCell(9, 14, EL.LAVA, false); });
+  const water = cause((s) => { box(s, 2, 5, 3, 14, EL.WALL); box(s, 14, 5, 15, 14, EL.WALL); box(s, 4, 6, 13, 14, EL.WATER); s.placeProtagonist(s.idx(8, 14)); });
   ok(lava === 'Сгорел в лаве' && water === 'Утонул', `у лавы — «${lava}», под водой — «${water}»`);
   const s = new Sim(20, 20);
   s.darkness = 3; s.playerVision = 2;
@@ -1498,77 +1491,75 @@ console.log('31. Изолятор растворяется в воде в чёр
   ok(onMetal && !onStone && near && z.charges.length === 2, `разряд в металл — ${onMetal ? 'да' : 'нет'}, в камень — ${onStone ? 'да' : 'нет'}, рядом с металлом в пределах кисти — ${near ? 'да' : 'нет'}`);
 }
 
-console.log('32. Человек: спуск не выше 6 клеток, прыжок на 4, карта опасных мест');
+console.log('32. Человек: спуск не выше 3 пикселей, прыжок на 2, карта опасных мест');
 {
+  const humanAt = (s) => { for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.HUMAN) return i; return -1; };
   // Полка на высоте drop над полом, человек на полке — сойдёт ли вниз.
   const descends = (drop) => {
-    const s = new Sim(60, 100);
-    s.lookColor = () => [0, 0, 0];
-    box(s, 0, 90, 59, 99, EL.WALL);
-    box(s, 0, 90 - drop, 30, 89, EL.WALL);        // полка слева
-    box(s, 0, 0, 0, 89, EL.WALL); box(s, 59, 0, 59, 89, EL.WALL);
-    s.placeHuman(20, 89 - drop);
+    const s = new Sim(60, 30);
+    box(s, 0, 25, 59, 29, EL.WALL);
+    box(s, 0, 25 - drop, 30, 24, EL.WALL);        // полка слева
+    box(s, 0, 0, 0, 24, EL.WALL); box(s, 59, 0, 59, 24, EL.WALL);
+    s.setCell(20, 24 - drop, EL.HUMAN, false);
     let down = false;
-    for (let k = 0; k < 4000 && !down; k++) { s.step(); const p = pivotOf(s, EL.HUMAN); if (p >= 0 && ((p / s.w) | 0) === 89) down = true; }
+    for (let k = 0; k < 3000 && !down; k++) { s.step(); const p = humanAt(s); if (p >= 0 && ((p / s.w) | 0) === 24) down = true; }
     return down;
   };
-  const d6 = descends(6), d10 = descends(10);
-  ok(d6 && !d10, `с полки высотой 6 спустился — ${d6 ? 'да' : 'нет'}, высотой 10 — ${d10 ? 'да' : 'нет'}`);
+  const d3 = descends(3), d5 = descends(5);
+  ok(d3 && !d5, `с полки высотой 3 спустился — ${d3 ? 'да' : 'нет'}, высотой 5 — ${d5 ? 'да' : 'нет'}`);
   // Стенка высотой wall поперёк коридора — перелезет ли.
   const crosses = (wall) => {
-    const s = new Sim(60, 100);
-    s.lookColor = () => [0, 0, 0];
-    box(s, 0, 90, 59, 99, EL.WALL);
-    box(s, 0, 0, 0, 89, EL.WALL); box(s, 59, 0, 59, 89, EL.WALL);
-    box(s, 30, 90 - wall, 31, 89, EL.WALL);
-    s.placeHuman(10, 89);
+    const s = new Sim(60, 30);
+    box(s, 0, 25, 59, 29, EL.WALL);
+    box(s, 0, 0, 0, 24, EL.WALL); box(s, 59, 0, 59, 24, EL.WALL);
+    box(s, 30, 25 - wall, 31, 24, EL.WALL);
+    s.setCell(10, 24, EL.HUMAN, false);
     let over = false;
-    for (let k = 0; k < 6000 && !over; k++) { s.step(); const p = pivotOf(s, EL.HUMAN); if (p >= 0 && p % s.w > 33) over = true; }
+    for (let k = 0; k < 4000 && !over; k++) { s.step(); const p = humanAt(s); if (p >= 0 && p % s.w > 31) over = true; }
     return over;
   };
-  const w2 = crosses(2), w4 = crosses(4), w6 = crosses(6);
-  ok(w2 && w4 && !w6, `стенку в 2 клетки перелез — ${w2 ? 'да' : 'нет'}, в 4 — ${w4 ? 'да' : 'нет'}, в 6 — ${w6 ? 'да' : 'нет'}`);
+  const w2 = crosses(2), w3 = crosses(3);
+  ok(w2 && !w3, `стенку в 2 пикселя перелез — ${w2 ? 'да' : 'нет'}, в 3 — ${w3 ? 'да' : 'нет'}`);
   // Кислота в стеклянной чаше справа: сквозь стекло её видно, вытечь она не
   // может. Увидел — участок в карте; кислоту убрали, а к чаше он всё равно
-  // не подходит.
-  const s = new Sim(100, 100);
-  s.lookColor = () => [0, 0, 0];
-  box(s, 0, 90, 99, 99, EL.WALL);
-  box(s, 0, 0, 0, 89, EL.WALL); box(s, 99, 0, 99, 89, EL.WALL);
-  box(s, 66, 86, 72, 89, EL.GLASS); box(s, 67, 86, 71, 88, EL.EMPTY);
-  box(s, 67, 87, 71, 88, EL.ACID);
-  s.placeHuman(54, 89);
+  // не подходит (без карты дошёл бы до её стенки на x=45).
+  const s = new Sim(80, 20);
+  box(s, 0, 15, 79, 19, EL.WALL);
+  box(s, 0, 0, 0, 14, EL.WALL); box(s, 79, 0, 79, 14, EL.WALL);
+  box(s, 46, 11, 52, 14, EL.GLASS); box(s, 47, 11, 51, 13, EL.EMPTY);
+  box(s, 47, 12, 51, 13, EL.ACID);
+  s.setCell(20, 14, EL.HUMAN, false);
   let banned = 0;
   for (let k = 0; k < 6000 && !banned; k++) {
     s.step();
-    const p = pivotOf(s, EL.HUMAN), mind = p >= 0 ? s._humans.get(s.life[p]) : null;
+    const p = humanAt(s), mind = p >= 0 ? s._humans.get(s.life[p]) : null;
     if (mind) banned = mind.bans.size;
   }
-  box(s, 67, 87, 71, 88, EL.EMPTY);   // кислоту убрали
+  box(s, 47, 12, 51, 13, EL.EMPTY);   // кислоту убрали
   let maxX = 0;
-  for (let k = 0; k < 4000; k++) { s.step(); const p = pivotOf(s, EL.HUMAN); if (p >= 0) maxX = Math.max(maxX, p % s.w); }
-  ok(banned > 0 && maxX < 62, `в карте опасных участков ${banned}; после того как кислоту убрали, правее x=${maxX} не заходил (чаша на x=66, участки по 8)`);
+  for (let k = 0; k < 4000; k++) { s.step(); const p = humanAt(s); if (p >= 0) maxX = Math.max(maxX, p % s.w); }
+  ok(banned > 0 && maxX < 44, `в карте опасных участков ${banned}; после того как кислоту убрали, правее x=${maxX} не заходил (стенка чаши на x=46)`);
 }
 
 console.log('33. Человек: ядовитый газ — только под крышей; обвал — опасное место; люди прозрачны для взгляда');
 {
+  const humanAt = (s) => { for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.HUMAN) return i; return -1; };
   // Слева навес из стены (x 2..20), справа открыто. Над открытой частью —
   // туча кислотного газа. Человек на открытом месте уходит под навес, а
   // когда тучу убрали, под открытое небо в тех столбцах больше не выходит.
-  const s = new Sim(80, 100);
-  s.lookColor = () => [0, 0, 0];
-  box(s, 0, 90, 79, 99, EL.WALL);
-  box(s, 0, 0, 0, 89, EL.WALL); box(s, 79, 0, 79, 89, EL.WALL);
-  box(s, 2, 70, 20, 70, EL.WALL);                 // навес
-  box(s, 30, 55, 50, 56, EL.ACID_GAS);            // туча
-  s.placeHuman(40, 89);
-  // Туча держится 500 кадров (кислотный дождь из неё стирается, чтобы не
+  const s = new Sim(80, 30);
+  box(s, 0, 25, 79, 29, EL.WALL);
+  box(s, 0, 0, 0, 24, EL.WALL); box(s, 79, 0, 79, 24, EL.WALL);
+  box(s, 2, 15, 20, 15, EL.WALL);                 // навес
+  box(s, 30, 2, 50, 3, EL.ACID_GAS);              // туча
+  s.setCell(40, 24, EL.HUMAN, false);
+  // Туча держится 400 кадров (кислотный дождь из неё стирается, чтобы не
   // убил), потом её убирают.
   let gasCols = 0, under = false;
-  for (let k = 0; k < 500; k++) {
+  for (let k = 0; k < 400; k++) {
     s.step();
     for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.ACID || s.type[i] === EL.SOLUTION) s.clearCell(i);
-    const p = pivotOf(s, EL.HUMAN), mind = p >= 0 ? s._humans.get(s.life[p]) : null;
+    const p = humanAt(s), mind = p >= 0 ? s._humans.get(s.life[p]) : null;
     if (mind) gasCols = mind.gas.size;
     if (p >= 0 && p % s.w <= 20) under = true;
   }
@@ -1577,101 +1568,79 @@ console.log('33. Человек: ядовитый газ — только под
   let outInGas = 0;
   for (let k = 0; k < 3000; k++) {
     s.step();
-    const p = pivotOf(s, EL.HUMAN);
+    const p = humanAt(s);
     if (p >= 0) { const x = p % s.w; if (x >= 30 && x <= 50) outInGas++; }
   }
   ok(gasCols > 0 && under && outInGas === 0, `столбцов газа в памяти ${gasCols}; ушёл под навес — ${under ? 'да' : 'нет'}; потом под открытым небом там, где была туча, кадров ${outInGas}`);
 
   // Обвал: каменная полка без опоры падает у него на глазах — участок в карте.
-  const c = new Sim(80, 100);
-  c.lookColor = () => [0, 0, 0];
-  box(c, 0, 90, 79, 99, EL.WALL);
-  box(c, 40, 50, 50, 52, EL.STONE);              // висит без опоры и падает
-  c.placeHuman(34, 89);
+  const c = new Sim(60, 30);
+  box(c, 0, 25, 59, 29, EL.WALL);
+  box(c, 30, 10, 40, 12, EL.STONE);              // висит без опоры и падает
+  c.setCell(26, 24, EL.HUMAN, false);
   let bans = 0;
-  for (let k = 0; k < 120; k++) { c.step(); const p = pivotOf(c, EL.HUMAN), m = p >= 0 ? c._humans.get(c.life[p]) : null; if (m) bans = Math.max(bans, m.bans.size); }
+  for (let k = 0; k < 60; k++) { c.step(); const p = humanAt(c), m = p >= 0 ? c._humans.get(c.life[p]) : null; if (m) bans = Math.max(bans, m.bans.size); }
   ok(bans > 0, `увидел обвал: опасных участков в памяти ${bans}`);
 
   // Провал: человек на каменной полке, у полки убирают опору — она падает
   // вместе с ним. Место, где он стоял, — опасный участок.
-  const f = new Sim(80, 100);
-  f.lookColor = () => [0, 0, 0];
-  box(f, 0, 90, 79, 99, EL.WALL);
-  box(f, 19, 40, 19, 75, EL.WALL);                // опора полки
-  box(f, 20, 75, 34, 75, EL.STONE);               // полка
-  f.placeHuman(28, 74);
+  const f = new Sim(60, 30);
+  box(f, 0, 25, 59, 29, EL.WALL);
+  box(f, 19, 5, 19, 15, EL.WALL);                 // опора полки
+  box(f, 20, 15, 34, 15, EL.STONE);               // полка
+  f.setCell(28, 14, EL.HUMAN, false);
+  f.extra[f.idx(28, 14)] = 0;
   for (let k = 0; k < 30; k++) f.step();
-  const before = (() => { const p = pivotOf(f, EL.HUMAN), m = p >= 0 ? f._humans.get(f.life[p]) : null; return m ? m.bans.size : -1; })();
-  box(f, 19, 40, 19, 75, EL.EMPTY);               // опору убрали
+  const before = (() => { const p = humanAt(f), m = p >= 0 ? f._humans.get(f.life[p]) : null; return m ? m.bans.size : -1; })();
+  box(f, 19, 5, 19, 15, EL.EMPTY);                // опору убрали
   let fellBans = 0;
-  for (let k = 0; k < 60; k++) { f.step(); const p = pivotOf(f, EL.HUMAN), m = p >= 0 ? f._humans.get(f.life[p]) : null; if (m) fellBans = Math.max(fellBans, m.bans.size); }
+  for (let k = 0; k < 40; k++) { f.step(); const p = humanAt(f), m = p >= 0 ? f._humans.get(f.life[p]) : null; if (m) fellBans = Math.max(fellBans, m.bans.size); }
   ok(before === 0 && fellBans > 0, `до провала опасных участков ${before}, после — ${fellBans}`);
 
   // Прозрачность: камера видит камень за человеком.
-  const v = new Sim(60, 100);
-  v.lookColor = () => [0, 0, 0];
-  box(v, 0, 90, 59, 99, EL.WALL);
-  box(v, 5, 81, 5, 89, EL.WALL);
-  v.setCell(5, 80, EL.CAMERA, false);
-  const vp = v.placeHuman(10, 89);
-  v.creatureKill(vp);   // мёртвый — не уйдёт
-  box(v, 20, 80, 20, 89, EL.STONE);
-  const seenStone = Array.from(v.cameraScan(v.idx(5, 80)).cells).includes(v.idx(20, 80));
+  const v = new Sim(40, 20);
+  box(v, 0, 15, 39, 19, EL.WALL);
+  v.setCell(5, 14, EL.CAMERA, false);
+  v.setCell(10, 14, EL.HUMAN, false); v.extra[v.idx(10, 14)] = 1;   // мёртвый — не уйдёт
+  v.setCell(20, 14, EL.STONE, false);
+  const seenStone = Array.from(v.cameraScan(v.idx(5, 14)).cells).includes(v.idx(20, 14));
   ok(seenStone, `камера видит камень за человеком — ${seenStone ? 'да' : 'нет'}`);
 }
 
 console.log('34. Мультиплеер: несколько протагонистов, безопасный спавн, точки респавна');
 {
-  const s = new Sim(100, 80);
-  s.lookColor = () => [0, 0, 0];
-  box(s, 0, 70, 99, 79, EL.WALL);
-  box(s, 50, 64, 55, 69, EL.LAVA);
+  const s = new Sim(80, 30);
+  box(s, 0, 25, 79, 29, EL.WALL);
+  box(s, 40, 22, 45, 24, EL.LAVA);
   // Протагонисты игроков 1 и 2 и одиночной игры (0) — каждый свой.
-  s.placePlayer(1, s.idx(10, 69)); s.placePlayer(2, s.idx(20, 69)); s.placeProtagonist(s.idx(30, 69));
+  s.placePlayer(1, s.idx(10, 24)); s.placePlayer(2, s.idx(20, 24)); s.placeProtagonist(s.idx(30, 24));
   const p1 = s.findProtagonist(1), p2 = s.findProtagonist(2), p0 = s.findProtagonist(0);
-  ok(p1 === s.idx(10, 69) && p2 === s.idx(20, 69) && p0 === s.idx(30, 69) && s.life[p2] === 2,
+  ok(p1 === s.idx(10, 24) && p2 === s.idx(20, 24) && p0 === s.idx(30, 24) && s.life[p2] === 2,
     `на поле трое: игрок 1 на x=${p1 % s.w}, игрок 2 на x=${p2 % s.w}, одиночный на x=${p0 % s.w}`);
   // Управление у каждого своё: игрок 2 идёт вправо, игрок 1 стоит.
   s.playerSlot(2).input.right = true;
-  for (let k = 0; k < 10; k++) s.step();
+  for (let k = 0; k < 20; k++) s.step();
   ok(s.findProtagonist(2) % s.w > 20 && s.findProtagonist(1) % s.w === 10, `игрок 2 ушёл на x=${s.findProtagonist(2) % s.w}, игрок 1 остался на x=${s.findProtagonist(1) % s.w}`);
   s.playerSlot(2).input.right = false;
-  // Безопасное место: тело помещается, на опоре, не у лавы.
+  // Безопасное место: не у лавы, на опоре.
   let bad = 0;
-  for (let k = 0; k < 100; k++) {
+  for (let k = 0; k < 200; k++) {
     const i = s.findSafeSpawn(), x = i % s.w, y = (i / s.w) | 0;
-    if (i < 0 || y !== 69 || (x >= 44 && x <= 61) || !s.creatureFitsEmpty(x, y)) bad++;
+    if (i < 0 || y !== 24 || (x >= 39 && x <= 46)) bad++;
   }
-  ok(bad === 0, `100 случайных безопасных мест — неподходящих ${bad}`);
+  ok(bad === 0, `200 случайных безопасных мест — неподходящих ${bad}`);
   // Точки респавна: одна только для игрока 2 и смерти в огне, другая для всех.
-  s.addRespawnMark(80, 69); s.setRespawnMarkProps(80, 69, { players: [2], kinds: ['fire'] });
-  s.addRespawnMark(90, 69);
+  s.addRespawnMark(60, 24); s.setRespawnMarkProps(60, 24, { players: [2], kinds: ['fire'] });
+  s.addRespawnMark(70, 24);
   const forFire = new Set(), forOther = new Set();
   for (let k = 0; k < 40; k++) { forFire.add(s.respawnSpot(2, 'fire') % s.w); forOther.add(s.respawnSpot(1, 'fire') % s.w); }
-  ok(forFire.has(80) && forFire.has(90) && !forOther.has(80), `игрок 2 после огня — на x=${[...forFire].join(',')}; игрок 1 — на x=${[...forOther].join(',')}`);
+  ok(forFire.has(60) && forFire.has(70) && !forOther.has(60), `игрок 2 после огня — на x=${[...forFire].join(',')}; игрок 1 — на x=${[...forOther].join(',')}`);
   // Метки — в файле сохранения.
-  s.setSpawnMark(5, 69, 1);
-  const t = new Sim(100, 80);
+  s.setSpawnMark(5, 24, 1);
+  const t = new Sim(80, 30);
   t.deserialize(JSON.parse(JSON.stringify(s.serialize())));
   ok(t.spawnMarks.length === 1 && t.respawnMarks.length === 2 && t.respawnMarks[0].players[0] === 2,
     `из файла: точек спавна ${t.spawnMarks.length}, респавна ${t.respawnMarks.length}`);
-  // Файл с телами: после сохранения и загрузки они на тех же местах и целы.
-  ok(count(t, EL.PROTAGONIST) === 3 * g('PERSON_N') && t.findProtagonist(2) === s.findProtagonist(2), `тела живых в файле: клеток ${count(t, EL.PROTAGONIST)}, игрок 2 на месте — ${t.findProtagonist(2) === s.findProtagonist(2)}`);
-  // Старый файл (до версии 4): живой — один пиксель, он раздувается в тело.
-  const old = new Sim(100, 80);
-  old.lookColor = () => [0, 0, 0];
-  box(old, 0, 70, 99, 79, EL.WALL);
-  const flat = old.serialize();
-  const oneCell = new Sim(100, 80);
-  box(oneCell, 0, 70, 99, 79, EL.WALL);
-  oneCell.type[oneCell.idx(40, 69)] = EL.PROTAGONIST; oneCell.life[oneCell.idx(40, 69)] = 1; oneCell.extra[oneCell.idx(40, 69)] = 0;
-  oneCell.type[oneCell.idx(60, 69)] = EL.HUMAN; oneCell.life[oneCell.idx(60, 69)] = 7; oneCell.extra[oneCell.idx(60, 69)] = 1;
-  const legacy = oneCell.serialize(); delete legacy.v;
-  const loaded = new Sim(100, 80);
-  loaded.deserialize(JSON.parse(JSON.stringify(legacy)));
-  ok(loaded.findProtagonist(1) === loaded.idx(40, 69) && count(loaded, EL.PROTAGONIST) === g('PERSON_N') && count(loaded, EL.HUMAN) === g('PERSON_N')
-    && loaded.creatureDeadAt(pivotOf(loaded, EL.HUMAN)),
-    `старый файл: пиксель-протагонист стал телом (${count(loaded, EL.PROTAGONIST)} клеток), мёртвый человек — тоже (${count(loaded, EL.HUMAN)}), мёртв — ${loaded.creatureDeadAt(pivotOf(loaded, EL.HUMAN))}`);
 }
 
 console.log('35. Твёрдое скатывается со склона; кисть не стирает живого игрока');
@@ -1700,39 +1669,37 @@ console.log('35. Твёрдое скатывается со склона; кис
   ok(fx === 15 && lowest(f, EL.METAL) === 29, `блок на ровном полу встал на ${lowest(f, EL.METAL)}, x=${fx} — не съехал`);
   // Живого протагониста кисть не трогает: ни ластик, ни замена, ни
   // заливка; мёртвое тело стирается.
-  const p = WORLD();
-  p.placePlayer(2, p.idx(10, 69));
-  p.stampBrush(10, 60, 'circle', 3, 3, EL.EMPTY, false);
-  p.stampBrush(10, 60, 'circle', 3, 3, EL.SAND, false);
-  p.floodFill(10, 60, EL.WATER, false);
-  const alive = count(p, EL.PROTAGONIST) === g('PERSON_N');
-  p.creatureKill(p.findProtagonist(2));
-  p.setCell(10, 60, EL.EMPTY, false);
-  ok(alive && count(p, EL.PROTAGONIST) === 0, `живой игрок пережил ластик, замену и заливку — ${alive ? 'да' : 'нет'}; мёртвое тело стёрто целиком — ${count(p, EL.PROTAGONIST) === 0 ? 'да' : 'нет'}`);
+  const p = new Sim(30, 20);
+  box(p, 0, 15, 29, 19, EL.STONE);
+  p.placePlayer(2, p.idx(10, 14));
+  p.stampBrush(10, 14, 'circle', 3, 3, EL.EMPTY, false);
+  p.stampBrush(10, 14, 'circle', 3, 3, EL.SAND, false);
+  p.floodFill(10, 14, EL.WATER, false);
+  const alive = p.type[p.idx(10, 14)] === EL.PROTAGONIST;
+  p.extra[p.idx(10, 14)] = 1;
+  p.setCell(10, 14, EL.EMPTY, false);
+  ok(alive && p.type[p.idx(10, 14)] === EL.EMPTY, `живой игрок пережил ластик, замену и заливку — ${alive ? 'да' : 'нет'}; мёртвое тело стёрто — ${p.type[p.idx(10, 14)] === EL.EMPTY ? 'да' : 'нет'}`);
   // Ластик и вырезание стирают точки спавна и респавна (раньше точку
   // респавна было не убрать ничем, кроме ПКМ её же инструментом).
-  p.addRespawnMark(20, 69); p.setSpawnMark(5, 69, 1); p.addRespawnMark(25, 60);
-  p.stampBrush(20, 69, 'circle', 1, 1, EL.EMPTY, false);
-  p.clearRegion(3, 67, 7, 69);
+  p.addRespawnMark(20, 14); p.setSpawnMark(5, 14, 1); p.addRespawnMark(25, 10);
+  p.stampBrush(20, 14, 'circle', 1, 1, EL.EMPTY, false);
+  p.clearRegion(3, 12, 7, 14);
   ok(p.respawnMarks.length === 1 && p.spawnMarks.length === 0 && p.respawnMarks[0].x === 25, `после ластика и вырезания: точек респавна ${p.respawnMarks.length} (осталась нетронутая), спавна ${p.spawnMarks.length}`);
 }
 
 console.log('36. Протагонист ломает пиксели: удары по стойкости, сыпучее — 2, темнеет; стена не ломается');
 {
-  // Протагонист на полу, справа вплотную к телу (на высоте руки) — пиксель;
-  // ЛКМ зажата, курсор далеко справа: линия от руки идёт сквозь тело и
-  // упирается в этот пиксель.
-  const mine = (id, at = 24) => {
-    const s = new Sim(80, 80);
-    s.lookColor = () => [0, 0, 0];
-    box(s, 0, 70, 79, 79, EL.WALL);
-    s.placeProtagonist(s.idx(20, 69));
-    box(s, at, 62, at, 69, EL.WALL);      // опора под пикселем
-    s.setCell(at, 61, id, false);
-    s.setCell(at, 60, EL.WALL, false);    // чтобы сыпучее не осыпалось и не мешало
-    const j = s.idx(at, 61), shade0 = s.shade[j];
+  // Протагонист на полу, справа вплотную — пиксель; ЛКМ зажата, курсор
+  // далеко справа: линия упирается в этот пиксель.
+  const mine = (id) => {
+    const s = new Sim(30, 12);
+    box(s, 0, 10, 29, 11, EL.WALL);
+    s.placeProtagonist(s.idx(10, 9));
+    s.setCell(11, 9, id, false);
+    s.setCell(11, 8, EL.WALL, false);   // чтобы сыпучее не осыпалось и не мешало
+    const j = s.idx(11, 9), shade0 = s.shade[j];
     const inp = s.playerInput;
-    inp.mine = true; inp.ax = 70; inp.ay = 61;
+    inp.mine = true; inp.ax = 25; inp.ay = 9;
     let frames = 0, shadeAfterHit = null;
     for (; frames < 400 && s.type[j] === id; frames++) {
       s.step();
@@ -1745,22 +1712,31 @@ console.log('36. Протагонист ломает пиксели: удары 
   ok(stone.broken && stone.frames >= 40 && stone.frames <= 45 && stone.darker, `камень сломан за ${stone.frames} кадров (5 ударов по 10), после удара темнее — ${stone.darker ? 'да' : 'нет'}`);
   ok(sand.broken && sand.frames <= 15, `песок сломан за ${sand.frames} кадров (2 удара)`);
   ok(!wall.broken, 'стена не ломается');
-  // Не вплотную — не ломается: от габарита тела дальше двух клеток.
-  const far = mine(EL.STONE, 28);
-  ok(!far.broken, 'камень в четырёх клетках от габарита тела не ломается');
-  const near2 = mine(EL.STONE, 25);
-  ok(near2.broken, 'камень во второй клетке от габарита тела (дотягивается на 2 клетки) ломается');
-  // На пути другой пиксель — ломает сперва его (просьба пользователя).
-  const r3 = new Sim(80, 80);
-  r3.lookColor = () => [0, 0, 0];
-  box(r3, 0, 70, 79, 79, EL.WALL);
-  r3.placeProtagonist(r3.idx(20, 69));
-  box(r3, 24, 62, 25, 69, EL.WALL); r3.setCell(24, 60, EL.WALL, false);
-  r3.setCell(24, 61, EL.SAND, false); r3.setCell(25, 61, EL.STONE, false);
-  r3.playerInput.mine = true; r3.playerInput.ax = 70; r3.playerInput.ay = 61;
+  // Не вплотную — не ломается.
+  const f = new Sim(30, 12);
+  box(f, 0, 10, 29, 11, EL.WALL);
+  f.placeProtagonist(f.idx(10, 9));
+  f.setCell(13, 9, EL.STONE, false);
+  f.playerInput.mine = true; f.playerInput.ax = 25; f.playerInput.ay = 9;
+  for (let k = 0; k < 100; k++) f.step();
+  ok(f.type[f.idx(13, 9)] === EL.STONE, 'камень через две клетки (в трёх от протагониста) не ломается');
+  // Дотягивается на 2 клетки (MINE_REACH); на пути другой пиксель — ломает
+  // сперва его (просьба пользователя).
+  const r2 = new Sim(30, 12);
+  box(r2, 0, 10, 29, 11, EL.WALL);
+  r2.placeProtagonist(r2.idx(10, 9));
+  r2.setCell(12, 9, EL.STONE, false);
+  r2.playerInput.mine = true; r2.playerInput.ax = 25; r2.playerInput.ay = 9;
+  for (let k = 0; k < 80; k++) r2.step();
+  const far = r2.type[r2.idx(12, 9)] !== EL.STONE;
+  const r3 = new Sim(30, 12);
+  box(r3, 0, 10, 29, 11, EL.WALL);
+  r3.placeProtagonist(r3.idx(10, 9));
+  r3.setCell(11, 9, EL.SAND, false); r3.setCell(11, 8, EL.WALL, false); r3.setCell(12, 9, EL.STONE, false);
+  r3.playerInput.mine = true; r3.playerInput.ax = 25; r3.playerInput.ay = 9;
   for (let k = 0; k < 15; k++) r3.step();
-  const nearFirst = r3.type[r3.idx(24, 61)] !== EL.SAND && r3.type[r3.idx(25, 61)] === EL.STONE;
-  ok(nearFirst, `песок на пути сломан первым, камень за ним цел — ${nearFirst}`);
+  const nearFirst = r3.type[r3.idx(11, 9)] !== EL.SAND && r3.type[r3.idx(12, 9)] === EL.STONE;
+  ok(far && nearFirst, `камень в двух клетках сломан — ${far}; песок на пути сломан первым, камень за ним цел — ${nearFirst}`);
   // В мультиплеере кисть протагониста ставит точку спавна хоста.
   const m = new Sim(20, 10);
   m.protagonistAsSpawn = 1;
@@ -1768,35 +1744,43 @@ console.log('36. Протагонист ломает пиксели: удары 
   ok(m.findProtagonist(0) < 0 && m.spawnMarks.length === 1 && m.spawnMarks[0].n === 1 && m.spawnMarks[0].x === 5, `кисть протагониста в мультиплеере — точка спавна хоста (точек ${m.spawnMarks.length})`);
 }
 
-console.log('37. Игрок на игроке: едет с нижним, через ступеньку — вместе');
+console.log('37. Игрок на игроке: едет с нижним, обгоняет на клетку, вдвоём — уступ в 4');
 {
   const pos = (s, n) => { const i = s.findProtagonist(n); return i < 0 ? [-1, -1] : [i % s.w, (i / s.w) | 0]; };
-  const pair = (extra) => {
-    const s = new Sim(80, 80);
-    s.lookColor = () => [0, 0, 0];
-    box(s, 0, 70, 79, 79, EL.WALL);
-    if (extra) extra(s);
-    // Нижний на полу, верхний — стопами на его голове (ряд над макушкой).
-    s.placePlayer(1, s.idx(10, 69)); s.placePlayer(2, s.idx(10, 53));
+  const pair = (ledge) => {
+    const s = new Sim(40, 20);
+    box(s, 0, 18, 39, 19, EL.WALL);
+    if (ledge) box(s, 14, 14, 39, 17, EL.WALL);   // уступ высотой 4
+    s.placePlayer(1, s.idx(ledge ? 12 : 10, 17)); s.placePlayer(2, s.idx(ledge ? 12 : 10, 16));
     for (let k = 0; k < 5; k++) s.step();
     return s;
   };
   // Нижний идёт — верхний едет на нём.
-  const a = pair();
+  const a = pair(false);
   a.playerSlot(1).input.right = true;
   for (let k = 0; k < 20; k++) a.step();
-  ok(pos(a, 1)[0] === 20 && pos(a, 2)[0] === 20 && pos(a, 2)[1] === 53, `нижний дошёл до x=${pos(a, 1)[0]}, верхний на нём: x=${pos(a, 2)[0]}, y=${pos(a, 2)[1]}`);
-  // Нижний шагает на ступеньку — верхний поднимается с ним.
-  const b = pair((s) => box(s, 14, 68, 79, 69, EL.STONE));
-  b.playerSlot(1).input.right = true;
-  for (let k = 0; k < 30; k++) b.step();
-  ok(pos(b, 1)[1] === 67 && pos(b, 2)[1] === 51 && pos(b, 2)[0] === pos(b, 1)[0], `нижний на ступеньке (y=${pos(b, 1)[1]}), верхний с ним: x=${pos(b, 2)[0]}, y=${pos(b, 2)[1]}`);
-  // Нижний прыгает — верхний поднимается с ним, потом оба падают обратно.
-  const c = pair();
+  ok(pos(a, 1)[0] === 20 && pos(a, 2)[0] === 20 && pos(a, 2)[1] === 16, `нижний дошёл до x=${pos(a, 1)[0]}, верхний на нём: x=${pos(a, 2)[0]}, y=${pos(a, 2)[1]}`);
+  // Оба идут — верхний на клетку впереди.
+  const b = pair(false);
+  b.playerSlot(1).input.right = true; b.playerSlot(2).input.right = true;
+  for (let k = 0; k < 12; k++) b.step();
+  ok(pos(b, 2)[0] === pos(b, 1)[0] + 1, `оба идут: нижний x=${pos(b, 1)[0]}, верхний x=${pos(b, 2)[0]} — на клетку впереди`);
+  // Нижний прыгает, верхний прыгает с него — уступ в 4 клетки взят.
+  const c = pair(true);
   c.playerSlot(1).input.jump = true;
-  let topY = 99;
-  for (let k = 0; k < 40; k++) { c.step(); topY = Math.min(topY, pos(c, 2)[1]); }
-  ok(topY === 49 && pos(c, 2)[1] === 53, `прыжок нижнего: верхний поднялся до y=${topY} (53 − 4) и вернулся на y=${pos(c, 2)[1]}`);
+  for (let k = 0; k < 40; k++) {
+    if (k === 3) c.playerSlot(2).input.jump = true;
+    c.playerSlot(2).input.right = k > 5;
+    c.step();
+  }
+  ok(pos(c, 2)[1] === 13 && pos(c, 2)[0] > 14, `верхний забрался на уступ в 4 клетки: x=${pos(c, 2)[0]}, y=${pos(c, 2)[1]} (верх уступа — 13)`);
+  // Один — не может.
+  const d = new Sim(40, 20);
+  box(d, 0, 18, 39, 19, EL.WALL); box(d, 14, 14, 39, 17, EL.WALL);
+  d.placePlayer(2, d.idx(12, 17));
+  for (let k = 0; k < 5; k++) d.step();
+  for (let k = 0; k < 40; k++) { if (k === 1) d.playerSlot(2).input.jump = true; d.playerSlot(2).input.right = true; d.step(); }
+  ok(pos(d, 2)[1] === 17, `один на уступ в 4 не забрался: y=${pos(d, 2)[1]}`);
 }
 
 console.log('38. Грязь растворяется в воде, как чёрные соли; грязь не пропадает');
@@ -1847,48 +1831,50 @@ console.log('38. Грязь растворяется в воде, как чёр�
 console.log('40. Отравление реагентом, сыпучие растворы, цвет грязи, спавн у открытого места');
 {
   const solColor = g('solColor'), solWith = g('solWith'), solPure = g('solPure'), PART_COLOR = g('PART_COLOR'), MUD_DARK_COLOR = g('MUD_DARK_COLOR');
-  // Протагонист касается реагента: желтеет (клетки, что касаются, и дальше по
-  // телу), живёт, потом рассыпается окислом.
-  const p = WORLD();
-  p.placeProtagonist(p.idx(20, 69));
-  box(p, 24, 60, 26, 69, EL.REAGENT); box(p, 27, 60, 27, 69, EL.WALL);
+  // Протагонист касается реагента: желтеет, живёт, потом рассыпается окислом.
+  const p = new Sim(20, 10);
+  box(p, 0, 8, 19, 9, EL.WALL);
+  p.placeProtagonist(p.idx(5, 7));
+  p.setCell(6, 7, EL.REAGENT, false); p.setCell(6, 6, EL.WALL, false); p.setCell(7, 7, EL.WALL, false);
   for (let k = 0; k < 20; k++) p.step();
-  const pi = p.findProtagonist(0), early = pi >= 0 ? p.creaturePoison(pi) : -1, aliveEarly = pi >= 0 && !p.creatureDeadAt(pi);
+  const pi = p.findProtagonist(0), early = pi >= 0 ? p.stain[pi] : -1, aliveEarly = pi >= 0 && p.extra[pi] === 0;
   let frames = 20;
   for (; frames < 400 && p.findProtagonist(0) >= 0; frames++) p.step();
   // Чистый реагент — смертельная доза за полторы секунды (~90 кадров).
-  ok(aliveEarly && early >= 0.15 && count(p, EL.OXIDE_LOOSE) >= 80 && p.playerState.death === 'Отравлен реагентом' && frames >= 70 && frames <= 120,
-    `протагонист у реагента: через 20 кадров жив и желтеет (${early.toFixed(2)}), погиб на кадре ${frames} — рассыпался окислом (${count(p, EL.OXIDE_LOOSE)} клеток), причина: ${p.playerState.death}`);
+  ok(aliveEarly && early >= 40 && p.type[p.idx(5, 7)] === EL.OXIDE_LOOSE && p.playerState.death === 'Отравлен реагентом' && frames >= 80 && frames <= 100,
+    `протагонист у реагента: через 20 кадров жив и желтеет (${early}), погиб на кадре ${frames} — рассыпался окислом (${p.type[p.idx(5, 7)] === EL.OXIDE_LOOSE}), причина: ${p.playerState.death}`);
   // Отравленный человек без яда рядом — приходит в себя (просьба
   // пользователя: отошёл от реагента — перестаёшь желтеть).
-  const hs = WORLD();
-  const hsp = hs.placeHuman(20, 69);
-  { const cc = hs.creatureCells(hsp); for (let k = 0; k < g('PERSON_N'); k++) hs.stain[cc[k]] = 25; }
+  const hs = new Sim(20, 10);
+  box(hs, 0, 8, 19, 9, EL.WALL);
+  hs.setCell(5, 7, EL.HUMAN, false);
+  hs.stain[hs.idx(5, 7)] = 200;
   for (let k = 0; k < 450; k++) hs.step();
-  const hum = pivotOf(hs, EL.HUMAN);
-  ok(hum >= 0 && !hs.creatureDeadAt(hum) && hs.stain[hum] < 25 && hs.stain[hum] > 15, `отравленный (по 25 на клетку) человек без яда рядом жив и медленно приходит в себя: ${hum >= 0 ? hs.stain[hum] : 'погиб'} за 450 кадров`);
+  let hum = -1; for (let i = 0; i < hs.type.length; i++) if (hs.type[i] === EL.HUMAN) hum = i;
+  ok(hum >= 0 && hs.stain[hum] < 200 && hs.stain[hum] > 180, `отравленный (200) человек без яда рядом жив и медленно приходит в себя: ${hum >= 0 ? hs.stain[hum] : 'погиб'} за 450 кадров`);
   // Окисел камня: третья стадия травит втрое быстрее первой.
   const oxRate = (stage) => {
-    const o = WORLD();
-    o.placeProtagonist(o.idx(20, 69));
-    box(o, 24, 65, 24, 69, EL.WALL); box(o, 25, 64, 25, 69, EL.WALL);   // сыпучий окисел третьей стадии не должен уйти
-    o.setCell(24, 64, EL.STONE, false); o.setOxideStage(o.idx(24, 64), stage);
+    const o = new Sim(20, 10);
+    box(o, 0, 8, 19, 9, EL.WALL);
+    o.placeProtagonist(o.idx(5, 7));
+    o.setCell(6, 7, EL.STONE, false); o.setOxideStage(o.idx(6, 7), stage);
     for (let k = 0; k < 120; k++) o.step();
     const j = o.findProtagonist(0);
-    return j >= 0 ? o.creaturePoison(j) * g('POISON_DEATH_SUM') : 3000;
+    return j >= 0 ? o.stain[j] : 255;
   };
   const ox1 = oxRate(1), ox3 = oxRate(3);
-  ok(ox1 > 5 && ox3 > ox1 * 2, `окисел камня за 2 с: первая стадия — ${ox1.toFixed(0)}, третья — ${ox3.toFixed(0)}`);
+  ok(ox1 > 5 && ox3 > ox1 * 2, `окисел камня за 2 с: первая стадия — ${ox1}, третья — ${ox3}`);
   // Копание: множитель скорости (0 — нельзя), выносливость тратится.
   // Сколько кадров ломается камень вплотную (стойкость 5) при скорости speed.
   const dig = (speed) => {
-    const d = WORLD();
-    d.placeProtagonist(d.idx(20, 69));
-    box(d, 24, 62, 24, 69, EL.WALL); d.setCell(24, 61, EL.STONE, false); d.setCell(24, 60, EL.WALL, false);
+    const d = new Sim(30, 10);
+    box(d, 0, 8, 29, 9, EL.WALL);
+    d.placeProtagonist(d.idx(5, 7));
+    d.setCell(6, 7, EL.STONE, false);
     if (speed !== null) d.digSpeed = speed;
-    d.playerInput.mine = true; d.playerInput.ax = 70; d.playerInput.ay = 61;
+    d.playerInput.mine = true; d.playerInput.ax = 25; d.playerInput.ay = 7;
     let k = 0, minSt = 999;
-    for (; k < 200 && d.type[d.idx(24, 61)] === EL.STONE; k++) { d.step(); minSt = Math.min(minSt, d.playerState.stamina); }
+    for (; k < 200 && d.type[d.idx(6, 7)] === EL.STONE; k++) { d.step(); minSt = Math.min(minSt, d.playerState.stamina); }
     return { frames: k, minSt };
   };
   const d0 = dig(0), d10 = dig(null), d20 = dig(20);
@@ -1896,26 +1882,29 @@ console.log('40. Отравление реагентом, сыпучие рас�
     `камень ломается: скорость 0 — никогда (${d0.frames}), 10 — за ${d10.frames} кадров, 20 — за ${d20.frames}; выносливость упала до ${d10.minSt}`);
   // Удары: человека — три удара, кровь вокруг; игрока — только с огнём по
   // своим; урон заживает.
-  const hit = WORLD();
-  hit.placeProtagonist(hit.idx(20, 69));
-  hit.placeHuman(26, 69); box(hit, 30, 40, 30, 69, EL.WALL);   // человеку некуда отойти
-  hit.playerInput.mine = true; hit.playerInput.ax = 70; hit.playerInput.ay = 61;
-  let hk = 0; for (; hk < 200 && count(hit, EL.HUMAN) > 0; hk++) hit.step();
-  ok(count(hit, EL.HUMAN) === 0 && hk >= 20 && hk <= 35 && count(hit, EL.BLOOD) > 0, `человек убит за ${hk} кадров (три удара по 10), крови (клеток жидкости) — ${count(hit, EL.BLOOD)}`);
+  const hit = new Sim(30, 10);
+  box(hit, 0, 8, 29, 9, EL.WALL);
+  hit.placeProtagonist(hit.idx(5, 7));
+  hit.setCell(6, 7, EL.HUMAN, false); hit.setCell(7, 7, EL.WALL, false); hit.setCell(6, 6, EL.WALL, false);
+  hit.playerInput.mine = true; hit.playerInput.ax = 20; hit.playerInput.ay = 7;
+  let hk = 0; for (; hk < 100 && hit.type[hit.idx(6, 7)] === EL.HUMAN; hk++) hit.step();
+  let blood = 0; for (let i = 0; i < hit.stain.length; i++) if (hit.stain[i]) blood++;
+  ok(hit.type[hit.idx(6, 7)] !== EL.HUMAN && hk >= 20 && hk <= 25 && blood > 0, `человек убит за ${hk} кадров (три удара по 10), крови вокруг — ${blood} клеток`);
   const ff = (on) => {
-    const f = WORLD();
-    f.placePlayer(1, f.idx(20, 69)); f.placePlayer(2, f.idx(26, 69)); box(f, 30, 40, 30, 69, EL.WALL);
+    const f = new Sim(30, 10);
+    box(f, 0, 8, 29, 9, EL.WALL);
+    f.placePlayer(1, f.idx(5, 7)); f.placePlayer(2, f.idx(6, 7)); f.setCell(7, 7, EL.WALL, false);
     f.friendlyFire = on;
-    const inp = f.playerSlot(1).input; inp.mine = true; inp.ax = 70; inp.ay = 61;
+    const inp = f.playerSlot(1).input; inp.mine = true; inp.ax = 20; inp.ay = 7;
     for (let k = 0; k < 15; k++) f.step();
-    return f.creatureDamage(f.findProtagonist(2));
+    return f.dirt[f.findProtagonist(2)];
   };
   const offHurt = ff(false), onHurt = ff(true);
-  ok(offHurt === 0 && onHurt > 0, `по своему игроку: без огня по своим урон ${offHurt}, с ним — ${onHurt.toFixed(0)}`);
-  const heal = WORLD(); const hlp = heal.placeHuman(20, 69); heal.dirt[hlp] = 85;
+  ok(offHurt === 0 && onHurt > 0, `по своему игроку: без огня по своим урон ${offHurt}, с ним — ${onHurt}`);
+  const heal = new Sim(20, 10); box(heal, 0, 8, 19, 9, EL.WALL); heal.setCell(5, 7, EL.HUMAN, false); heal.dirt[heal.idx(5, 7)] = 85;
   for (let k = 0; k < 300; k++) heal.step();
-  const hh = pivotOf(heal, EL.HUMAN);
-  ok(hh >= 0 && heal.creatureDamage(hh) === 0, `раненый человек зажил: урон ${hh >= 0 ? heal.creatureDamage(hh).toFixed(1) : '—'}`);
+  let hh = -1; for (let i = 0; i < heal.type.length; i++) if (heal.type[i] === EL.HUMAN) hh = i;
+  ok(hh >= 0 && heal.dirt[hh] === 0, `ударенный человек зажил: урон ${hh >= 0 ? heal.dirt[hh] : '—'}`);
   // Земля падает на чёрные соли — смешивается; лежащие рядом — нет.
   const m = new Sim(20, 30);
   box(m, 0, 28, 19, 29, EL.WALL);
@@ -2163,18 +2152,21 @@ console.log('47. Кровь (EL.BLOOD): течёт, смешивается с в
   for (let i = 0; i < m.type.length; i++) { const c = m.comp(i); if (solGet(c, EL.BLOOD) > 0 && solGet(c, EL.WATER) > 0) mixed++; }
   ok(mixed > 0, `кровь смешалась с водой: клеток с обоими ${mixed}`);
   // Удар по человеку проливает кровь; раздавленный — больше.
-  const h = WORLD(); const hi = h.placeHuman(10, 69);
-  h.hitCreature(h.creatureCells(hi)[2], h.idx(9, 16));   // по голове: рядом есть где пролиться
+  const h = new Sim(30, 20); h.lookColor = () => [0, 0, 0];
+  box(h, 0, 17, 29, 19, EL.WALL); h.setCell(10, 16, EL.HUMAN, false);
+  const hi = h.idx(10, 16);
+  h.hitCreature(hi, h.idx(9, 16));
   ok(count(h, EL.BLOOD) > 0, `удар пролил кровь: ${count(h, EL.BLOOD)} капель`);
   h.crushBody(hi);
   ok(count(h, EL.BLOOD) >= 4, `раздавленный пролил больше: ${count(h, EL.BLOOD)} капель`);
   // Регенерация: включена — рана заживает, выключена — остаётся.
   const run = (on) => {
-    const r = WORLD(); const rp = r.placeHuman(20, 69); r.dirt[rp] = 85;
+    const r = new Sim(20, 10); r.lookColor = () => [0, 0, 0];
+    box(r, 0, 8, 19, 9, EL.WALL); r.setCell(5, 7, EL.HUMAN, false); r.dirt[r.idx(5, 7)] = 85;
     r.regenOn = on;
     for (let k = 0; k < 300; k++) r.step();
-    const q = pivotOf(r, EL.HUMAN);
-    return q >= 0 ? r.dirt[q] : -1;
+    let d = -1; for (let i = 0; i < r.type.length; i++) if (r.type[i] === EL.HUMAN) d = r.dirt[i];
+    return d;
   };
   ok(run(true) === 0 && run(false) === 85, `регенерация: вкл — урон ${run(true)}, выкл — урон ${run(false)}`);
   // Правило входит в снимок отмены.
@@ -2182,98 +2174,6 @@ console.log('47. Кровь (EL.BLOOD): течёт, смешивается с в
   ok(sn.rules.regenOn === true && sn2.rules.regenOn === false && q.regenOn === true, 'правило регенерации входит в отмену');
   // Предел нагрузки в 5 раз выше прежнего (1.75 -> 8.75).
   ok(Math.abs(g('LOAD_PER_TOUGHNESS') - 8.75) < 1e-9, `предел нагрузки на единицу стойкости ${g('LOAD_PER_TOUGHNESS')}`);
-}
-
-console.log('48. Тело можно разорвать (sim/pieces.js): кислота съедает шею — голова отваливается; куски падают целиком; мёртвое заваливается набок');
-{
-  const N = g('PERSON_N'), DYk = g('PERSON_DY'), DXk = g('PERSON_DX');
-  const CR = (t) => t === EL.HUMAN || t === EL.PROTAGONIST;
-  const pieces = (s) => { const out = []; for (let i = 0; i < s.type.length; i++) if (CR(s.type[i]) && s.life[i] < 0) out.push(i); return out; };
-  const bbox = (s, cells) => { let x0 = 999, x1 = -1, y0 = 999, y1 = -1; for (const i of cells) { const x = i % s.w, y = (i / s.w) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } return { x0, x1, y0, y1, w: x1 - x0 + 1, h: y1 - y0 + 1 }; };
-  const neck = (s, p) => { const c = s.creatureCells(p).slice(), out = []; for (let k = 0; k < N; k++) if (DYk[k] === -10 && c[k] >= 0) out.push(c[k]); return out; };
-
-  // Шея съедена (язва 255 на четырёх клетках): они растворяются, голова
-  // отделяется, человек мёртв, голова — свободный кусок из 20+ клеток.
-  const a = WORLD();
-  const ap = a.placeHuman(30, 69);
-  for (const c of neck(a, ap)) a.acid[c] = 255;
-  let frames = 0;
-  for (; frames < 400 && pieces(a).length === 0; frames++) a.step();
-  const pa = pivotOf(a, EL.HUMAN);
-  ok(pieces(a).length >= 20 && pa >= 0 && a.creatureDeadAt(pa), `шея растворилась на ${frames}-м кадре: голова отделилась (${pieces(a).length} клеток), тело мертво — ${pa >= 0 && a.creatureDeadAt(pa)}`);
-  const lost = N - (count(a, EL.HUMAN));
-  ok(lost >= 4, `от тела осталось на ${lost} клеток меньше (шея растворена; остальное — кровь/капли: ${count(a, EL.BLOOD)})`);
-
-  // Настоящая кислота рядом: тело теряет клетки.
-  const b = WORLD();
-  b.placeHuman(30, 69);
-  box(b, 34, 40, 36, 69, EL.ACID);
-  for (let k = 0; k < 300; k++) b.step();
-  ok(count(b, EL.HUMAN) < N, `человек в кислоте: клеток тела ${count(b, EL.HUMAN)} из ${N}, кусков отдельно ${pieces(b).length}`);
-
-  // Куски падают целиком: мёртвый человек в воздухе над полом, шея вырезана —
-  // голова (кусок) и туловище падают вместе; голова ложится на туловище и
-  // сползает с него на пол (на плоти кусок не держится).
-  const c = WORLD();
-  c.toppleOn = false;
-  const cp = c.placeHuman(30, 40);
-  c.creatureKill(cp);
-  for (const x of neck(c, cp)) c.clearCell(x);
-  for (let k = 0; k < 40; k++) c.step();
-  const pc1 = pieces(c), pcb1 = bbox(c, pc1);
-  ok(pcb1.h === 5 && pc1.length >= 20 && c.type[c.idx(30, 69)] !== EL.EMPTY, `через 40 кадров голова (${pc1.length} клеток, ${pcb1.w}x${pcb1.h}) и туловище на полу`);
-  for (let k = 0; k < 400; k++) c.step();
-  const pc = pieces(c), pcb = bbox(c, pc);
-  const torso = []; for (let i = 0; i < c.type.length; i++) if (CR(c.type[i]) && c.life[i] >= 0) torso.push(i);
-  const tb = bbox(c, torso);
-  ok(pc.length === 5 * 6 - 4 + 0 || pc.length >= 20, `голова — свободный кусок из ${pc.length} клеток`);
-  ok(torso.length + pc.length === N - 4 && tb.y1 === 69 && pcb.y1 === 69 && pcb.h === 5, `голова сползла с туловища на пол целой: туловище до y=${tb.y1}, низ головы y=${pcb.y1}, голова ${pcb.w}x${pcb.h} (клеток ${torso.length + pc.length} из ${N - 4})`);
-
-  // Мёртвое стоящее тело заваливается набок: 16 в высоту -> 16 в ширину.
-  const d = WORLD();
-  const dp = d.placeHuman(40, 69);
-  d.creatureKill(dp);
-  for (let k = 0; k < 400; k++) d.step();
-  const pd = pieces(d), db = bbox(d, pd);
-  ok(pd.length === N && pivotOf(d, EL.HUMAN) < 0 && db.w === 16 && db.h === 6 && db.y1 === 69, `мёртвое тело легло набок: клеток ${pd.length}, ${db.w}x${db.h}, низ y=${db.y1}`);
-  // И лежит неподвижно.
-  const before = Array.from(d.type);
-  for (let k = 0; k < 60; k++) d.step();
-  let moved = 0; for (let i = 0; i < before.length; i++) if (before[i] !== d.type[i]) moved++;
-  ok(moved === 0, `лежащий кусок неподвижен: изменилось клеток ${moved}`);
-
-  // Протагонист: умер — завалился, найти по findProtagonist нельзя, респавн его не боится.
-  const e = WORLD();
-  e.placeProtagonist(e.idx(40, 69));
-  e.creatureKill(e.findProtagonist(0));
-  for (let k = 0; k < 400; k++) e.step();
-  ok(e.findProtagonist(0) < 0 && pieces(e).length === N && count(e, EL.PROTAGONIST) === N, `мёртвый протагонист лежит куском (${pieces(e).length} клеток)`);
-
-  // Осиротевшие клетки (взрывом вырвана главная) не исчезают, а становятся мёртвыми кусками.
-  const f = WORLD();
-  const fp = f.placeHuman(40, 69);
-  f.clearCell(fp);
-  f.step();
-  ok(pieces(f).length === N - 1, `после вырванной главной клетки куском стало ${pieces(f).length} клеток из ${N - 1}`);
-
-  // Кислота разъедает лежащий кусок: клеток становится меньше.
-  const g2 = WORLD();
-  g2.toppleOn = true;
-  const gp = g2.placeHuman(30, 69);
-  g2.creatureKill(gp);
-  for (let k = 0; k < 300; k++) g2.step();
-  const n0 = count(g2, EL.HUMAN);
-  box(g2, 20, 40, 45, 62, EL.ACID);
-  for (let k = 0; k < 600; k++) g2.step();
-  ok(count(g2, EL.HUMAN) < n0 * 0.6, `лежащий кусок в кислоте: было ${n0}, стало ${count(g2, EL.HUMAN)} клеток`);
-
-  // Кусок давится падающим твёрдым и тонет в воде.
-  const hh = WORLD();
-  hh.placeHuman(30, 69); hh.creatureKill(hh.creaturePivot(hh.idx(30, 69)) >= 0 ? hh.idx(30, 69) : 0);
-  for (let k = 0; k < 300; k++) hh.step();
-  box(hh, 0, 20, 79, 60, EL.WATER);
-  for (let k = 0; k < 300; k++) hh.step();
-  ok(count(hh, EL.HUMAN) === N, `кусок в воде не теряет клеток: ${count(hh, EL.HUMAN)} из ${N}`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');

@@ -9,7 +9,7 @@ class SimPainting {
   // Живого протагониста кисть не трогает: ни ластик, ни замена, ни заливка
   // (просьба пользователя: "пусть нельзя будет стереть игрока" — в
   // мультиплеере кистью стирали чужих игроков). Мёртвое тело стирается.
-  livePlayerAt(i) { return this.type[i] === EL.PROTAGONIST && !this.creatureDeadAt(i); }
+  livePlayerAt(i) { return this.type[i] === EL.PROTAGONIST && this.extra[i] !== 1; }
 
   setCell(x, y, elementId, onlyEmpty) {
     if (!this.inBounds(x, y)) return;
@@ -24,9 +24,6 @@ class SimPainting {
       return;
     }
     if (onlyEmpty && (this.type[i] !== EL.EMPTY || this.beam[i])) return;
-    // Человек — тело из многих клеток (sim/creature.js): клетка кисти — его низ
-    // по центру; не поместился — ищется место выше.
-    if (elementId === EL.HUMAN) { this.placeHuman(x, y); return; }
     // Протагонист на поле один: новый заменяет прежнего (sim/protagonist.js).
     // В мультиплеере (protagonistAsSpawn — номер хоста, net.js) кисть
     // протагониста ставит точку спавна хоста (просьба пользователя).
@@ -38,12 +35,7 @@ class SimPainting {
     // Ластик стирает и то, что "на заднем плане": балку и точки спавна и
     // респавна (точку респавна раньше было не убрать ничем, кроме ПКМ
     // её же инструментом).
-    // Стёртая клетка тела живого убирает его целиком (а не оставляет калеку).
-    if (elementId === EL.EMPTY) {
-      const p = this.creaturePivot(i);
-      if (p >= 0) this.removeCreature(p); else this.clearCell(i);
-      this.removeBeam(i); this.removeMarksAt(x, y);
-    }
+    if (elementId === EL.EMPTY) { this.clearCell(i); this.removeBeam(i); this.removeMarksAt(x, y); }
     else { this.spawn(i, elementId); this.paintStage(i, elementId); }
   }
 
@@ -96,7 +88,7 @@ class SimPainting {
     // Тот же элемент, но другая стадия окисла, — заливка имеет смысл.
     if (target === replacement && !this.paintOxideStage) return;
     // Заливать протагонистом нечего: он один — ставится в точку щелчка.
-    if (replacement === EL.PROTAGONIST || replacement === EL.HUMAN) { this.setCell(x0, y0, replacement, false); return; }
+    if (replacement === EL.PROTAGONIST) { this.setCell(x0, y0, EL.PROTAGONIST, false); return; }
     const w = this.w, h = this.h;
     const stack = [startI];
     const visited = new Uint8Array(w * h);
@@ -151,7 +143,7 @@ class SimPainting {
         if (!this.inBounds(x, y)) continue;
         const k = cy * clip.w + cx, t = F.type[k];
         if (t === EL.EMPTY && !F.beam[k]) continue;
-        if (IS_CREATURE[t] === 1) continue;   // тела живых не копируются: части без главной убираются
+        if (t === EL.PROTAGONIST) continue;
         const i = this.idx(x, y);
         if (this.type[i] === EL.PROTAGONIST) continue;
         if (t === EL.EMPTY) {
@@ -160,7 +152,7 @@ class SimPainting {
           this.markDirty(i);
           continue;
         }
-        if (t === EL.COLONIST) {
+        if (t === EL.HUMAN || t === EL.COLONIST) {
           this.spawn(i, t);
           this.extra[i] = F.extra[k];
           this.temp[i] = F.temp[k];

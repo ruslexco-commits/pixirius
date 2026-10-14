@@ -463,7 +463,7 @@ class SimWind {
       let canAccept = nt === EL.EMPTY;
       if (!canAccept) {
         const nEl = ELEMENTS[nt];
-        canAccept = !!nEl && IS_CREATURE[nt] !== 1 && isMovable(nEl.cat) && (rising ? nEl.density > el.density : nEl.density < el.density);
+        canAccept = !!nEl && isMovable(nEl.cat) && (rising ? nEl.density > el.density : nEl.density < el.density);
       }
       if (!canAccept) return false;
       // Циклический сдвиг делается цепочкой обменов swapFields, идя с

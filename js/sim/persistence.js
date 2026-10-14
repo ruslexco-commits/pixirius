@@ -78,10 +78,7 @@ class SimPersistence {
     // Версия 2: в beam материал балки, а не маска опор. Версия 3: состав у
     // каждой клетки, доли — элементы (solLo/solHi). См. deserialize.
     // Настройки мира из лупы: темнота и видимость карты протагонистом.
-    // Версия 4: живые (протагонист, человек) — тела из многих клеток
-    // (sim/creature.js); у файлов до неё живой — один пиксель, deserialize
-    // раздувает его в тело.
-    const out = { v: 4, w: this.w, h: this.h, darkness: this.darkness, vision: this.playerVision, lightSmooth: this.lightSmooth, rays: this.playerRays,
+    const out = { v: 3, w: this.w, h: this.h, darkness: this.darkness, vision: this.playerVision, lightSmooth: this.lightSmooth, rays: this.playerRays,
       // Точки спавна и респавна игроков (sim/spawns.js).
       spawnMarks: this.spawnMarks, respawnMarks: this.respawnMarks };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
@@ -148,8 +145,6 @@ class SimPersistence {
     this.playerRays = obj.rays === true;
     this.spawnMarks = Array.isArray(obj.spawnMarks) ? obj.spawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, n: m.n | 0 })) : [];
     this.respawnMarks = Array.isArray(obj.respawnMarks) ? obj.respawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, players: m.players || null, kinds: m.kinds || null, physics: !!m.physics, acid: !!m.acid })) : [];
-    // Файл до версии 4: живые были одним пикселем (extra 0 — жив, 1 — мёртв).
-    if (!(obj.v >= 4)) this.expandLegacyCreatures();
     this.moved.fill(0);
     this.wakeAll();
     return true;

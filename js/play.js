@@ -138,7 +138,7 @@ class NameTags {
     for (let k = 1; k < sim.players.length; k++) {
       const pl = sim.players[k], j = pl ? pl.idx : -1;
       const here = j >= 0 && j < n && sim.type[j] === EL.PROTAGONIST && sim.life[j] === k;
-      const alive = here && !sim.creatureDeadAt(j);
+      const alive = here && sim.extra[j] !== 1;
       const was = this.alive[k];
       if (!alive && was !== undefined && was >= 0) this.ghosts.push({ k, idx: here ? j : was, t0: now });
       this.alive[k] = alive ? j : -1;
@@ -155,7 +155,7 @@ class NameTags {
     }
   }
 
-  deadBody(sim, j, k) { return j >= 0 && j < sim.type.length && sim.type[j] === EL.PROTAGONIST && sim.life[j] === k && sim.creatureDeadAt(j); }
+  deadBody(sim, j, k) { return j >= 0 && j < sim.type.length && sim.type[j] === EL.PROTAGONIST && sim.life[j] === k && sim.extra[j] === 1; }
 
   // place(клетка) → [x, y, видно] низа подписи на экране или null (вне
   // экрана). Невидимый ник плавно гаснет (vis), видимый — проявляется.
@@ -177,7 +177,7 @@ class NameTags {
       this.vis[k] = a;
       if (a <= 0) continue;
       const c = (sim.playerColors && sim.playerColors[k]) || [255, 255, 255];
-      const pz = sim.creaturePoison(j);
+      const pz = sim.stain[j] / 255;
       const col = pz > 0 ? [0, 1, 2].map((q) => Math.round(c[q] + (POISON_COLOR[q] - c[q]) * pz)) : c;
       this.text(ctx, names[k], p[0], p[1], col, a);
       const said = say && say(k);
@@ -743,7 +743,7 @@ class PlayMode {
     for (let k = 1; k < sim.players.length; k++) {
       if (k === this.playerId || !sim.players[k]) continue;
       const j = sim.findProtagonist(k);
-      if (j >= 0 && !sim.creatureDeadAt(j)) alive.push(k);
+      if (j >= 0 && !sim.extra[j]) alive.push(k);
     }
     if (!alive.length) return -1;
     if (!alive.includes(this.watchK)) this.watchK = alive[0];
@@ -792,7 +792,7 @@ class PlayMode {
     if ((sim.mapEpoch || 0) !== this.memEpoch) { this.memEpoch = sim.mapEpoch || 0; this.memForget(); }
     let p = sim.findProtagonist(this.playerId);
     // Погиб — ломание кончилось: после возрождения — только новым нажатием.
-    if (p < 0 || sim.creatureDeadAt(p)) this.mining = false;
+    if (p < 0 || sim.extra[p]) this.mining = false;
     // Выбыл насовсем (жизни кончились, возрождения нет; мультиплеер) —
     // наблюдает за другим живым игроком: его глазами и его камерой
     // (просьба пользователя). A/D — сменить, за кем.
@@ -802,12 +802,11 @@ class PlayMode {
       if (k >= 0) { this.watching = k; p = sim.findProtagonist(k); }
     }
     // Погиб (или пропал с поля) — карта открывается целиком.
-    this.revealed = p < 0 || sim.creatureDeadAt(p);
+    this.revealed = p < 0 || !!sim.extra[p];
     if (p >= 0) {
-      // Камера — на середине тела, взгляд — из головы (тело в 16 клеток, sim/creature.js).
       this.lastX = p % sim.w;
-      this.lastY = ((p / sim.w) | 0) + PERSON_MID_DY;
-      this.look(this.lastX, ((p / sim.w) | 0) + PERSON_EYE_DY);
+      this.lastY = (p / sim.w) | 0;
+      this.look(this.lastX, this.lastY);
       this.followCamera();
     } else {
       this.gen++;   // протагониста нет — ничего не видно
@@ -860,7 +859,6 @@ class PlayMode {
     ctx.fillRect(0, 0, W, H);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.viewCanvas, dx, dy, VW * cell, VH * cell);
-    this.drawCreatures(ctx, dx, dy, cell, ox, oy);
     this.drawToxicSight(ctx, W, H, dx, dy, VW * cell, VH * cell);
     this.drawMining(ctx, W, H, dx, dy, cell, ox, oy);
     // Имена игроков над протагонистами в поле зрения (мультиплеер; у
@@ -871,27 +869,9 @@ class PlayMode {
       ctx.textBaseline = 'bottom';
       this.nameTags.update(sim);
       const all = this.seeAll();
-      // Подпись — над головой тела (главная клетка — низ по центру).
-      this.nameTags.draw(ctx, sim, this.names, (j) => [dx + (j % w - ox + 1) * cell, dy + (((j / w) | 0) - oy - PERSON_HEIGHT) * cell - 4, all || this.visGen[j + PERSON_EYE_DY * w] === this.gen], this.mp && this.mp.sayOf);
+      this.nameTags.draw(ctx, sim, this.names, (j) => [dx + (j % w - ox + 0.5) * cell, dy + (((j / w) | 0) - oy) * cell - 4, all || this.visGen[j] === this.gen], this.mp && this.mp.sayOf);
       ctx.textAlign = 'left';
     }
-  }
-
-  // Живые поверх вида, плавно (js/creature-draw.js): своё тело (или того, за кем
-  // наблюдает выбывший) — целиком, чужие — теми клетками, что сейчас видны.
-  drawCreatures(ctx, dx, dy, cell, ox, oy) {
-    const sim = this.sim, w = sim.w, gen = this.gen, all = this.seeAll();
-    const mine = this.watching >= 0 ? this.watching : this.playerId;
-    const anim = this.creatureAnim || (this.creatureAnim = new CreatureAnim());
-    anim.begin(performance.now());
-    for (const p of creaturePivots(sim)) {
-      const s = anim.at(sim.type[p] * 65536 + sim.life[p], p % w, (p / w) | 0);
-      const own = sim.type[p] === EL.PROTAGONIST && sim.life[p] === mine;
-      const sway = sim.creatureDeadAt(p) ? 0 : creatureSway(s, anim.last, sim.life[p]);
-      drawCreatureSprite(ctx, sim, p, dx + (s.x - ox) * cell, dy + (s.y - oy) * cell, cell, own || all ? null : (c) => this.visGen[c] === gen, sway);
-    }
-    drawCreaturePieces(ctx, sim, ox, oy, dx, dy, cell, all ? null : (c) => this.visGen[c] === gen);
-    anim.end();
   }
 
   // Отравление в глазах (просьба пользователя): увиденное двоится — две
@@ -900,8 +880,8 @@ class PlayMode {
   // протагониста (sim/human.js).
   drawToxicSight(ctx, W, H, dx, dy, vw, vh) {
     const p = this.watching >= 0 ? -1 : this.sim.findProtagonist(this.playerId);
-    if (p < 0 || this.sim.creatureDeadAt(p)) return;
-    const tox = this.sim.creaturePoison(p);
+    if (p < 0 || this.sim.extra[p]) return;
+    const tox = this.sim.stain[p] / 255;
     if (tox < 0.02) return;
     const t = performance.now() / 1000;
     const off = vh / this.viewH * (0.3 + 2.5 * tox) * (0.65 + 0.35 * Math.sin(t * 2.1));
@@ -989,7 +969,7 @@ class PlayMode {
     // оставшиеся жизни, если они считаются.
     // Сколько прожил в этой жизни (с появления — bornAt); погиб — красный и
     // мигает на времени смерти (просьба пользователя).
-    const own = sim.findProtagonist(this.playerId), ownAlive = own >= 0 && !sim.creatureDeadAt(own);
+    const own = sim.findProtagonist(this.playerId), ownAlive = own >= 0 && !sim.extra[own];
     if (ownAlive) this.diedAt = null;
     else if (this.diedAt === null || this.diedAt === undefined) this.diedAt = sim.frame;
     if (this.mp && this.mp.timerOn && this.mp.timerOn()) {
@@ -1033,9 +1013,9 @@ class PlayMode {
     // Пелена по краям: отравление (жёлтая, переливается), утопание (почти
     // чёрная синева), усталость вплавь и при копании (чёрная), раны
     // (красная). Ближе к смерти — сужается к центру (level).
-    if (p >= 0 && !sim.creatureDeadAt(p)) {
+    if (p >= 0 && !sim.extra[p]) {
       const st = this.pst();
-      const poison = sim.creaturePoison(p), wetK = Math.min(1, st.wet / HUMAN_DROWN_FRAMES), hurt = Math.min(1, sim.creatureDamage(p) / DEATH_DAMAGE);
+      const poison = sim.stain[p] / 255, wetK = Math.min(1, st.wet / HUMAN_DROWN_FRAMES), hurt = sim.dirt[p] / 255;
       const tired = Math.max(0, 1 - st.stamina / SWIM_STAMINA);
       this.vignette(ctx, W, H, [0, 0, 0], 0.75 * tired, false);
       this.vignette(ctx, W, H, [235, 215, 40], poison > 0 ? 0.25 + 0.75 * poison : 0, true, poison);
@@ -1044,7 +1024,7 @@ class PlayMode {
     }
     // Дыхание под водой — столько же, сколько у человека.
     const wet = this.pst().wet;
-    if (p >= 0 && wet > 0 && !sim.creatureDeadAt(p)) {
+    if (p >= 0 && wet > 0 && !sim.extra[p]) {
       const k = Math.max(0, 1 - wet / HUMAN_DROWN_FRAMES);
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(20, 20, 204, 16);
@@ -1053,7 +1033,7 @@ class PlayMode {
     }
     // Выносливость — жёлтая полоса под дыханием: тратится вплавь.
     const stam = this.pst().stamina;
-    if (p >= 0 && !sim.creatureDeadAt(p) && stam < SWIM_STAMINA) {
+    if (p >= 0 && !sim.extra[p] && stam < SWIM_STAMINA) {
       const k = Math.max(0, stam / SWIM_STAMINA);
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(20, 42, 204, 16);
@@ -1063,7 +1043,7 @@ class PlayMode {
     // Погиб: от чего (state.death). Пропал с поля без записанной
     // причины — раздавлен в полосе рабочего потока (кровь на месте, см.
     // Sim.crushBody) или стёрт.
-    if (p < 0 || sim.creatureDeadAt(p)) {
+    if (p < 0 || sim.extra[p]) {
       let cause = this.pst().death;
       if (!cause && p < 0) {
         let blood = 0;
