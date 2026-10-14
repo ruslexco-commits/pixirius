@@ -17,6 +17,15 @@
 // клетки своя "случайность" (creatureNoise), по ней уровень поля решает,
 // проступит ли пятно, — так рисунок рваный, а не ровная заливка. Мёртвое тело —
 // серо-коричневое.
+//
+// Голова живого покачивается (просьба пользователя: "голова должна как бы
+// немного качаться"): её клетки сдвигаются вбок тем сильнее, чем выше (маятник
+// на шее), сама качка — медленная и неровная в покое и наклон в сторону хода,
+// когда тело идёт (creatureSway). Это только рисунок: клетки в мире на месте.
+//
+// Свободные куски (life < 0, sim/pieces.js) рисуются каждой клеткой отдельно,
+// без плавности: они и так двигаются по клетке в кадр, а форма у них уже не
+// форма тела.
 
 const PERSON_SKIN = [236, 226, 210];
 const PERSON_DEAD_COLOR = [64, 58, 54];
@@ -30,6 +39,10 @@ const POISON_SKIN_COLOR = [232, 214, 40];
 // движения тела); дальше CREATURE_SNAP клеток — сразу.
 const CREATURE_SMOOTH_MS = 55;
 const CREATURE_SNAP = 8;
+// Покачивание головы: размах в покое и наклон на клетку отставания, в клетках.
+const SWAY_IDLE = 0.4;
+const SWAY_LEAN = 0.55;
+const SWAY_MAX = 1.3;
 
 // Детерминированная "случайность" клетки 0..1: по номеру части и номеру
 // живого (не Math.random — рисунок не должен мерцать от кадра к кадру).
@@ -53,9 +66,10 @@ class CreatureAnim {
   at(key, x, y) {
     let s = this.pos.get(key);
     if (!s || Math.abs(x - s.x) > CREATURE_SNAP || Math.abs(y - s.y) > CREATURE_SNAP) {
-      s = { x, y };
+      s = { x, y, lag: 0 };
       this.pos.set(key, s);
     } else if (this.dt > 0) {
+      s.lag = x - s.x;
       const k = 1 - Math.exp(-this.dt / CREATURE_SMOOTH_MS);
       s.x += (x - s.x) * k;
       s.y += (y - s.y) * k;
@@ -77,14 +91,39 @@ function creatureBaseColor(sim, t, id) {
   return ELEMENTS[EL.PROTAGONIST].color;
 }
 
-// Главные клетки всех живых на поле (по полю, раз в кадр).
+// Главные клетки всех живых на поле (по полю, раз в кадр). Попутно собирает и
+// клетки свободных кусков (creaturePieceCells) — второго прохода по полю нет.
+let _pieceCells = [];
 function creaturePivots(sim) {
-  const out = [], type = sim.type, extra = sim.extra, n = type.length;
+  const out = [], pieces = [], type = sim.type, extra = sim.extra, life = sim.life, n = type.length;
   for (let i = 0; i < n; i++) {
     const t = type[i];
-    if ((t === EL.HUMAN || t === EL.PROTAGONIST) && (extra[i] & 127) === PERSON_PIVOT) out.push(i);
+    if (t !== EL.HUMAN && t !== EL.PROTAGONIST) continue;
+    if (life[i] < 0) pieces.push(i);
+    else if ((extra[i] & 127) === PERSON_PIVOT) out.push(i);
   }
+  _pieceCells = pieces;
   return out;
+}
+
+// Клетки свободных кусков, собранные последним creaturePivots.
+function creaturePieceCells() { return _pieceCells; }
+
+// Сколько каждая часть тела участвует в покачивании: голова целиком, чем выше
+// ряд, тем сильнее (маятник), шея — слабо, туловище — нет.
+const PERSON_SWAY = new Float32Array(PERSON_N);
+for (let k = 0; k < PERSON_N; k++) {
+  const row = PERSON_DY[k] + PERSON_PIVOT_ROW;
+  PERSON_SWAY[k] = row <= PERSON_HEAD_ROWS ? (PERSON_HEAD_ROWS + 1 - row) / (PERSON_HEAD_ROWS + 1) : 0;
+}
+
+// Смещение головы в клетках: покой — две медленные волны с фазой от номера
+// живого (двое рядом качаются не в такт), ход — наклон в сторону, куда тело
+// отстаёт от настоящего места (s.lag). Мёртвые не качаются.
+function creatureSway(s, now, id) {
+  const idle = Math.sin(now / 420 + id * 1.7) * SWAY_IDLE + Math.sin(now / 1130 + id * 0.6) * SWAY_IDLE * 0.5;
+  const lean = Math.max(-SWAY_MAX, Math.min(SWAY_MAX, (s.lag || 0) * SWAY_LEAN));
+  return idle + lean;
 }
 
 const _cc = [0, 0, 0, 1];
@@ -140,7 +179,7 @@ function creaturePartColor(sim, base, k, c, id, dead) {
 // клетки на экране (дробные), cell — размер клетки на экране. visible(c) —
 // рисовать ли клетку c (null — все). Края клеток округляются так, чтобы
 // между соседними не было щелей.
-function drawCreatureSprite(ctx, sim, p, px, py, cell, visible) {
+function drawCreatureSprite(ctx, sim, p, px, py, cell, visible, sway = 0) {
   const cells = sim.creatureCells(p);
   const t = sim.type[p], id = sim.life[p], dead = sim.creatureDeadAt(p);
   const base = creatureBaseColor(sim, t, id);
@@ -148,8 +187,31 @@ function drawCreatureSprite(ctx, sim, p, px, py, cell, visible) {
     const c = cells[k];
     if (c < 0 || (visible && !visible(c))) continue;
     const col = creaturePartColor(sim, base, k, c, id, dead);
-    const x0 = Math.round(px + PERSON_DX[k] * cell), x1 = Math.round(px + (PERSON_DX[k] + 1) * cell);
+    const dxk = PERSON_DX[k] + sway * PERSON_SWAY[k];
+    const x0 = Math.round(px + dxk * cell), x1 = Math.round(px + (dxk + 1) * cell);
     const y0 = Math.round(py + PERSON_DY[k] * cell), y1 = Math.round(py + (PERSON_DY[k] + 1) * cell);
+    ctx.globalAlpha = col[3];
+    ctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Свободные куски (sim/pieces.js): каждая клетка квадратом (x, y) → экран
+// (px0 + (x - ox) * cell, py0 + (y - oy) * cell). Цвет — игрока-владельца
+// (-life - 1) & 15 или кожи, мёртвый; пятна и бортик — по номеру части в extra.
+function drawCreaturePieces(ctx, sim, ox, oy, px0, py0, cell, visible) {
+  const w = sim.w, cells = _pieceCells, life = sim.life, type = sim.type, extra = sim.extra;
+  for (let q = 0; q < cells.length; q++) {
+    const c = cells[q];
+    if (visible && !visible(c)) continue;
+    const k = extra[c] & 127;
+    if (k >= PERSON_N) continue;
+    const base = creatureBaseColor(sim, type[c], pieceOwner(life[c]));
+    const col = creaturePartColor(sim, base, k, c, -life[c], true);
+    const x = c % w, y = (c / w) | 0;
+    const x0 = Math.round(px0 + (x - ox) * cell), x1 = Math.round(px0 + (x - ox + 1) * cell);
+    const y0 = Math.round(py0 + (y - oy) * cell), y1 = Math.round(py0 + (y - oy + 1) * cell);
     ctx.globalAlpha = col[3];
     ctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);

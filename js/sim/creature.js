@@ -269,12 +269,15 @@ class SimCreature {
   }
 
   // Сумма ран, ожогов и язв по клеткам: масштаб "урона" (0..255 — смерть).
+  // Клетка, которой уже нет (растворилась, оторвана), считается съеденной
+  // дотла (LOST_DAMAGE, sim/pieces.js): иначе тело теряло бы урон вместе с
+  // растворённым.
   creatureDamage(p) {
     const cells = this.creatureCells(p), dirt = this.dirt, burn = this.burn, acid = this.acid;
     let s = 0;
     for (let k = 0; k < PERSON_N; k++) {
       const c = cells[k];
-      if (c >= 0) s += dirt[c] + burn[c] + acid[c];
+      if (c >= 0) s += dirt[c] + burn[c] + acid[c]; else s += LOST_DAMAGE;
     }
     return s / DAMAGE_SCALE;
   }
@@ -324,7 +327,15 @@ class SimCreature {
     const burnA = this.burn, acidA = this.acid, stainA = this.stain;
     for (let k = 0; k < PERSON_N; k++) {
       const c = cells[k];
-      if (c < 0 || PERSON_EDGE[k] !== 1) continue;
+      if (c < 0) continue;
+      // Бортик касается мира всегда, заливка — только там, где соседней клетки
+      // тела уже нет (срез после разрыва или язвы).
+      if (PERSON_EDGE[k] !== 1) {
+        const nb = PERSON_NEIGH[k];
+        let open = false;
+        for (let q = 0; q < nb.length && !open; q++) open = cells[nb[q]] < 0;
+        if (!open) continue;
+      }
       const cx = x0 + PERSON_DX[k], cy = y0 + PERSON_DY[k];
       for (let d = 0; d < 4; d++) {
         const nx = cx + DX4[d], ny = cy + DY4[d];
@@ -454,12 +465,20 @@ class SimCreature {
   // Клетка тела, не имеющая главной (вырвана из тела: взрыв, кисть), — убирается;
   // у главной — вся логика живого. Вызывается из react для каждой клетки.
   reactCreature(x, y, i, t) {
+    // Свободный кусок (life < 0, sim/pieces.js) ходит сам, без главной клетки.
+    if (this.life[i] < 0) { this.pieceStep(i); return; }
     const k = this.extra[i] & 127;
     if (k === PERSON_PIVOT) {
       if (t === EL.HUMAN) this.reactHuman(x, y, i); else this.reactProtagonist(x, y, i);
       return;
     }
-    if (this.creaturePivot(i) < 0) this.clearCell(i);
+    // Клетка без главной (вырвана взрывом, стёрта): остатки не пропадают, а
+    // становятся мёртвыми кусками (sim/pieces.js). Номер серии кусков и память
+    // людей — общее состояние: в параллельной полосе это откладывается главному потоку.
+    if (this.creaturePivot(i) < 0) {
+      if (this._inBand) { this.defer(DEFER_UPDATE, i); return; }
+      this.creatureOrphan(i);
+    }
   }
 
   // Файл до версии 4: у живого была одна клетка (extra 0 — жив, 1 — мёртв).

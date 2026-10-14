@@ -49,6 +49,11 @@ function makeScene(env, kind) {
     box(0, 300, 575, 323, EL.STONE);
     for (let x = 30; x < 560; x += 25) sim.setCell(x, 299, EL.HUMAN, false);
     sim.setCell(250, 299, EL.PROTAGONIST, false);   // его ход — тоже на главном потоке
+    // Мёртвые падают набок, у одного съедена шея, рядом лужа кислоты: свободные
+    // куски (sim/pieces.js) двигаются главным потоком.
+    sim.creatureKill(sim.idx(80, 299)); sim.creatureKill(sim.idx(155, 299));
+    { const c = sim.creatureCells(sim.idx(205, 299)), dy = env.get('PERSON_DY'); for (let k = 0; k < dy.length; k++) if (dy[k] === -10 && c[k] >= 0) sim.acid[c[k]] = 255; }
+    box(500, 250, 515, 299, EL.ACID);
     sim.playerInput.right = true;
     box(100, 280, 110, 299, EL.GUNP);
     box(300, 285, 306, 299, EL.BLACK_SALT);

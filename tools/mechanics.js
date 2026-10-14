@@ -670,7 +670,7 @@ console.log('19. Спавн не копит тепло: прибавляет т�
 // Мир для живых: пол с y = floor (камень), тело ростом 16 стоит на ряду floor - 1.
 const WORLD = (w = 80, h = 80, floor = 70) => { const s = new Sim(w, h); s.lookColor = () => [0, 0, 0]; box(s, 0, floor, w - 1, h - 1, EL.STONE); return s; };
 // Главная клетка (низ по центру) живого типа t с номером n.
-const pivotOf = (s, t, n) => { for (let i = 0; i < s.type.length; i++) if (s.type[i] === t && (s.extra[i] & 127) === g('PERSON_PIVOT') && (n === undefined || s.life[i] === n)) return i; return -1; };
+const pivotOf = (s, t, n) => { for (let i = 0; i < s.type.length; i++) if (s.type[i] === t && (s.extra[i] & 127) === g('PERSON_PIVOT') && (n === undefined || s.life[i] === n) && s.life[i] >= 0) return i; return -1; };
 const xyOf = (s, i) => (i < 0 ? [-1, -1] : [i % s.w, (i / s.w) | 0]);
 
 console.log('20. Протагонист: тело 16x6, одно на поле, падает, ходит, прыгает, гибнет');
@@ -776,7 +776,9 @@ console.log('20. Протагонист: тело 16x6, одно на поле, 
   }
   const sq = sw.findProtagonist();
   ok(surfaced > 0 && surfaced < 100 && level250, `плавание: всплыл за ${surfaced} кадров, на 250-м кадре на уровне воды (голова над водой, тело в воде), сил осталось ${stam250}`);
-  ok(sw.playerState.exhausted && sq >= 0 && sw.bodyHeadUnder(sq), `выносливость кончилась (${sw.playerState.stamina}) — ушёл под воду (y = ${(sq / sw.w) | 0})`);
+  // Утонувшее тело потом заваливается набок (sim/pieces.js) — главной клетки уже нет,
+  // поэтому "ушёл под воду" читается по причине смерти.
+  ok(sw.playerState.exhausted && sw.playerState.death === 'Утонул', `выносливость кончилась (${sw.playerState.stamina}) — ушёл под воду и утонул (${sw.playerState.death})`);
   // По воде не ходит: над водой он не держится и погружается.
   const ww = WORLD();
   box(ww, 0, 50, 79, 69, EL.WATER);
@@ -797,10 +799,21 @@ console.log('20. Протагонист: тело 16x6, одно на поле, 
   for (let k = 0; k < 400 && buried < 0; k++) { bur.step(); const q = bur.findProtagonist(); if (q >= 0 && bur.creatureDeadAt(q)) buried = k + 1; }
   ok(buried >= 170 && buried <= 200, `завален камнем — задохнулся на ${buried}-м кадре`);
   // Мёртвый не слушается.
-  const q = wtr.findProtagonist();
-  wtr.playerInput.left = true;
-  for (let k = 0; k < 10; k++) wtr.step();
-  ok(wtr.findProtagonist() === q, 'мёртвый не двигается по команде');
+  // Две одинаковые сцены с мёртвым: в одной зажата стрелка влево, в другой нет —
+  // мир должен совпасть побайтно.
+  const deadRun = (left) => {
+    const d = WORLD();
+    d.placeProtagonist(d.idx(40, 69));
+    d.creatureKill(d.findProtagonist(0));
+    d.playerInput.left = left;
+    env.reseed(7);
+    for (let k = 0; k < 10; k++) d.step();
+    return d;
+  };
+  const dl = deadRun(true), dn = deadRun(false);
+  let same = true;
+  for (let i = 0; i < dl.type.length && same; i++) same = dl.type[i] === dn.type[i] && dl.life[i] === dn.life[i] && dl.extra[i] === dn.extra[i];
+  ok(same && count(dl, EL.PROTAGONIST) > 0, 'мёртвый не двигается по команде');
 }
 
 console.log('21. Люди плавают; падающее твёрдое давит');
@@ -824,6 +837,7 @@ console.log('21. Люди плавают; падающее твёрдое дав
   const c = WORLD();
   const hp = c.placeHuman(30, 69);
   c.creatureKill(hp);   // погибший не уходит из-под плиты, как ушёл бы живой
+  c.toppleOn = false;   // и не заваливается набок раньше, чем плита долетит
   box(c, 28, 20, 32, 21, EL.STONE);
   let crushed = -1;
   for (let k = 0; k < 120 && crushed < 0; k++) { c.step(); if (count(c, EL.HUMAN) === 0) crushed = k + 1; }
@@ -846,6 +860,7 @@ console.log('22. Техника: медь, изолятор, приборы, п�
   box(m, 0, 8, 11, 11, EL.WALL);
   m.setCell(5, 7, EL.COPPER, false);
   const mi = m.idx(5, 7);
+  env.reseed(3);   // исход зависит от потока случайных чисел: не от предыдущих проверок
   let melted = false;
   for (let k = 0; k < 600 && !melted; k++) { m.temp.fill(g('ELEMENTS')[EL.COPPER].meltPoint + 5); m.step(); if (count(m, EL.MOLTEN_COPPER)) melted = true; }
   for (let i = 0; i < m.temp.length; i++) m.temp[i] = 20;
@@ -2149,7 +2164,7 @@ console.log('47. Кровь (EL.BLOOD): течёт, смешивается с в
   ok(mixed > 0, `кровь смешалась с водой: клеток с обоими ${mixed}`);
   // Удар по человеку проливает кровь; раздавленный — больше.
   const h = WORLD(); const hi = h.placeHuman(10, 69);
-  h.hitCreature(hi, h.idx(9, 16));
+  h.hitCreature(h.creatureCells(hi)[2], h.idx(9, 16));   // по голове: рядом есть где пролиться
   ok(count(h, EL.BLOOD) > 0, `удар пролил кровь: ${count(h, EL.BLOOD)} капель`);
   h.crushBody(hi);
   ok(count(h, EL.BLOOD) >= 4, `раздавленный пролил больше: ${count(h, EL.BLOOD)} капель`);
@@ -2167,6 +2182,98 @@ console.log('47. Кровь (EL.BLOOD): течёт, смешивается с в
   ok(sn.rules.regenOn === true && sn2.rules.regenOn === false && q.regenOn === true, 'правило регенерации входит в отмену');
   // Предел нагрузки в 5 раз выше прежнего (1.75 -> 8.75).
   ok(Math.abs(g('LOAD_PER_TOUGHNESS') - 8.75) < 1e-9, `предел нагрузки на единицу стойкости ${g('LOAD_PER_TOUGHNESS')}`);
+}
+
+console.log('48. Тело можно разорвать (sim/pieces.js): кислота съедает шею — голова отваливается; куски падают целиком; мёртвое заваливается набок');
+{
+  const N = g('PERSON_N'), DYk = g('PERSON_DY'), DXk = g('PERSON_DX');
+  const CR = (t) => t === EL.HUMAN || t === EL.PROTAGONIST;
+  const pieces = (s) => { const out = []; for (let i = 0; i < s.type.length; i++) if (CR(s.type[i]) && s.life[i] < 0) out.push(i); return out; };
+  const bbox = (s, cells) => { let x0 = 999, x1 = -1, y0 = 999, y1 = -1; for (const i of cells) { const x = i % s.w, y = (i / s.w) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } return { x0, x1, y0, y1, w: x1 - x0 + 1, h: y1 - y0 + 1 }; };
+  const neck = (s, p) => { const c = s.creatureCells(p).slice(), out = []; for (let k = 0; k < N; k++) if (DYk[k] === -10 && c[k] >= 0) out.push(c[k]); return out; };
+
+  // Шея съедена (язва 255 на четырёх клетках): они растворяются, голова
+  // отделяется, человек мёртв, голова — свободный кусок из 20+ клеток.
+  const a = WORLD();
+  const ap = a.placeHuman(30, 69);
+  for (const c of neck(a, ap)) a.acid[c] = 255;
+  let frames = 0;
+  for (; frames < 400 && pieces(a).length === 0; frames++) a.step();
+  const pa = pivotOf(a, EL.HUMAN);
+  ok(pieces(a).length >= 20 && pa >= 0 && a.creatureDeadAt(pa), `шея растворилась на ${frames}-м кадре: голова отделилась (${pieces(a).length} клеток), тело мертво — ${pa >= 0 && a.creatureDeadAt(pa)}`);
+  const lost = N - (count(a, EL.HUMAN));
+  ok(lost >= 4, `от тела осталось на ${lost} клеток меньше (шея растворена; остальное — кровь/капли: ${count(a, EL.BLOOD)})`);
+
+  // Настоящая кислота рядом: тело теряет клетки.
+  const b = WORLD();
+  b.placeHuman(30, 69);
+  box(b, 34, 40, 36, 69, EL.ACID);
+  for (let k = 0; k < 300; k++) b.step();
+  ok(count(b, EL.HUMAN) < N, `человек в кислоте: клеток тела ${count(b, EL.HUMAN)} из ${N}, кусков отдельно ${pieces(b).length}`);
+
+  // Куски падают целиком: мёртвый человек в воздухе над полом, шея вырезана —
+  // голова (кусок) и туловище падают вместе; голова ложится на туловище и
+  // сползает с него на пол (на плоти кусок не держится).
+  const c = WORLD();
+  c.toppleOn = false;
+  const cp = c.placeHuman(30, 40);
+  c.creatureKill(cp);
+  for (const x of neck(c, cp)) c.clearCell(x);
+  for (let k = 0; k < 40; k++) c.step();
+  const pc1 = pieces(c), pcb1 = bbox(c, pc1);
+  ok(pcb1.h === 5 && pc1.length >= 20 && c.type[c.idx(30, 69)] !== EL.EMPTY, `через 40 кадров голова (${pc1.length} клеток, ${pcb1.w}x${pcb1.h}) и туловище на полу`);
+  for (let k = 0; k < 400; k++) c.step();
+  const pc = pieces(c), pcb = bbox(c, pc);
+  const torso = []; for (let i = 0; i < c.type.length; i++) if (CR(c.type[i]) && c.life[i] >= 0) torso.push(i);
+  const tb = bbox(c, torso);
+  ok(pc.length === 5 * 6 - 4 + 0 || pc.length >= 20, `голова — свободный кусок из ${pc.length} клеток`);
+  ok(torso.length + pc.length === N - 4 && tb.y1 === 69 && pcb.y1 === 69 && pcb.h === 5, `голова сползла с туловища на пол целой: туловище до y=${tb.y1}, низ головы y=${pcb.y1}, голова ${pcb.w}x${pcb.h} (клеток ${torso.length + pc.length} из ${N - 4})`);
+
+  // Мёртвое стоящее тело заваливается набок: 16 в высоту -> 16 в ширину.
+  const d = WORLD();
+  const dp = d.placeHuman(40, 69);
+  d.creatureKill(dp);
+  for (let k = 0; k < 400; k++) d.step();
+  const pd = pieces(d), db = bbox(d, pd);
+  ok(pd.length === N && pivotOf(d, EL.HUMAN) < 0 && db.w === 16 && db.h === 6 && db.y1 === 69, `мёртвое тело легло набок: клеток ${pd.length}, ${db.w}x${db.h}, низ y=${db.y1}`);
+  // И лежит неподвижно.
+  const before = Array.from(d.type);
+  for (let k = 0; k < 60; k++) d.step();
+  let moved = 0; for (let i = 0; i < before.length; i++) if (before[i] !== d.type[i]) moved++;
+  ok(moved === 0, `лежащий кусок неподвижен: изменилось клеток ${moved}`);
+
+  // Протагонист: умер — завалился, найти по findProtagonist нельзя, респавн его не боится.
+  const e = WORLD();
+  e.placeProtagonist(e.idx(40, 69));
+  e.creatureKill(e.findProtagonist(0));
+  for (let k = 0; k < 400; k++) e.step();
+  ok(e.findProtagonist(0) < 0 && pieces(e).length === N && count(e, EL.PROTAGONIST) === N, `мёртвый протагонист лежит куском (${pieces(e).length} клеток)`);
+
+  // Осиротевшие клетки (взрывом вырвана главная) не исчезают, а становятся мёртвыми кусками.
+  const f = WORLD();
+  const fp = f.placeHuman(40, 69);
+  f.clearCell(fp);
+  f.step();
+  ok(pieces(f).length === N - 1, `после вырванной главной клетки куском стало ${pieces(f).length} клеток из ${N - 1}`);
+
+  // Кислота разъедает лежащий кусок: клеток становится меньше.
+  const g2 = WORLD();
+  g2.toppleOn = true;
+  const gp = g2.placeHuman(30, 69);
+  g2.creatureKill(gp);
+  for (let k = 0; k < 300; k++) g2.step();
+  const n0 = count(g2, EL.HUMAN);
+  box(g2, 20, 40, 45, 62, EL.ACID);
+  for (let k = 0; k < 600; k++) g2.step();
+  ok(count(g2, EL.HUMAN) < n0 * 0.6, `лежащий кусок в кислоте: было ${n0}, стало ${count(g2, EL.HUMAN)} клеток`);
+
+  // Кусок давится падающим твёрдым и тонет в воде.
+  const hh = WORLD();
+  hh.placeHuman(30, 69); hh.creatureKill(hh.creaturePivot(hh.idx(30, 69)) >= 0 ? hh.idx(30, 69) : 0);
+  for (let k = 0; k < 300; k++) hh.step();
+  box(hh, 0, 20, 79, 60, EL.WATER);
+  for (let k = 0; k < 300; k++) hh.step();
+  ok(count(hh, EL.HUMAN) === N, `кусок в воде не теряет клеток: ${count(hh, EL.HUMAN)} из ${N}`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');

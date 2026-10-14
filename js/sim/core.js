@@ -308,6 +308,7 @@ class Sim {
     this.initLoad();
     this.initBody();
     this.initCreature();
+    this.initPieces();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -670,7 +671,7 @@ class Sim {
     // В параллельной полосе (sim/threads.js) люди и колонисты
     // откладываются на главный поток: их память — в Map главного потока.
     // Туда же — клонер, который копирует человека.
-    if (this._inBand && ((IS_CREATURE[id] === 1 && (this.extra[i] & 127) === PERSON_PIVOT) || id === EL.COLONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
+    if (this._inBand && ((IS_CREATURE[id] === 1 && (this.life[i] < 0 || (this.extra[i] & 127) === PERSON_PIVOT)) || id === EL.COLONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
       this.defer(DEFER_UPDATE, i);
       return;
     }

@@ -1187,8 +1187,10 @@ class Renderer {
     anim.begin(performance.now());
     for (const p of creaturePivots(sim)) {
       const s = anim.at(sim.type[p] * 65536 + sim.life[p], p % sim.w, (p / sim.w) | 0);
-      drawCreatureSprite(ctx, sim, p, s.x * z, s.y * z, z, null);
+      const sway = sim.creatureDeadAt(p) ? 0 : creatureSway(s, anim.last, sim.life[p]);
+      drawCreatureSprite(ctx, sim, p, s.x * z, s.y * z, z, null, sway);
     }
+    drawCreaturePieces(ctx, sim, 0, 0, 0, 0, z, null);
     anim.end();
   }
 

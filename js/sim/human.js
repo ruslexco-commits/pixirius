@@ -465,7 +465,14 @@ class SimHuman {
 
   reactHuman(x, y, i) {
     // Мёртвый — только падает.
-    if (this.creatureDeadAt(i)) { this.creatureFall(i); return; }
+    if (this.creatureDeadAt(i)) {
+      // Мёртвое тело ещё разъедает кислота и жжёт огонь (оно может развалиться
+      // на куски, sim/pieces.js); потом падает и заваливается набок.
+      this.creatureContact(i); this.creatureSpread(i);
+      this.creatureDecay(i);
+      if (this.creatureFall(i) === i) this.creatureTopple(i);
+      return;
+    }
     const mind = this.humanMind(i);
 
     // 1. Касания по клеткам тела (creatureContact): огонь, лава, кислота
@@ -477,6 +484,8 @@ class SimHuman {
       this.poisonDeathBody(i);
       return;
     }
+    // Разъеденная шея — голова отваливается, и он мёртв (sim/pieces.js).
+    if (this.creatureDecay(i) === 2) return;
     if (this.creatureDamage(i) >= DEATH_DAMAGE) { this.humanDie(i); return; }
     this.creatureHeal(i);
     this.creatureSpread(i);
@@ -702,6 +711,7 @@ class SimHuman {
   // месту. vi — любая клетка тела. Память человека живёт на главном потоке,
   // поэтому при параллельном обходе она просто остаётся лишней записью в Map.
   crushBody(vi) {
+    if (this.life[vi] < 0) { this.pieceCrush(vi); return; }   // кусок: давится по клетке
     const p = this.creaturePivot(vi);
     if (p < 0) { this.clearCell(vi); return; }   // осиротевшая клетка
     const w = this.w, h = this.h, x0 = p % w, y0 = (p / w) | 0;

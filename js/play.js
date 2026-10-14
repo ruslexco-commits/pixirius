@@ -887,8 +887,10 @@ class PlayMode {
     for (const p of creaturePivots(sim)) {
       const s = anim.at(sim.type[p] * 65536 + sim.life[p], p % w, (p / w) | 0);
       const own = sim.type[p] === EL.PROTAGONIST && sim.life[p] === mine;
-      drawCreatureSprite(ctx, sim, p, dx + (s.x - ox) * cell, dy + (s.y - oy) * cell, cell, own || all ? null : (c) => this.visGen[c] === gen);
+      const sway = sim.creatureDeadAt(p) ? 0 : creatureSway(s, anim.last, sim.life[p]);
+      drawCreatureSprite(ctx, sim, p, dx + (s.x - ox) * cell, dy + (s.y - oy) * cell, cell, own || all ? null : (c) => this.visGen[c] === gen, sway);
     }
+    drawCreaturePieces(ctx, sim, ox, oy, dx, dy, cell, all ? null : (c) => this.visGen[c] === gen);
     anim.end();
   }
 

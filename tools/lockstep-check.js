@@ -87,6 +87,11 @@ function peopleScene(env) {
   box(0, 300, 575, 323, E.STONE);
   for (let x = 30; x < 560; x += 25) sim.setCell(x, 299, E.HUMAN, false);
   sim.placePlayer(1, sim.idx(250, 299)); sim.placePlayer(2, sim.idx(250, 298));
+  // Мёртвые падают набок, у одного съедена шея, рядом лужа кислоты: свободные
+  // куски (sim/pieces.js) идут в полосах, их ход откладывается главному потоку.
+  sim.creatureKill(sim.idx(80, 299)); sim.creatureKill(sim.idx(155, 299));
+  { const c = sim.creatureCells(sim.idx(205, 299)), dy = env.get('PERSON_DY'); for (let k = 0; k < dy.length; k++) if (dy[k] === -10 && c[k] >= 0) sim.acid[c[k]] = 255; }
+  box(500, 250, 515, 299, E.ACID);
   sim.playerSlot(1).input.right = true;
   box(100, 280, 110, 299, E.GUNP);
   box(300, 285, 306, 299, E.BLACK_SALT);

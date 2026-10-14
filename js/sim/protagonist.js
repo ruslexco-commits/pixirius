@@ -410,6 +410,9 @@ class SimProtagonist {
     // падение и шаг вбок могут случиться в одном кадре).
     let cur = i;
 
+    // Мёртвое тело ещё разъедает кислота и жжёт огонь, оно может развалиться.
+    if (!alive) { this.creatureContact(cur); this.creatureSpread(cur); this.creatureDecay(cur); }
+
     if (alive) {
       // 1. Касания по клеткам тела: огонь, лава, кислота жгут и разъедают
       //    ту клетку, что касаются; яд травит. Смерть — когда сумма дошла
@@ -425,7 +428,12 @@ class SimProtagonist {
         pl.idx = -1;
         return;
       }
-      if (this.creatureDamage(cur) >= DEATH_DAMAGE) {
+      // Разъедание и разрыв (sim/pieces.js): обезглавленное тело мертво.
+      if (this.creatureDecay(cur) === 2) {
+        alive = false;
+        const t = con.lastDeadly;
+        st.death = t ? this.playerDeathCause(t) : 'Разорван на части'; st.deathKind = t ? this.playerDeathKind(t) : 'other';
+      } else if (this.creatureDamage(cur) >= DEATH_DAMAGE) {
         this.creatureKill(cur); alive = false;
         const t = con.lastDeadly || EL.FIRE;
         st.death = this.playerDeathCause(t); st.deathKind = this.playerDeathKind(t);
@@ -529,6 +537,10 @@ class SimProtagonist {
     }
 
     if (swam && --st.stamina <= 0) st.exhausted = true;
+
+    // Мёртвое тело на опоре заваливается набок и становится свободным куском
+    // (sim/pieces.js): главной клетки у него больше нет.
+    if (!alive && grounded() && this.creatureTopple(cur)) { pl.idx = -1; st.mineCell = -1; return; }
 
     // Ломание (см. шапку) — с того места, где он теперь; раны заживают.
     if (alive) { this.creatureHeal(cur); this.creatureSpread(cur); this.creatureBleed(cur); this.playerMine(cur, inp, st); }
