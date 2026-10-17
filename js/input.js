@@ -156,7 +156,8 @@ class InputController {
     // кисть для них всегда в одну клетку, каким бы ни был её размер.
     // Протагонист — так же, одна клетка в центре кисти (просьба: "спавнится
     // всегда в центре спавн-поля").
-    return (writeElementId === EL.COLONIST || writeElementId === EL.HUMAN || writeElementId === EL.PROTAGONIST) ? [0, 0] : [this.brushRX, this.brushRY];
+    // Шароид — тоже одна клетка: центр его тела (sim/sharoid.js).
+    return (writeElementId === EL.COLONIST || writeElementId === EL.HUMAN || writeElementId === EL.PROTAGONIST || writeElementId === EL.SHAROID) ? [0, 0] : [this.brushRX, this.brushRY];
   }
 
   toGrid(clientX, clientY) {
@@ -601,6 +602,8 @@ class InputController {
       const d = this.drag;
       if (d.mode === 'paint' || d.mode === 'erase') {
         const writeEl = this.paintElementFor(d.mode, d.elementId);
+        // Шароид — один на щелчок (просьба пользователя), мазок их не сеет.
+        if (writeEl === EL.SHAROID) { d.lastX = egx; d.lastY = egy; this.gx = gx; this.gy = gy; return; }
         const [brx, bry] = this.brushRadiusFor(writeEl);
         this.sim.stampLine(d.lastX, d.lastY, egx, egy, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
         d.lastX = egx; d.lastY = egy;
@@ -674,7 +677,8 @@ class InputController {
       // СЛЕДУЮЩЕГО, и так далее, пока палец не отпустят. На глаз это и
       // читалось как "прыгает на месте" — на самом деле на одном пятне
       // сменяли друг друга всё новые колонисты, а не один и тот же дёргался.
-      if (writeEl === EL.COLONIST) return;
+      // Шароид — так же: один на щелчок.
+      if (writeEl === EL.COLONIST || writeEl === EL.SHAROID) return;
       const [brx, bry] = this.brushRadiusFor(writeEl);
       this.sim.stampBrush(d.lastX, d.lastY, this.brushShape, brx, bry, writeEl, this.onlyEmptyFor(d.mode, d.elementId));
     } else if (d.mode === 'pressureInc' || d.mode === 'pressureDec') {

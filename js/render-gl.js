@@ -216,6 +216,13 @@ vec3 beamColor(int mat, uint extra) {
   return e0.rgb;
 }
 
+// Renderer.sharoidColor: часть корпуса шароида (extra, SHAR_PART_* в
+// sim/sharoid.js); сенсор игрока — цвет игрока.
+vec3 sharoidColor(uint part, vec3 fallback) {
+  if (part >= ${SHAR_PART_PLAYER}u && part < ${SHAR_PART_PLAYER + 16}u) return uPlayerColor[int(part) - ${SHAR_PART_PLAYER}];
+${SHAR_PART_COLOR.map((c, k) => c ? `  if (part == ${k}u) return vec3(${c.map((v) => v.toFixed(1)).join(', ')});\n` : '').join('')}  return fallback;
+}
+
 void emit(vec3 c) { outColor = vec4(roundEven(clamp8(c)) / 255.0, 1.0); }
 
 void main() {
@@ -260,6 +267,7 @@ void main() {
   else if (kind == KIND_RESIDUE) base = residueColor(extra);
   else if (kind == KIND_OXIDE) base = oxideColor(id, extra, p);
   else if (kind == KIND_HUMAN && extra != 0u) base = vec3(58.0, 52.0, 48.0);
+  else if (id == ${EL.SHAROID}) base = sharoidColor(extra, e0.rgb);
   else if (id == ${EL.PROTAGONIST}) {
     int pl = texelFetch(uLife, p, 0).r;
     base = (pl > 0 && pl < 16) ? uPlayerColor[pl] : e0.rgb;
@@ -356,7 +364,7 @@ class GpuCellPainter {
       uWindX: [I.R32F, I.RED, I.FLOAT, sim.airW, sim.airH],
       uWindY: [I.R32F, I.RED, I.FLOAT, sim.airW, sim.airH],
       uSat: [I.R32F, I.RED, I.FLOAT, w, h],
-      uElem: [I.RGBA32F, I.RGBA, I.FLOAT, 64, ELEM_TABLE_ROWS],
+      uElem: [I.RGBA32F, I.RGBA, I.FLOAT, EL_LIMIT, ELEM_TABLE_ROWS],
     };
     let unit = 0;
     for (const [name, [internal, format, type, tw, th]] of Object.entries(spec)) {
@@ -443,9 +451,10 @@ class GpuCellPainter {
       this.upload('uWindX', sim.windVXFrame);
       this.upload('uWindY', sim.windVYFrame);
     }
-    // Цвета протагонистов игроков (см. uPlayerColor).
+    // Цвета протагонистов игроков (см. uPlayerColor). С нулевого: им же
+    // светится сенсор шароида игрока одиночной игры (sim/sharoid.js).
     const pc = this._playerColors, cols = sim.playerColors || [];
-    for (let n = 1; n < 16; n++) {
+    for (let n = 0; n < 16; n++) {
       const c = cols[n] || ELEMENTS[EL.PROTAGONIST].color;
       pc[n * 3] = c[0]; pc[n * 3 + 1] = c[1]; pc[n * 3 + 2] = c[2];
     }
@@ -483,9 +492,9 @@ function oxideSaturationField(w, h) {
 }
 
 function buildElementTable() {
-  const data = new Float32Array(64 * ELEM_TABLE_ROWS * 4);
-  const set = (id, row, a, b, c, d) => { const o = (row * 64 + id) * 4; data[o] = a; data[o + 1] = b; data[o + 2] = c; data[o + 3] = d; };
-  for (let id = 1; id < 64; id++) {
+  const data = new Float32Array(EL_LIMIT * ELEM_TABLE_ROWS * 4);
+  const set = (id, row, a, b, c, d) => { const o = (row * EL_LIMIT + id) * 4; data[o] = a; data[o + 1] = b; data[o + 2] = c; data[o + 3] = d; };
+  for (let id = 1; id < EL_LIMIT; id++) {
     const el = ELEMENTS[id];
     if (!el) continue;
     let kind = 0;

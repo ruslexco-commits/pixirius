@@ -146,8 +146,8 @@ function solPure(id, n) {
 // Фаза доли по её элементу: 1 — газ, 2 — жидкость, 3 — твёрдое (и
 // сыпучее), 0 — в составы не входит (огонь).
 const STATE_GAS = 1, STATE_LIQUID = 2, STATE_SOLID = 3;
-const PART_STATE = new Uint8Array(64);
-for (let id = 1; id < 64; id++) {
+const PART_STATE = new Uint8Array(EL_LIMIT);
+for (let id = 1; id < EL_LIMIT; id++) {
   const el = ELEMENTS[id];
   if (!el) continue;
   PART_STATE[id] = el.cat === CAT.GAS ? STATE_GAS : el.cat === CAT.LIQUID ? STATE_LIQUID
@@ -168,12 +168,12 @@ const PHASE_LINKS = [
   // Растворитель (просьба пользователя): кипит при 50, замерзает при -20.
   [EL.DISSOLVER, EL.DISSOLVER_GAS, EL.DISSOLVER_ICE, 50, -20],
 ];
-const BOIL_TO = new Uint8Array(64);        // жидкость -> её газ
-const CONDENSE_TO = new Uint8Array(64);    // газ -> его жидкость
-const FREEZE_TO = new Uint8Array(64);      // жидкость -> её твёрдое
-const THAW_TO = new Uint8Array(64);        // твёрдое -> его жидкость
-const BOIL_POINT = new Float64Array(64).fill(Infinity);     // по id жидкости
-const FREEZE_POINT = new Float64Array(64).fill(-Infinity);  // по id жидкости
+const BOIL_TO = new Uint8Array(EL_LIMIT);        // жидкость -> её газ
+const CONDENSE_TO = new Uint8Array(EL_LIMIT);    // газ -> его жидкость
+const FREEZE_TO = new Uint8Array(EL_LIMIT);      // жидкость -> её твёрдое
+const THAW_TO = new Uint8Array(EL_LIMIT);        // твёрдое -> его жидкость
+const BOIL_POINT = new Float64Array(EL_LIMIT).fill(Infinity);     // по id жидкости
+const FREEZE_POINT = new Float64Array(EL_LIMIT).fill(-Infinity);  // по id жидкости
 for (const [liquid, gas, solid, boil, freeze] of PHASE_LINKS) {
   BOIL_TO[liquid] = gas; CONDENSE_TO[gas] = liquid;
   if (solid) { FREEZE_TO[liquid] = solid; THAW_TO[solid] = liquid; }
@@ -182,7 +182,7 @@ for (const [liquid, gas, solid, boil, freeze] of PHASE_LINKS) {
 // Цвет доли — цвет её элемента, название — его имя (0 — пустота).
 const PART_COLOR = [];
 const PART_NAME = ['Пустота'];
-for (let id = 1; id < 64; id++) {
+for (let id = 1; id < EL_LIMIT; id++) {
   if (!ELEMENTS[id]) continue;
   PART_COLOR[id] = ELEMENTS[id].color;
   PART_NAME[id] = ELEMENTS[id].name;
@@ -203,8 +203,12 @@ function pureCompFor(id) {
   if (id === EL.ALLOY) return solWith(solPure(EL.METAL, 5), EL.COPPER, 5);
   if (id === EL.MOLTEN_ALLOY) return solWith(solPure(EL.MOLTEN_METAL, 5), EL.MOLTEN_COPPER, 5);
   if (id === EL.ALLOY_RUST) return solWith(solPure(EL.METAL_OXIDE, 5), EL.COPPER_OXIDE, 5);
+  // Клетка шароида — сталь: id шароида в 6 бит доли не влезает (EL_LIMIT).
+  // Шароидом её оставляет setComposition, пока она чистая сталь.
+  if (id === EL.SHAROID) return SHAROID_COMP;
   return solPure(id);
 }
+const SHAROID_COMP = solPure(EL.STEEL);
 
 // ---- семейства: кто с кем смешивается сам собой ----
 
@@ -248,8 +252,8 @@ function hasComposition(id) { return HAS_COMPOSITION[id] === 1; }
 // С чем меняется долями растворитель: любое вещество с фазой, кроме
 // якорей (стена, пустота, клонер — их не растворить, и растворённая стена
 // выпала бы новой стеной где попало) и живых (человек, колонист).
-const DISSOLVER_MIXABLE = new Uint8Array(64);
-for (let id = 1; id < 64; id++) {
+const DISSOLVER_MIXABLE = new Uint8Array(EL_LIMIT);
+for (let id = 1; id < EL_LIMIT; id++) {
   DISSOLVER_MIXABLE[id] = (PART_STATE[id] !== 0 && !isAnchor(id) && id !== EL.HUMAN && id !== EL.COLONIST && id !== EL.PROTAGONIST) ? 1 : 0;
 }
 
@@ -257,7 +261,7 @@ for (let id = 1; id < 64; id++) {
 // семейство растворов считается ОДНОЙ связной жидкостью (капля раствора
 // посреди озера воды — не отдельная запечатанная лужа, а часть озера),
 // остальные жидкости — каждая сама по себе. Индекс — id элемента.
-const LIQUID_PHASE = new Uint8Array(64);
-for (let id = 0; id < 64; id++) LIQUID_PHASE[id] = isSolutionFamily(id) ? EL.WATER : id;
+const LIQUID_PHASE = new Uint8Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) LIQUID_PHASE[id] = isSolutionFamily(id) ? EL.WATER : id;
 // Расплавы (лава, расплавы металлов и их смесь) — тоже одна жидкость.
 for (const id of [EL.LAVA, EL.MOLTEN_METAL, EL.MOLTEN_STEEL, EL.MOLTEN_COPPER, EL.MOLTEN_ALLOY]) LIQUID_PHASE[id] = EL.LAVA;

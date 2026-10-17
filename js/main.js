@@ -323,6 +323,8 @@ const PALETTE_TEXTURE = {
   [EL.OIL_GAS]: 'img/palette/oil-gas.png',
   [EL.DISSOLVER_GAS]: 'img/palette/dissolver-gas.png',
   [EL.BLACK_SALT]: 'img/palette/black-salt.png',
+  // Шароид — его же маски тела и ног (sim/sharoid.js), стоящий на полу.
+  [EL.SHAROID]: 'img/palette/sharoid.png',
 };
 
 // Кнопки, у которых нет своего элемента: тот же элемент, но кисть ставит

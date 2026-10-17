@@ -218,6 +218,8 @@ class SimProtagonist {
     pl.idx = i;
     this.resetPlayerState(pl.state);
     if (!had) pl.serial++;
+    // Тело у игрока одно: шароид, которым он управлял, свободен (sim/sharoid.js).
+    this.releaseSharoids(n);
     // Когда появился (таймер жизни в игре и чат о смерти: "сколько прожил").
     pl.bornAt = this.frame;
     // Новый протагонист не копает по старой зажатой кнопке.

@@ -79,10 +79,20 @@ const EL = {
   // Грязь: растворяется в воде, оседает у поверхностей (sim/mud.js).
   MUD: 62,
   // Кровь (просьба пользователя): жидкость, вытекает из раненых и раздавленных
-  // (sim/human.js); смешивается с водой и растворами по долям. Последний
-  // свободный id: таблицы по id рассчитаны на id < 64.
+  // (sim/human.js); смешивается с водой и растворами по долям.
   BLOOD: 63,
+  // Шароид (просьба пользователя, sim/sharoid.js): шагающий робот — круглое
+  // стальное тело из клеток этого типа на трёх ногах. Первый id за 63: в
+  // состав клетки (6 бит на id доли) он не попадает никогда — состав его
+  // клеток стальной (pureCompFor), а таблицы по id — на EL_LIMIT.
+  SHAROID: 64,
 };
+
+// Размер таблиц по id элемента (idTable, DENSITY, HEAT_WEIGHT, uElem в
+// шейдере...). Было 64 — id 0..63 кончились, и шароиду места не хватило.
+// Id доли состава по-прежнему 6 бит (data/composition.js): элемент с id от
+// 64 в состав попадать не должен, его клетки состоят из чего-то другого.
+const EL_LIMIT = 128;
 
 // "Инструмент" — в отличие от EL.*, не материал и никогда не пишется в
 // sim.type; когда он выбран, ЛКМ/ПКМ на канвасе управляют не рисованием,
@@ -281,6 +291,11 @@ const ELEMENTS = {
   // js/play.js). Падает как сыпучее, гибнет как человек; на поле всегда
   // не больше одного.
   [EL.PROTAGONIST]: { id: EL.PROTAGONIST, name: 'Протагонист', cat: CAT.POWDER, color: [255, 196, 36], density: 15, flammable: false, acidImmune: true },
+  // Шароид (sim/sharoid.js): клетка его круглого тела. Твёрдое, но не
+  // структурное — держится не за соседей, а на своих ногах, двигает его
+  // целиком sim/sharoid.js. Прочее — сталь (копируется ниже, после таблицы).
+  // Цвет — средний серый корпуса (палитра); на поле — по кольцам (extra).
+  [EL.SHAROID]: { id: EL.SHAROID, name: 'Шароид', cat: CAT.SOLID, color: [140, 140, 146], density: 40, flammable: false },
   // Техника (sim/charges.js): камера, монитор и солнечная панель по
   // физике — металл (плавление, ржавчина, кислота — ниже копируется у
   // металла, линейки окисла в data/oxides.js). Панель рисуется шахматкой
@@ -379,6 +394,11 @@ ELEMENTS[EL.GLASS].toughness = ELEMENTS[EL.STONE].toughness;
 ELEMENTS[EL.GLASS].meltPoint = ELEMENTS[EL.STONE].meltPoint / 2;
 // Лампочка — как стекло: стойкость, плавление, кислота и реагент её не берут.
 for (const key of ['maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) ELEMENTS[EL.LAMP][key] = ELEMENTS[EL.GLASS][key];
+// Шароид — сталь (просьба: "круг со свойствами стали"): плотность,
+// стойкость, кислота, плавление — её, и плавится он в расплав стали.
+for (const key of ['density', 'acidSlow', 'maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) {
+  ELEMENTS[EL.SHAROID][key] = ELEMENTS[EL.STEEL][key];
+}
 // Свойства балки берутся от её материала (см. Sim.pickBeamMaterial), а эти
 // — только для справки в палитре: по умолчанию балка каменная, поэтому
 // здесь копия камня (устойчивость, стойкость — на сколько клеток её можно
@@ -392,7 +412,7 @@ for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltCha
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST,
+  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID,
   EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
@@ -406,13 +426,13 @@ const ELEMENT_ORDER = [
 // (балка — обычное CAT.SOLID, как камень; колонист — CAT.POWDER, как
 // земля), но их место среди технологий, не среди сырых материалов (см.
 // materialCategoryKey в main.js).
-const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
+const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
 
 // Приборы и то, чем они являются по физике: под растворителем становятся
 // простым металлом (просьба: "не имея особых пикселей для этого"), а
 // усилитель — медью, см. dissolverMix. Ржавчина и плавление превращают
 // их в основу сами — через линейку окисла и meltsInto. 0 — не прибор.
-const DEVICE_BASE = new Uint8Array(64);
+const DEVICE_BASE = new Uint8Array(EL_LIMIT);
 DEVICE_BASE[EL.CAMERA] = EL.METAL;
 DEVICE_BASE[EL.MONITOR] = EL.METAL;
 DEVICE_BASE[EL.SOLAR] = EL.METAL;
@@ -440,7 +460,7 @@ function isMovable(cat) {
 // не цепочка сравнений с полями EL. Снаружи это те же функции isX(id):
 // меняется только их устройство, состав каждого множества задан списком.
 function idTable(ids) {
-  const t = new Uint8Array(64);
+  const t = new Uint8Array(EL_LIMIT);
   for (const id of ids) t[id] = 1;
   return t;
 }
@@ -479,7 +499,7 @@ function isAnchor(id) { return IS_ANCHOR[id] === 1; }
 // прочих твёрдых тел (камень, дерево, стекло, лёд и т.д.), которые для
 // потоков воздуха прозрачны. Пустота (VOID) намеренно НЕ входит сюда —
 // роль непроницаемой стены отдана именно "Стене", а не "Пустоте".
-const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.ALLOY, EL.GENERATOR]);
+const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL, EL.SHAROID, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.ALLOY, EL.GENERATOR]);
 function isAirtight(id) { return IS_AIRTIGHT[id] === 1; }
 
 // Твёрдое, сквозь которое видно: взгляд камеры (Sim.lookOpaque), человека
@@ -502,18 +522,18 @@ function isHeatInsulator(id) { return IS_HEAT_INSULATOR[id] === 1; }
 // updateTemp: газ — это разреженное вещество, перемешанное с воздухом, и
 // остывает он как воздух, а не как плотное тело (см. DECAY_AIR там).
 // Индекс — id элемента, поэтому проверка стоит одно чтение массива.
-const IS_GASLIKE = new Uint8Array(64);
-for (let id = 0; id < 64; id++) IS_GASLIKE[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.GAS) ? 1 : 0;
+const IS_GASLIKE = new Uint8Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) IS_GASLIKE[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.GAS) ? 1 : 0;
 // То же для жидкости — для прохода по всем клеткам в computeLiquidEscape.
-const IS_LIQUID = new Uint8Array(64);
-for (let id = 0; id < 64; id++) IS_LIQUID[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.LIQUID) ? 1 : 0;
+const IS_LIQUID = new Uint8Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) IS_LIQUID[id] = (ELEMENTS[id] && ELEMENTS[id].cat === CAT.LIQUID) ? 1 : 0;
 // Для проб соседа при движении (attemptSwapOrMove, attemptBuoyantRise —
 // по нескольку на каждую частицу в каждом кадре): можно ли вообще сдвинуть
 // клетку этого типа (isMovable по категории, 0 и для несуществующего id)
 // и её плотность — без чтения объекта ELEMENTS[id].
-const IS_MOVABLE_ID = new Uint8Array(64);
-const DENSITY = new Float64Array(64);
-for (let id = 0; id < 64; id++) {
+const IS_MOVABLE_ID = new Uint8Array(EL_LIMIT);
+const DENSITY = new Float64Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) {
   const el = ELEMENTS[id];
   IS_MOVABLE_ID[id] = (el && isMovable(el.cat)) ? 1 : 0;
   DENSITY[id] = el ? el.density : 0;

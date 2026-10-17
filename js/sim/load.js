@@ -69,8 +69,8 @@ const LOAD_PER_TOUGHNESS = 8.75;
 // нагрузку балок жидкость не входит: она их проходит насквозь. Снизу вверх
 // (потолок затопленной полости) не считается.
 const LOAD_LIQUID_MASS_PER_DENSITY = 0.0035;
-const LOAD_LIQUID_MASS = new Float64Array(64);
-for (let id = 0; id < 64; id++) LOAD_LIQUID_MASS[id] = IS_LIQUID[id] === 1 ? DENSITY[id] * LOAD_LIQUID_MASS_PER_DENSITY : 0;
+const LOAD_LIQUID_MASS = new Float64Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) LOAD_LIQUID_MASS[id] = IS_LIQUID[id] === 1 ? DENSITY[id] * LOAD_LIQUID_MASS_PER_DENSITY : 0;
 // Жидкость течёт, а скелет при этом не меняется — пересчёт нагрузки по ней
 // идёт ещё и раз в столько кадров (если жидкость на поле есть).
 const LOAD_LIQUID_PERIOD = 30;

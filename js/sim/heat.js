@@ -46,8 +46,8 @@ const ENV_SLOWDOWN = 20;
 // второй канал оставался бы "потолком" скорости остывания):
 //   1) контакт с воздухом — этот AIR_COND;
 //   2) остывание "в никуда" — DECAY_MATTER в updateTemp.
-const HEAT_WEIGHT = new Float32Array(64);
-for (let id = 0; id < 64; id++) {
+const HEAT_WEIGHT = new Float32Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) {
   HEAT_WEIGHT[id] = isHeatInsulator(id) ? 0 : (id === EL.EMPTY ? 0.012 / ENV_SLOWDOWN : 1);
 }
 

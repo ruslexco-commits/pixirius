@@ -67,7 +67,7 @@
 
 // Масса пикселя твёрдого. Чего нет в таблице — LANDING_DEFAULT_MASS.
 const LANDING_DEFAULT_MASS = 0.1;
-const PIXEL_MASS = new Float64Array(64).fill(LANDING_DEFAULT_MASS);
+const PIXEL_MASS = new Float64Array(EL_LIMIT).fill(LANDING_DEFAULT_MASS);
 PIXEL_MASS[EL.METAL] = 0.2;
 PIXEL_MASS[EL.STEEL] = 0.22;
 PIXEL_MASS[EL.STONE] = 0.14;

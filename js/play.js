@@ -136,9 +136,11 @@ class NameTags {
   update(sim) {
     const now = performance.now(), n = sim.type.length;
     for (let k = 1; k < sim.players.length; k++) {
-      const pl = sim.players[k], j = pl ? pl.idx : -1;
-      const here = j >= 0 && j < n && sim.type[j] === EL.PROTAGONIST && sim.life[j] === k;
-      const alive = here && sim.extra[j] !== 1;
+      // Тело игрока — шароид (sim/sharoid.js; имя — над его сенсором) или
+      // протагонист.
+      const sh = sim.playerSharoid(k), pl = sim.players[k], j = sh ? sim.playerCell(k) : pl ? pl.idx : -1;
+      const here = sh ? true : j >= 0 && j < n && sim.type[j] === EL.PROTAGONIST && sim.life[j] === k;
+      const alive = here && (sh ? true : sim.extra[j] !== 1);
       const was = this.alive[k];
       if (!alive && was !== undefined && was >= 0) this.ghosts.push({ k, idx: here ? j : was, t0: now });
       this.alive[k] = alive ? j : -1;
@@ -444,7 +446,7 @@ class PlayMode {
 
   enter() {
     const sim = this.sim;
-    if (sim.findProtagonist(this.playerId) < 0) {
+    if (sim.playerCell(this.playerId) < 0) {
       if (!this.mp) this.flashOutside('Сначала поставьте протагониста — вкладка «Технологии»');
       return;
     }
@@ -521,6 +523,9 @@ class PlayMode {
   opaque(i) {
     const t = this.sim.type[i];
     if (t === EL.EMPTY || IS_SEE_THROUGH[t] === 1) return false;
+    // Свой шароид (sim/sharoid.js) взгляд не заслоняет: смотрит он из сенсора
+    // в середине тела (ownSharoid — номер, ставит frame).
+    if (t === EL.SHAROID && this.sim.life[i] === this.ownSharoid) return false;
     const el = ELEMENTS[t];
     return !!el && (el.cat === CAT.SOLID || el.cat === CAT.POWDER);
   }
@@ -742,8 +747,8 @@ class PlayMode {
     const sim = this.sim, alive = [];
     for (let k = 1; k < sim.players.length; k++) {
       if (k === this.playerId || !sim.players[k]) continue;
-      const j = sim.findProtagonist(k);
-      if (j >= 0 && !sim.extra[j]) alive.push(k);
+      const j = sim.playerCell(k);
+      if (!sim.playerDeadAt(j)) alive.push(k);
     }
     if (!alive.length) return -1;
     if (!alive.includes(this.watchK)) this.watchK = alive[0];
@@ -790,19 +795,25 @@ class PlayMode {
     this.renderer.updateMonitorGlow();
     this.renderer.updateLighting();
     if ((sim.mapEpoch || 0) !== this.memEpoch) { this.memEpoch = sim.mapEpoch || 0; this.memForget(); }
-    let p = sim.findProtagonist(this.playerId);
+    let p = sim.playerCell(this.playerId);
+    const own = sim.playerSharoid(this.playerId);
+    this.ownSharoid = own ? own.id : -1;
     // Погиб — ломание кончилось: после возрождения — только новым нажатием.
-    if (p < 0 || sim.extra[p]) this.mining = false;
+    if (sim.playerDeadAt(p)) this.mining = false;
     // Выбыл насовсем (жизни кончились, возрождения нет; мультиплеер) —
     // наблюдает за другим живым игроком: его глазами и его камерой
     // (просьба пользователя). A/D — сменить, за кем.
     this.watching = -1;
     if (this.mp && this.mp.isOut && this.mp.isOut()) {
       const k = this.watchTarget();
-      if (k >= 0) { this.watching = k; p = sim.findProtagonist(k); }
+      if (k >= 0) {
+        this.watching = k; p = sim.playerCell(k);
+        const o = sim.playerSharoid(k);
+        this.ownSharoid = o ? o.id : -1;
+      }
     }
     // Погиб (или пропал с поля) — карта открывается целиком.
-    this.revealed = p < 0 || !!sim.extra[p];
+    this.revealed = sim.playerDeadAt(p);
     if (p >= 0) {
       this.lastX = p % sim.w;
       this.lastY = (p / sim.w) | 0;
@@ -859,6 +870,9 @@ class PlayMode {
     ctx.fillRect(0, 0, W, H);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(this.viewCanvas, dx, dy, VW * cell, VH * cell);
+    // Ноги шароидов (sim/sharoid.js) — там, где их видно сейчас.
+    const all = this.seeAll(), gen = this.gen;
+    this.renderer.drawSharoids(dx, dy, cell, ox, oy, ox + VW - 1, oy + VH - 1, { ctx, lit: !this.revealed, seen: (i) => all || this.visGen[i] === gen });
     this.drawToxicSight(ctx, W, H, dx, dy, VW * cell, VH * cell);
     this.drawMining(ctx, W, H, dx, dy, cell, ox, oy);
     // Имена игроков над протагонистами в поле зрения (мультиплеер; у
@@ -879,8 +893,9 @@ class PlayMode {
   // желтеет; тем сильнее, чем сильнее отравление. Отравление — stain своего
   // протагониста (sim/human.js).
   drawToxicSight(ctx, W, H, dx, dy, vw, vh) {
-    const p = this.watching >= 0 ? -1 : this.sim.findProtagonist(this.playerId);
-    if (p < 0 || this.sim.extra[p]) return;
+    const p = this.watching >= 0 ? -1 : this.sim.playerCell(this.playerId);
+    // У шароида (sim/sharoid.js) отравления нет: stain его клетки — кровь.
+    if (this.sim.playerDeadAt(p) || this.sim.type[p] !== EL.PROTAGONIST) return;
     const tox = this.sim.stain[p] / 255;
     if (tox < 0.02) return;
     const t = performance.now() / 1000;
@@ -969,7 +984,7 @@ class PlayMode {
     // оставшиеся жизни, если они считаются.
     // Сколько прожил в этой жизни (с появления — bornAt); погиб — красный и
     // мигает на времени смерти (просьба пользователя).
-    const own = sim.findProtagonist(this.playerId), ownAlive = own >= 0 && !sim.extra[own];
+    const own = sim.playerCell(this.playerId), ownAlive = !sim.playerDeadAt(own);
     if (ownAlive) this.diedAt = null;
     else if (this.diedAt === null || this.diedAt === undefined) this.diedAt = sim.frame;
     if (this.mp && this.mp.timerOn && this.mp.timerOn()) {
@@ -1013,9 +1028,12 @@ class PlayMode {
     // Пелена по краям: отравление (жёлтая, переливается), утопание (почти
     // чёрная синева), усталость вплавь и при копании (чёрная), раны
     // (красная). Ближе к смерти — сужается к центру (level).
-    if (p >= 0 && !sim.extra[p]) {
+    if (!sim.playerDeadAt(p)) {
       const st = this.pst();
-      const poison = sim.stain[p] / 255, wetK = Math.min(1, st.wet / HUMAN_DROWN_FRAMES), hurt = sim.dirt[p] / 255;
+      // Отравление и раны — у протагониста; у шароида stain и dirt клетки —
+      // кровь и грязь на корпусе.
+      const creature = sim.type[p] === EL.PROTAGONIST;
+      const poison = creature ? sim.stain[p] / 255 : 0, wetK = Math.min(1, st.wet / HUMAN_DROWN_FRAMES), hurt = creature ? sim.dirt[p] / 255 : 0;
       const tired = Math.max(0, 1 - st.stamina / SWIM_STAMINA);
       this.vignette(ctx, W, H, [0, 0, 0], 0.75 * tired, false);
       this.vignette(ctx, W, H, [235, 215, 40], poison > 0 ? 0.25 + 0.75 * poison : 0, true, poison);
@@ -1024,7 +1042,7 @@ class PlayMode {
     }
     // Дыхание под водой — столько же, сколько у человека.
     const wet = this.pst().wet;
-    if (p >= 0 && wet > 0 && !sim.extra[p]) {
+    if (wet > 0 && !sim.playerDeadAt(p)) {
       const k = Math.max(0, 1 - wet / HUMAN_DROWN_FRAMES);
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(20, 20, 204, 16);
@@ -1033,7 +1051,7 @@ class PlayMode {
     }
     // Выносливость — жёлтая полоса под дыханием: тратится вплавь.
     const stam = this.pst().stamina;
-    if (p >= 0 && !sim.extra[p] && stam < SWIM_STAMINA) {
+    if (!sim.playerDeadAt(p) && stam < SWIM_STAMINA) {
       const k = Math.max(0, stam / SWIM_STAMINA);
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
       ctx.fillRect(20, 42, 204, 16);
@@ -1043,7 +1061,7 @@ class PlayMode {
     // Погиб: от чего (state.death). Пропал с поля без записанной
     // причины — раздавлен в полосе рабочего потока (кровь на месте, см.
     // Sim.crushBody) или стёрт.
-    if (p < 0 || sim.extra[p]) {
+    if (sim.playerDeadAt(p)) {
       let cause = this.pst().death;
       if (!cause && p < 0) {
         let blood = 0;

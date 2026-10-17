@@ -301,6 +301,7 @@ class Sim {
     this.initSpawns();
     this.initLoad();
     this.initBody();
+    this.initSharoids();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -469,6 +470,7 @@ class Sim {
     this._debrisWindVX.fill(0);
     this._windRoll = 1;
     this._humans.clear();
+    this.sharoids = [];
     this.spawnMarks = [];
     this.respawnMarks = [];
     this.wakeAll();
@@ -578,6 +580,8 @@ class Sim {
     this.computeDebrisWindChance();
     // Крупные падающие тела — целиком (sim/body.js), до обхода клеток.
     this.updateBodies();
+    // Шароиды (sim/sharoid.js) — тоже целиком и главным потоком.
+    this.updateSharoids();
     // Обход клеток — несколькими потоками, если они запущены и готовы
     // (sim/threads.js), иначе одним. В мультиплеере — полосами, одинаково у
     // всех вкладок, с потоками и без (updateBands, sim/threads.js).
@@ -728,6 +732,8 @@ class Sim {
       case EL.CLONE: this.reactClone(x, y, i); break;
       case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS:
       case EL.CAMERA: case EL.MONITOR: case EL.SOLAR: case EL.GENERATOR: this.reactMelt(x, y, i, id); break;
+      // Клетка шароида плавится, как сталь (и выпадает из его тела).
+      case EL.SHAROID: this.reactMelt(x, y, i, id); break;
       // Усилитель — медь, но на воздухе не зеленеет (copperAir): патина
       // сменила бы тип, и через минуту усилителя на проводе бы не осталось.
       case EL.AMPLIFIER: this.reactMelt(x, y, i, id); break;

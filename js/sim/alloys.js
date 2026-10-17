@@ -66,7 +66,7 @@ const ALLOY_METALLIC = idTable([EL.METAL, EL.STEEL, EL.COPPER, EL.METAL_OXIDE, E
 const ALLOY_OXIDE_PART = idTable([EL.METAL_OXIDE, EL.COPPER_OXIDE, EL.OXIDE, EL.METAL_OXIDE_LOOSE, EL.COPPER_OXIDE_LOOSE, EL.OXIDE_LOOSE]);
 // Твёрдая доля -> её расплав, расплав -> его твёрдое. Ржавчина плавится,
 // как свой металл (и ничего не выделяет, как и раньше).
-const MELT_TO = new Uint8Array(64);
+const MELT_TO = new Uint8Array(EL_LIMIT);
 MELT_TO[EL.STONE] = EL.LAVA;
 MELT_TO[EL.OXIDE] = EL.LAVA;
 MELT_TO[EL.OXIDE_LOOSE] = EL.LAVA;
@@ -77,13 +77,13 @@ MELT_TO[EL.STEEL] = EL.MOLTEN_STEEL;
 MELT_TO[EL.COPPER] = EL.MOLTEN_COPPER;
 MELT_TO[EL.COPPER_OXIDE] = EL.MOLTEN_COPPER;
 MELT_TO[EL.COPPER_OXIDE_LOOSE] = EL.MOLTEN_COPPER;
-const SOLIDIFY_TO = new Uint8Array(64);
+const SOLIDIFY_TO = new Uint8Array(EL_LIMIT);
 SOLIDIFY_TO[EL.LAVA] = EL.STONE;
 SOLIDIFY_TO[EL.MOLTEN_METAL] = EL.METAL;
 SOLIDIFY_TO[EL.MOLTEN_STEEL] = EL.STEEL;
 SOLIDIFY_TO[EL.MOLTEN_COPPER] = EL.COPPER;
 // Металл -> его ржавчина в сплаве.
-const RUST_TO = new Uint8Array(64);
+const RUST_TO = new Uint8Array(EL_LIMIT);
 RUST_TO[EL.METAL] = EL.METAL_OXIDE;
 RUST_TO[EL.STEEL] = EL.METAL_OXIDE;
 RUST_TO[EL.COPPER] = EL.COPPER_OXIDE;
@@ -94,13 +94,13 @@ RUST_TO[EL.STONE] = EL.OXIDE;
 // порог LAVA_SOLIDIFY_TEMP (sim/reactions.js). Устойчивость ржавчины — как
 // у хрупкого окисла (как дерево), остального — по элементу. Кислота: 0 —
 // не берёт, 0.015 — медленно (acidSlow), 0.06 — как камень.
-const PART_MELT = new Float64Array(64);
-const PART_MELT_CHANCE = new Float64Array(64);
-const PART_SOLIDIFY = new Float64Array(64);
-const PART_STAB = new Float64Array(64);
-const PART_TOUGH = new Float64Array(64);
-const PART_ACID = new Float64Array(64);
-for (let id = 1; id < 64; id++) {
+const PART_MELT = new Float64Array(EL_LIMIT);
+const PART_MELT_CHANCE = new Float64Array(EL_LIMIT);
+const PART_SOLIDIFY = new Float64Array(EL_LIMIT);
+const PART_STAB = new Float64Array(EL_LIMIT);
+const PART_TOUGH = new Float64Array(EL_LIMIT);
+const PART_ACID = new Float64Array(EL_LIMIT);
+for (let id = 1; id < EL_LIMIT; id++) {
   const el = ELEMENTS[id];
   if (!el) continue;
   if (el.meltPoint !== undefined) { PART_MELT[id] = el.meltPoint; PART_MELT_CHANCE[id] = el.meltChance || 0; }

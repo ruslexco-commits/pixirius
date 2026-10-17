@@ -104,7 +104,7 @@ const MP_OPS = ['stampBrush', 'stampLine', 'floodFill', 'applyPressureBrush', 'a
 // Действия самого хоста, которые вкладки повторяют: игрок появился,
 // возродился, ушёл. Место хост выбирает сам (случайно, своими числами), во
 // вкладки идёт уже выбранная клетка.
-const MP_HOST_ACTS = ['placePlayer', 'respawnPlayer', 'clearCell'];
+const MP_HOST_ACTS = ['placePlayer', 'respawnPlayer', 'clearCell', 'releaseSharoids'];
 // Состояние кисти, от которого зависит действие: стадия окисла, материал
 // балки — у каждого игрока своё.
 const MP_PAINT_CTX = ['paintOxideStage', 'beamPaintMaterial', 'beamPaintExtra'];
@@ -270,6 +270,8 @@ class Multiplayer {
       s.setSpawnMark(i % s.w, (i / s.w) | 0, this.me);
       s.clearCell(i);
     }
+    // Шароид одиночной игры (sim/sharoid.js) — так же, шароид хоста.
+    for (const sh of s.sharoids) if (sh.ctrl === 0) sh.ctrl = this.me;
   }
 
   // Пустая комнатка: только пол. Стен по краям нет (просьба пользователя
@@ -348,6 +350,9 @@ class Multiplayer {
       for (let i = 0; i < sim.type.length; i++) if (sim.type[i] === EL.PROTAGONIST && sim.life[i] > 0) sim.clearCell(i);
     });
     for (const p of st.players) {
+      // Игрок, которому достался шароид (щелчок его точкой спавна по
+      // шароиду, sim/sharoid.js), появляется в нём — протагонист не нужен.
+      if (sim.playerSharoid(p.n)) { sim.playerSlot(p.n).bornAt = sim.frame; continue; }
       let i = -1;
       if (!st.settings.randomSpawn) {
         const m = sim.spawnMarks.find((mk) => mk.n === p.n);
@@ -578,8 +583,9 @@ class Multiplayer {
   respawnTick(s, lobby) {
     const st = this.state;
     for (const p of st.players) {
-      const i = s.findProtagonist(p.n);
-      const dead = i < 0 || s.extra[i] === 1;
+      // Тело игрока — протагонист или шароид (sim/sharoid.js, playerCell).
+      const i = s.playerCell(p.n);
+      const dead = s.playerDeadAt(i);
       const key = (lobby ? 'l' : 'g') + p.n;
       if (!dead) { delete this.deadSince[key]; if (!lobby) this.status[p.n] = ''; continue; }
       if (this.deadSince[key] === undefined) {
@@ -660,6 +666,7 @@ class Multiplayer {
     for (const w of ['lobby', 'map']) {
       const i = this.world(w).findProtagonist(p.n);
       if (i >= 0) this.act(w, 'clearCell', [i]);
+      if (this.world(w).playerSharoid(p.n)) this.act(w, 'releaseSharoids', [p.n]);
     }
     this.broadcastState();
   }

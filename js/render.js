@@ -59,8 +59,8 @@ const LAMP_GLOW_MATTER = 0.12;        // тёплый отсвет на веще
 const SKY_TINT_RGB = [70, 125, 210];
 const SKY_TINT_AIR = 0.2;
 // Непрозрачное для света: твёрдое и сыпучее, кроме стекла.
-const LIGHT_OPAQUE = new Uint8Array(64);
-for (let id = 1; id < 64; id++) {
+const LIGHT_OPAQUE = new Uint8Array(EL_LIMIT);
+for (let id = 1; id < EL_LIMIT; id++) {
   const el = ELEMENTS[id];
   LIGHT_OPAQUE[id] = el && (el.cat === CAT.SOLID || el.cat === CAT.POWDER) && IS_SEE_THROUGH[id] !== 1 ? 1 : 0;
 }
@@ -578,6 +578,8 @@ class Renderer {
       : ((id === EL.HUMAN || id === EL.PROTAGONIST) && sim.extra[i]) ? [58, 52, 48]
       // Протагонист игрока мультиплеера — цветом игрока (шейдер — так же).
       : (id === EL.PROTAGONIST && sim.life[i] > 0 && sim.life[i] < 16 && sim.playerColors && sim.playerColors[sim.life[i]]) ? sim.playerColors[sim.life[i]]
+      // Шароид — по частям корпуса (sim/sharoid.js; шейдер — так же).
+      : id === EL.SHAROID ? this.sharoidColor(i)
       : el.color;
     let r = clamp8(base[0] + s), g = clamp8(base[1] + s), b = clamp8(base[2] + s);
     // Пятно крови (Sim.crushBody) — к красному, тем сильнее, чем гуще.
@@ -645,6 +647,18 @@ class Renderer {
   // Цвет материала балки: у окисла — цвет его стадии (без разброса
   // насыщенности, как у настоящего окисла: балка и так приглушена), у
   // остального — цвет элемента. Шейдер повторяет это в beamColor.
+  // Цвет части корпуса шароида (extra, SHAR_PART_* в sim/sharoid.js):
+  // кольца и оправа — свои, сенсор игрока — цвет игрока (как у шейдера,
+  // uPlayerColor: нет цвета — цвет протагониста).
+  sharoidColor(i) {
+    const part = this.sim.extra[i];
+    if (part >= SHAR_PART_PLAYER && part < SHAR_PART_PLAYER + 16) {
+      const cols = this.sim.playerColors;
+      return (cols && cols[part - SHAR_PART_PLAYER]) || ELEMENTS[EL.PROTAGONIST].color;
+    }
+    return SHAR_PART_COLOR[part] || ELEMENTS[EL.SHAROID].color;
+  }
+
   beamColor(i) {
     const sim = this.sim;
     const mat = sim.beam[i];
@@ -903,6 +917,52 @@ class Renderer {
     ctx.stroke();
   }
 
+  // Ноги шароидов (sim/sharoid.js) поверх поля: от точки крепления до ножки
+  // ступни — прямая, ножка в две клетки, перекладина в три (перевёрнутая
+  // "Т"). Клетки ног за твёрдым и сыпучим не видно — нога позади них.
+  // Параметры — как у drawCharges (ox, oy, scale, окно x0..y1 — для лупы).
+  // Экран игры (js/play.js) рисует ноги на своём холсте (opt.ctx), только
+  // на видимых клетках (opt.seen(i)) и с освещением клетки (opt.lit): поле
+  // там — уже освещённое, а не под слоем света.
+  drawSharoids(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1, opt = null) {
+    const sim = this.sim, list = sim.sharoids;
+    if (!list || !list.length) return;
+    const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
+    const seen = opt && opt.seen, lit = !!(opt && opt.lit);
+    const rgb = (c) => `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+    const cell = (x, y, col, css) => {
+      if (x < x0 || x > x1 || y < y0 || y > y1 || x < 0 || x >= w || y < 0 || y >= h) return;
+      const i = y * w + x, t = sim.type[i];
+      if (t !== EL.EMPTY && !sim.sharPassable(t)) return;
+      if (seen && !seen(i)) return;
+      ctx.fillStyle = lit ? rgb(this.litColor(i, col)) : css;
+      ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+    };
+    const legC = rgb(SHAR_LEG_COLOR), shinC = rgb(SHAR_SHIN_COLOR), footC = rgb(SHAR_FOOT_COLOR);
+    ctx.save();
+    for (const s of list) {
+      for (let k = 0; k < 3; k++) {
+        const leg = s.legs[k];
+        const fx = Math.round(leg.x), fy = Math.round(leg.y);
+        // Прямая — по Брезенхэму, от крепления до верха ножки.
+        let x = s.x + (k === 1 ? (s.face < 0 ? 5 : 6) : SHAR_ATTACH_X[k]), y = s.y + SHAR_ATTACH_Y[k];
+        const tx = fx, ty = fy - 2;
+        const dx = Math.abs(tx - x), dy = -Math.abs(ty - y), sx = x < tx ? 1 : -1, sy = y < ty ? 1 : -1;
+        let err = dx + dy;
+        for (let g = 0; g < 256; g++) {
+          cell(x, y, SHAR_LEG_COLOR, legC);
+          if (x === tx && y === ty) break;
+          const e2 = 2 * err;
+          if (e2 >= dy) { err += dy; x += sx; }
+          if (e2 <= dx) { err += dx; y += sy; }
+        }
+        cell(fx, fy - 2, SHAR_SHIN_COLOR, shinC); cell(fx, fy - 1, SHAR_SHIN_COLOR, shinC);
+        for (let d = -1; d <= 1; d++) cell(fx + d, fy, SHAR_FOOT_COLOR, footC);
+      }
+    }
+    ctx.restore();
+  }
+
   // Заряды (sim/charges.js) поверх поля — только в режиме создания (в игре
   // за протагониста поле рисует js/play.js, и зарядов там не видно).
   // ox, oy, scale и окно (x0..x1, y0..y1) — для лупы.
@@ -1139,6 +1199,7 @@ class Renderer {
     // основном канвасе, но в координатах и увеличении окна лупы, и только
     // если рабочая точка вообще попадает в показываемую лупой область.
     // Заряды — и в лупе.
+    if (sx0 <= sx1 && sy0 <= sy1) this.drawSharoids(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
     if (sx0 <= sx1 && sy0 <= sy1) this.drawLighting(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
     if (sx0 <= sx1 && sy0 <= sy1) this.drawMonitorGlow(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
     if (sx0 <= sx1 && sy0 <= sy1) this.drawCharges(ox + (sx0 - (gx - capRX)) * scale, oy + (sy0 - (gy - capRY)) * scale, scale, sx0, sy0, sx1, sy1);
@@ -1185,6 +1246,8 @@ class Renderer {
     // На паузе шаг не идёт, а кистью мир правят: данные видов — свежие.
     if (this.sim.paused && (this.debugLoad || this.debugStability)) this.sim.refreshLoad(this.debugLoad);
     this.drawFrame();
+    // Ноги шароидов — до света: в темноте они темнеют вместе с полем.
+    this.drawSharoids();
     this.updateLighting();
     if (this.lightOn) {
       this.buildLightImage();

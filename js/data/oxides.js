@@ -195,7 +195,7 @@ function solColor(comp) {
   ];
 }
 
-const OXIDE_FRAIL_FROM = new Int8Array(64);
+const OXIDE_FRAIL_FROM = new Int8Array(EL_LIMIT);
 OXIDE_FRAIL_FROM[EL.OXIDE] = OXIDE_LINE_STONE.frailStage;
 OXIDE_FRAIL_FROM[EL.OXIDE_LOOSE] = -1;
 OXIDE_FRAIL_FROM[EL.METAL_OXIDE] = OXIDE_LINE_METAL.frailStage;

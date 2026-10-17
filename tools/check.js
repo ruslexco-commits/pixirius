@@ -28,6 +28,8 @@ const solGet = env.get('solGet');
 const SOL_PARTS = env.get('SOL_PARTS');
 const SOL_SLOTS = env.get('SOL_SLOTS');
 const solSlot = env.get('solSlot');
+const EL_LIMIT = env.get('EL_LIMIT');
+const pureCompFor = env.get('pureCompFor');
 
 let failed = 0;
 const fail = (msg) => { failed++; console.log('  ОШИБКА: ' + msg); };
@@ -42,7 +44,9 @@ for (const [name, id] of Object.entries(EL)) {
   if (el.id !== id) fail(`ELEMENTS[${id}].id = ${el.id}`);
   if (!el.name || !el.cat || !Array.isArray(el.color)) fail(`у EL.${name} нет name/cat/color`);
   if (el.meltChance && (el.meltPoint === undefined || el.meltsInto === undefined)) fail(`EL.${name}: meltChance без meltPoint/meltsInto`);
-  if (id >= 64) fail(`EL.${name} = ${id}: таблицы по id (IS_GASLIKE, LIQUID_PHASE, OXIDE_FRAIL_FROM) рассчитаны на id < 64`);
+  if (id >= EL_LIMIT) fail(`EL.${name} = ${id}: таблицы по id (IS_GASLIKE, LIQUID_PHASE, OXIDE_FRAIL_FROM) рассчитаны на id < EL_LIMIT (${EL_LIMIT})`);
+  // Id доли состава — 6 бит: элемент с id от 64 в состав попадать не должен.
+  if (id >= 64 && (pureCompFor(id) & 63) === id % 64) fail(`EL.${name} = ${id}: свежий состав из него самого, а id доли — 6 бит (< 64)`);
   if (typeof el.density !== 'number') fail(`у EL.${name} нет числовой density: движение сравнивает плотности через таблицу DENSITY`);
 }
 for (const id of ELEMENT_ORDER) if (!ELEMENTS[id]) fail(`в ELEMENT_ORDER неизвестный id ${id}`);

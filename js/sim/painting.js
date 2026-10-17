@@ -15,6 +15,11 @@ class SimPainting {
     if (!this.inBounds(x, y)) return;
     const i = this.idx(x, y);
     if (this.livePlayerAt(i)) return;
+    // Шароид (sim/sharoid.js): кисть ставит одного — телом с центром в
+    // клетке щелчка. Протагонист или человек по шароиду — не рисование, а
+    // управление им: игрок (в мультиплеере — хост) или повадки человека.
+    if (elementId === EL.SHAROID) { this.placeSharoid(x, y); return; }
+    if ((elementId === EL.PROTAGONIST || elementId === EL.HUMAN) && this.commandSharoid(i, elementId, this.protagonistAsSpawn || 0)) return;
     // Балка живёт во втором слое: ничего не вытесняет и кладётся сквозь
     // пустоту, жидкость и газ (но не в твёрдое и сыпучее, см. placeBeam).
     // Материал — тот, с которого начали вести (beamPaintMaterial).
@@ -64,6 +69,8 @@ class SimPainting {
   }
 
   stampLine(x0, y0, x1, y1, shape, rx, ry, elementId, onlyEmpty) {
+    // Шароид — один за раз (просьба пользователя): линия ставит его в конце.
+    if (elementId === EL.SHAROID) { this.setCell(x1, y1, elementId, onlyEmpty); return; }
     let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
     const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     let err = dx + dy;
@@ -87,8 +94,9 @@ class SimPainting {
     const replacement = erase ? EL.EMPTY : elementId;
     // Тот же элемент, но другая стадия окисла, — заливка имеет смысл.
     if (target === replacement && !this.paintOxideStage) return;
-    // Заливать протагонистом нечего: он один — ставится в точку щелчка.
-    if (replacement === EL.PROTAGONIST) { this.setCell(x0, y0, EL.PROTAGONIST, false); return; }
+    // Заливать протагонистом и шароидом нечего: они по одному — ставятся в
+    // точку щелчка.
+    if (replacement === EL.PROTAGONIST || replacement === EL.SHAROID) { this.setCell(x0, y0, replacement, false); return; }
     const w = this.w, h = this.h;
     const stack = [startI];
     const visited = new Uint8Array(w * h);
@@ -159,6 +167,9 @@ class SimPainting {
           continue;
         }
         for (const f of PARTICLE_FIELDS) this[f.name][i] = F[f.name][k];
+        // Клетки шароида без его ног и управления — просто сталь (станут ею
+        // в начале следующего шага, sweepSharoidOrphans).
+        if (t === EL.SHAROID) this._sharSweep = true;
         this.fall[i] = 0;
         this.crushed[i] = 0;
         this.markDirty(i);

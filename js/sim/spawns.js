@@ -55,7 +55,15 @@ class SimSpawns {
   }
 
   // Поставить точку спавна игрока n (прежняя этого игрока убирается).
+  // Точка спавна, поставленная на шароида (sim/sharoid.js), — не метка:
+  // шароид становится телом игрока n (просьба пользователя: "кликнуть
+  // игроком по шароиду — при спавне игрок будет им управлять").
   setSpawnMark(x, y, n) {
+    if (this.inBounds(x, y) && this.sharoidAt(y * this.w + x)) {
+      this.spawnMarks = this.spawnMarks.filter((m) => m.n !== n);
+      this.commandSharoid(y * this.w + x, EL.PROTAGONIST, n);
+      return;
+    }
     this.spawnMarks = this.spawnMarks.filter((m) => m.n !== n && !(m.x === x && m.y === y));
     this.spawnMarks.push({ x, y, n });
   }

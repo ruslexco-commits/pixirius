@@ -132,6 +132,10 @@ class SimComposition {
     else if (liqKinds === 1 && (solid === 0 || !isSolutionFamily(liqId))) id = liqId;
     else if (moltenKinds === liqKinds) id = EL.MOLTEN_ALLOY;
     else id = EL.SOLUTION;
+    // Клетка шароида (sim/sharoid.js) — стальная, но остаётся шароидом, пока
+    // она чистая сталь. Кислота или растворитель её состав меняют — и она
+    // становится простой сталью: отпадает от тела.
+    if (cur === EL.SHAROID && comp === SHAROID_COMP) id = EL.SHAROID;
     if (this.type[i] !== id) { this.type[i] = id; this.markDirty(i); }
     this.setComp(i, comp);
   }

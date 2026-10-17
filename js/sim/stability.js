@@ -24,9 +24,9 @@ const STAB_STEP_OIL_LINK = STAB_STEP_DX.map((dx, s) => oilOppositeDir(oilDirCode
 
 // maxStability / toughness по id — таблицы вместо ELEMENTS[id].x || дефолт
 // на каждом шаге распространения.
-const STAB_MAX = new Float64Array(64);
-const STAB_TOUGHNESS = new Float64Array(64);
-for (let id = 0; id < 64; id++) {
+const STAB_MAX = new Float64Array(EL_LIMIT);
+const STAB_TOUGHNESS = new Float64Array(EL_LIMIT);
+for (let id = 0; id < EL_LIMIT; id++) {
   STAB_MAX[id] = (ELEMENTS[id] && ELEMENTS[id].maxStability) || 0;
   STAB_TOUGHNESS[id] = (ELEMENTS[id] && ELEMENTS[id].toughness) || 1;
 }

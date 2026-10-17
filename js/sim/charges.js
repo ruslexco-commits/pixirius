@@ -149,7 +149,7 @@ function monitorAt(v) { return Math.floor(v / MONITOR_LOOK_SPAN); }
 
 // Сколько кадров заряд проводит в клетке этого типа; 0 — не проводит. У
 // сплава — по его долям (chargeStepAt / alloyChargeStep, sim/alloys.js).
-const CHARGE_STEP = new Uint8Array(64);
+const CHARGE_STEP = new Uint8Array(EL_LIMIT);
 CHARGE_STEP[EL.COPPER] = 1;
 CHARGE_STEP[EL.AMPLIFIER] = 1;
 
@@ -157,7 +157,7 @@ CHARGE_STEP[EL.AMPLIFIER] = 1;
 // сигнал затухает в десять раз медленнее (просьба пользователя); медь на
 // воздухе сама зеленеет патиной, и без неё здесь провод через пару минут
 // переставал бы быть "медным", поэтому патина (твёрдая) и усилитель — тоже.
-const CHARGE_COST = new Float32Array(64).fill(1);
+const CHARGE_COST = new Float32Array(EL_LIMIT).fill(1);
 CHARGE_COST[EL.COPPER] = 0.1;
 CHARGE_COST[EL.COPPER_OXIDE] = 0.1;
 CHARGE_COST[EL.AMPLIFIER] = 0.1;
@@ -167,7 +167,7 @@ for (const id of [EL.METAL_OXIDE, EL.METAL_OXIDE_LOOSE, EL.COPPER_OXIDE, EL.COPP
 
 // С балкой любого материала связаны монитор и камера (просьба
 // пользователя: ограничение "только своё вещество" на них не действует).
-const BEAM_LINK_ANY = new Uint8Array(64);
+const BEAM_LINK_ANY = new Uint8Array(EL_LIMIT);
 BEAM_LINK_ANY[EL.MONITOR] = 1;
 BEAM_LINK_ANY[EL.CAMERA] = 1;
 

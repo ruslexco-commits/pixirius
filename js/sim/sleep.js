@@ -50,14 +50,14 @@ const RESTLESS_TYPE = idTable([
 // Безопасный диапазон температур по типу клетки: SAFE_LO < T < SAFE_HI —
 // ничего не расплавится, не закипит, не замёрзнет, не растает и не
 // взорвётся. Вне его клетка беспокойна (и спящий кусок просыпается).
-const SAFE_LO = new Float64Array(64).fill(-Infinity);
-const SAFE_HI = new Float64Array(64).fill(Infinity);
+const SAFE_LO = new Float64Array(EL_LIMIT).fill(-Infinity);
+const SAFE_HI = new Float64Array(EL_LIMIT).fill(Infinity);
 for (const [liquid, , solid, boil, freeze] of PHASE_LINKS) {
   SAFE_LO[liquid] = freeze;                    // замерзает при T <= freeze
   SAFE_HI[liquid] = boil;                      // кипит при T >= boil
   if (solid) SAFE_HI[solid] = freeze + 1e-9;   // тает при T > freeze
 }
-for (let id = 1; id < 64; id++) {
+for (let id = 1; id < EL_LIMIT; id++) {
   const el = ELEMENTS[id];
   if (el && el.meltPoint !== undefined) SAFE_HI[id] = Math.min(SAFE_HI[id], el.meltPoint);
 }
