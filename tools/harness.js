@@ -184,6 +184,13 @@ function buildScene(env, w = 240, h = 160) {
   // Протагонист на полу у стеклянной стены: ходит и прыгает по команде
   // (см. poke).
   if (EL.PROTAGONIST) sim.setCell(210, h - 10, EL.PROTAGONIST, false);
+  // Шароиды (sim/sharoid.js): один под навесом бродит, как человек; другой
+  // падает в бассейн и тонет.
+  if (EL.SHAROID) {
+    sim.setCell(30, h - 25, EL.SHAROID, false);
+    sim.setCell(30, h - 25, EL.HUMAN, false);
+    sim.setCell(70, h - 70, EL.SHAROID, false);
+  }
   if (sim.pickBeamMaterial) {
     sim.pickBeamMaterial(100, h - 20);             // от металла
     for (let x = 131; x <= 150; x++) sim.setCell(x, h - 26, EL.BEAM, false);
