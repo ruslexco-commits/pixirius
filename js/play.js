@@ -447,7 +447,7 @@ class PlayMode {
   enter() {
     const sim = this.sim;
     if (sim.playerCell(this.playerId) < 0) {
-      if (!this.mp) this.flashOutside('Сначала поставьте протагониста — вкладка «Технологии»');
+      if (!this.mp) this.flashOutside('Сначала поставьте протагониста или щёлкните им по шароиду — вкладка «Технологии»');
       return;
     }
     // Новый протагонист — новая память.
