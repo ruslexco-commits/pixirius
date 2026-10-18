@@ -54,6 +54,8 @@ class SimPersistence {
     // Шароиды (sim/sharoid.js): их клетки — в полях, а ноги, положение и
     // управление — у сущности; без неё отмена оставила бы тело без ног.
     snap.sharoids = this.sharoidsDump();
+    // Тросы (sim/rope.js) — так же.
+    snap.ropes = this.ropesDump();
     return snap;
   }
 
@@ -73,6 +75,7 @@ class SimPersistence {
     this.windVYFrame.set(this.windVY);
     if (snap.rules) { this.loadYieldOn = snap.rules.loadYieldOn; if (snap.rules.regenOn !== undefined) this.regenOn = snap.rules.regenOn; }
     this.sharoidsLoad(snap.sharoids);
+    this.ropesLoad(snap.ropes);
     this.moved.fill(0);
     // Мир переписан целиком в обход обычных записей — будим все куски.
     this.wakeAll();
@@ -86,7 +89,9 @@ class SimPersistence {
       // Точки спавна и респавна игроков (sim/spawns.js).
       spawnMarks: this.spawnMarks, respawnMarks: this.respawnMarks,
       // Шароиды (sim/sharoid.js): положение, ноги, кто управляет.
-      sharoids: this.sharoids };
+      sharoids: this.sharoids,
+      // Тросы (sim/rope.js).
+      ropes: this.ropes };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
     return out;
   }
@@ -152,6 +157,7 @@ class SimPersistence {
     this.spawnMarks = Array.isArray(obj.spawnMarks) ? obj.spawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, n: m.n | 0 })) : [];
     // Файл без шароидов — их нет; клетки шароидов без хозяина станут сталью.
     this.sharoidsLoad(obj.sharoids);
+    this.ropesLoad(obj.ropes);
     this.respawnMarks = Array.isArray(obj.respawnMarks) ? obj.respawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, players: m.players || null, kinds: m.kinds || null, physics: !!m.physics, acid: !!m.acid })) : [];
     this.moved.fill(0);
     this.wakeAll();

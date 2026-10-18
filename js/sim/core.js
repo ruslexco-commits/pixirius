@@ -302,6 +302,7 @@ class Sim {
     this.initLoad();
     this.initBody();
     this.initSharoids();
+    this.initRopes();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -471,6 +472,7 @@ class Sim {
     this._windRoll = 1;
     this._humans.clear();
     this.sharoids = [];
+    this.ropes = [];
     this.spawnMarks = [];
     this.respawnMarks = [];
     this.wakeAll();
@@ -579,6 +581,8 @@ class Sim {
     this.updateSleep();
     this.computeDebrisWindChance();
     // Крупные падающие тела — целиком (sim/body.js), до обхода клеток.
+    // Тела на тросах (sim/rope.js) — до падения тел: их оно не трогает.
+    this.updateRopes();
     this.updateBodies();
     // Шароиды (sim/sharoid.js) — тоже целиком и главным потоком.
     this.updateSharoids();
@@ -591,6 +595,8 @@ class Sim {
     // Балки, прикреплённые к падающему телу, опускаются вместе с ним
     // (sim/stability.js) — после обхода: видно, куда тело упало.
     this.rideBeams();
+    // Живые на тросах (sim/rope.js) — после обхода: видно, куда ушли.
+    this.updateRopeLive();
     // Заряды (sim/charges.js) — после вещества, на главном потоке.
     this.updateCharges();
     // Точки респавна: падение и кислота (sim/spawns.js).

@@ -534,6 +534,22 @@ class InputController {
       return;
     }
 
+    // Трос (sim/rope.js): первый щелчок — начало, второй — конец, между ними
+    // протягивается трос (шаг истории). ПКМ — отменить начатый, иначе убрать
+    // трос под курсором (в пределах кисти).
+    if (elementId === TOOL_ROPE) {
+      if (e.button === 2) {
+        if (this.ropeStart) this.ropeStart = null;
+        else { this.pushUndo(); this.sim.removeRopesNear(egx, egy, Math.max(1, this.brushRX)); }
+      } else if (!this.ropeStart) this.ropeStart = { x: egx, y: egy };
+      else {
+        this.pushUndo();
+        this.sim.addRope(this.ropeStart.x, this.ropeStart.y, egx, egy);
+        this.ropeStart = null;
+      }
+      return;
+    }
+
     // Электрический разряд: заряд по проводнику под курсором (или ближайшему
     // в пределах кисти), без шага истории — заряды в отмену не входят.
     if (elementId === TOOL_ZAP) {
@@ -704,6 +720,9 @@ class InputController {
     // Клетка под курсором ещё не известна (мышь не двигалась над полем) —
     // ни кисти, ни рамок: рисовать их негде (см. onMouseMove).
     const at = Number.isFinite(this.gx) && Number.isFinite(this.gy);
+    // Начатый трос — пунктиром от начала к курсору (другой инструмент — забыт).
+    if (this.ropeStart && this.getSelectedElement() !== TOOL_ROPE) this.ropeStart = null;
+    if (this.ropeStart && at && !linePreview) linePreview = { x0: this.ropeStart.x, y0: this.ropeStart.y, x1: this.gx, y1: this.gy, erase: false };
     return {
       gx: this.gx, gy: this.gy,
       showBrush: at && this.inCanvas && !this.clipMode,

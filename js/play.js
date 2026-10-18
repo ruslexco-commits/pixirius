@@ -430,6 +430,8 @@ class PlayMode {
     const inp = this.inp();
     inp.left = inp.right = inp.up = inp.down = inp.jump = false;
     inp.mine = false;
+    // Вне игры сенсор шароида снова смотрит по ходу, а не на курсор.
+    inp.aim = false;
     this.mining = false;
     this.upW = this.upSpace = false;
   }
@@ -922,13 +924,17 @@ class PlayMode {
   drawMining(ctx, W, H, dx, dy, cell, ox, oy) {
     const inp = this.inp(), sim = this.sim;
     const alive = !this.revealed;
-    if (!this.mining || !alive || this.mouseX === null) { inp.mine = false; return; }
+    // Клетка под курсором — всегда, пока мышь над экраном игры: на неё
+    // смотрит сенсор шароида игрока (inp.aim, sim/sharoid.js; просьба
+    // пользователя), а при зажатой ЛКМ туда же бьёт протагонист.
     const r = this.overlay.getBoundingClientRect();
-    if (r.width === 0 || r.height === 0) { inp.mine = false; return; }
+    if (this.mouseX === null || r.width === 0 || r.height === 0) { inp.mine = false; inp.aim = false; return; }
     const px = (this.mouseX - r.left) * W / r.width, py = (this.mouseY - r.top) * H / r.height;
-    inp.mine = true;
+    inp.aim = true;
     inp.ax = Math.floor((px - dx) / cell) + ox;
     inp.ay = Math.floor((py - dy) / cell) + oy;
+    if (!this.mining || !alive) { inp.mine = false; return; }
+    inp.mine = true;
     ctx.save();
     const st = this.pst(), j = st.mineCell;
     if (j >= 0 && j < sim.type.length && sim.type[j] !== EL.EMPTY) {

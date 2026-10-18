@@ -100,7 +100,7 @@ const MP_LOBBY_SCALE = Math.sqrt(0.1);
 // он мира не меняет, только запоминает материал кисти, и едет с каждым
 // действием в MP_PAINT_CTX.
 const MP_OPS = ['stampBrush', 'stampLine', 'floodFill', 'applyPressureBrush', 'applyTempBrush', 'zapAt', 'clearRegion', 'pasteRegion',
-  'setSpawnMark', 'addRespawnMark', 'removeMarksNear', 'setRespawnMarkProps'];
+  'setSpawnMark', 'addRespawnMark', 'removeMarksNear', 'setRespawnMarkProps', 'addRope', 'removeRopesNear'];
 // Действия самого хоста, которые вкладки повторяют: игрок появился,
 // возродился, ушёл. Место хост выбирает сам (случайно, своими числами), во
 // вкладки идёт уже выбранная клетка.
@@ -503,21 +503,22 @@ class Multiplayer {
   cfgOf(s) { const c = {}; for (const k of MP_CFG) c[k] = s[k]; return c; }
 
   // Нажатия всех игроков в мире s: [номер, влево, вправо, вверх, вниз,
-  // прыжок, ломает, клетка прицела x, y] (ломание — sim/protagonist.js).
+  // прыжок, ломает, клетка прицела x, y, мышь над экраном] (ломание —
+  // sim/protagonist.js, взгляд сенсора шароида — sim/sharoid.js).
   inputsOf(s) {
     const out = [];
     for (const p of this.state.players) {
       const inp = s.playerSlot(p.n).input;
-      out.push([p.n, +inp.left, +inp.right, +inp.up, +inp.down, +inp.jump, +inp.mine, inp.ax | 0, inp.ay | 0]);
+      out.push([p.n, +inp.left, +inp.right, +inp.up, +inp.down, +inp.jump, +inp.mine, inp.ax | 0, inp.ay | 0, +!!inp.aim]);
     }
     return out;
   }
 
   setInputs(s, list) {
-    for (const [n, l, r, u, d, j, m, ax, ay] of list) {
+    for (const [n, l, r, u, d, j, m, ax, ay, aim] of list) {
       const inp = s.playerSlot(n).input;
       inp.left = !!l; inp.right = !!r; inp.up = !!u; inp.down = !!d; inp.jump = !!j;
-      inp.mine = !!m; inp.ax = ax | 0; inp.ay = ay | 0;
+      inp.mine = !!m; inp.ax = ax | 0; inp.ay = ay | 0; inp.aim = !!aim;
     }
   }
 
@@ -771,7 +772,9 @@ class Multiplayer {
   flushInput(world, inp) {
     // Прицел ломания — только пока ломает: иначе каждое движение мыши
     // слало бы хосту сообщение.
-    const key = `${+inp.left}${+inp.right}${+inp.up}${+inp.down}${+inp.jump}${inp.mine ? `m${inp.ax},${inp.ay}` : ''}`;
+    // Взгляд сенсора шароида (inp.aim) — грубо, по участкам 4x4: точнее ему
+    // не нужно, а сообщений меньше.
+    const key = `${+inp.left}${+inp.right}${+inp.up}${+inp.down}${+inp.jump}${inp.mine ? `m${inp.ax},${inp.ay}` : ''}${!inp.mine && inp.aim ? `a${inp.ax >> 2},${inp.ay >> 2}` : ''}`;
     if (key === this.sentInput[world] && !inp.jump) return;
     this.sentInput[world] = key;
     this.send({ t: 'input', cid: this.cid, world, inp: { ...inp } });
@@ -825,7 +828,7 @@ class Multiplayer {
         const inp = s.playerSlot(p.n).input;
         inp.left = !!m.inp.left; inp.right = !!m.inp.right; inp.up = !!m.inp.up; inp.down = !!m.inp.down;
         if (m.inp.jump) inp.jump = true;
-        inp.mine = !!m.inp.mine; inp.ax = m.inp.ax | 0; inp.ay = m.inp.ay | 0;
+        inp.mine = !!m.inp.mine; inp.ax = m.inp.ax | 0; inp.ay = m.inp.ay | 0; inp.aim = !!m.inp.aim;
         break;
       }
       case 'op': {

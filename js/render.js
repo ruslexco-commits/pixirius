@@ -931,6 +931,8 @@ class Renderer {
   // на видимых клетках (opt.seen(i)) и с освещением клетки (opt.lit): поле
   // там — уже освещённое, а не под слоем света.
   drawSharoids(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1, opt = null) {
+    // Тросы (sim/rope.js) — тем же слоем, позади ног.
+    this.drawRopes(ox, oy, scale, x0, y0, x1, y1, opt);
     const sim = this.sim, list = sim.sharoids;
     if (!list || !list.length) return;
     const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
@@ -954,10 +956,12 @@ class Renderer {
     for (const s of list) {
       for (let k = 0; k < 3; k++) {
         const leg = s.legs[k];
-        const fx = Math.round(leg.x), fy = Math.round(leg.y);
-        // Прямая — по Брезенхэму, от крепления до верха ножки.
-        let x = s.x + (k === 1 ? (s.face < 0 ? 5 : 6) : SHAR_ATTACH_X[k]), y = s.y + SHAR_ATTACH_Y[k];
-        const tx = fx, ty = fy - 2;
+        const fx = Math.round(leg.x), fy = Math.round(leg.y), n = leg.n | 0;
+        // Прямая — по Брезенхэму, от крепления до верха ножки. Ступня на
+        // стене (n — сторона опоры) повёрнута: перекладина стоймя к стене,
+        // ножка — от неё.
+        let x = sim.sharAttachX(s, k), y = sim.sharAttachY(s, k);
+        const tx = sim.sharShinX(fx, n), ty = sim.sharShinY(fy, n);
         const dx = Math.abs(tx - x), dy = -Math.abs(ty - y), sx = x < tx ? 1 : -1, sy = y < ty ? 1 : -1;
         let err = dx + dy;
         for (let g = 0; g < 256; g++) {
@@ -967,8 +971,12 @@ class Renderer {
           if (e2 >= dy) { err += dy; x += sx; }
           if (e2 <= dx) { err += dx; y += sy; }
         }
-        put(fx, fy - 2, 1); put(fx, fy - 1, 1);
-        for (let d = -1; d <= 1; d++) put(fx + d, fy, 2);
+        if (n === SHAR_ON_FLOOR) { put(fx, fy - 2, 1); put(fx, fy - 1, 1); for (let d = -1; d <= 1; d++) put(fx + d, fy, 2); }
+        else {
+          const d = n === SHAR_ON_LEFT ? 1 : -1;
+          put(fx + d, fy, 1); put(fx + 2 * d, fy, 1);
+          for (let e = -1; e <= 1; e++) put(fx, fy + e, 2);
+        }
       }
     }
     ctx.save();
@@ -981,6 +989,41 @@ class Renderer {
       if (y < h - 1 && !legs.has(i + w)) cell(x, y + 1, black, '#000');
     }
     for (const [i, part] of legs) cell(i % w, (i / w) | 0, PARTS[part][0], PARTS[part][1]);
+    ctx.restore();
+  }
+
+  // Тросы (sim/rope.js) поверх поля, параметры — как у drawSharoids. Натянутый
+  // — прямой, со слабиной — провисает (кривая Безье, прогиб по лишней длине).
+  // За твёрдым и сыпучим троса не видно.
+  drawRopes(ox, oy, scale, x0, y0, x1, y1, opt) {
+    const sim = this.sim, list = sim.ropes;
+    if (!list || !list.length) return;
+    const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
+    const seen = opt && opt.seen, lit = !!(opt && opt.lit);
+    const css = `rgb(${ROPE_COLOR[0]},${ROPE_COLOR[1]},${ROPE_COLOR[2]})`;
+    ctx.save();
+    for (const r of list) {
+      const a = sim.ropeEndPos(r.a), b = sim.ropeEndPos(r.b);
+      if (!a || !b) continue;
+      const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.sqrt(dx * dx + dy * dy);
+      const sag = Math.min(r.len, Math.sqrt(Math.max(0, r.len * r.len - d * d)) / 2);
+      const cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2 + 2 * sag;
+      const steps = Math.ceil((d + 4 * sag) * 2) + 2;
+      let last = -1;
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps, u = 1 - t;
+        const x = Math.round(u * u * a[0] + 2 * u * t * cx + t * t * b[0]), y = Math.round(u * u * a[1] + 2 * u * t * cy + t * t * b[1]);
+        if (x < x0 || x > x1 || y < y0 || y > y1 || x < 0 || x >= w || y < 0 || y >= h) continue;
+        const i = y * w + x;
+        if (i === last) continue;
+        last = i;
+        const tp = sim.type[i];
+        if (tp !== EL.EMPTY && !sim.sharPassable(tp)) continue;
+        if (seen && !seen(i)) continue;
+        if (lit) { const c = this.litColor(i, ROPE_COLOR); ctx.fillStyle = `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`; } else ctx.fillStyle = css;
+        ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+      }
+    }
     ctx.restore();
   }
 

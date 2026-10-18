@@ -553,6 +553,14 @@ function buildPaletteGrid() {
         '<div class="mi-title">Электрический разряд</div>'
         + `<div class="mi-row"><span>Щелчок</span><span>жёлтый заряд со сроком ${ZAP_LIFE}</span></div>`
         + '<div class="mi-row"><span>Куда</span><span>в проводник под курсором или ближайший в пределах кисти</span></div>');
+      // Трос (sim/rope.js) — за разрядом.
+      addToolButton(TOOL_ROPE, 'Трос', `rgb(${ROPE_COLOR[0]},${ROPE_COLOR[1]},${ROPE_COLOR[2]})`,
+        '<div class="mi-title">Трос</div>'
+        + '<div class="mi-row"><span>Щелчок, щелчок</span><span>трос между двумя точками</span></div>'
+        + `<div class="mi-row"><span>Длина</span><span>в ${ROPE_SLACK} раза больше проведённой; натянут — не даёт концам разойтись</span></div>`
+        + '<div class="mi-row"><span>Концы</span><span>за твёрдое, шароида, человека, протагониста; в пустоте — крюк</span></div>'
+        + '<div class="mi-row"><span>Оторвавшееся</span><span>висит и качается, пока не успокоится</span></div>'
+        + '<div class="mi-row"><span>ПКМ</span><span>отменить начатый или убрать трос под курсором</span></div>');
     }
     for (const id of ELEMENT_ORDER) {
       if (activeCategory === 'all' || materialCategoryKey(id) === activeCategory) {
