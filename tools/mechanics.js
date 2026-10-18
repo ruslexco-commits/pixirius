@@ -2175,7 +2175,7 @@ console.log('47. Кровь (EL.BLOOD): течёт, смешивается с в
   // Предел нагрузки в 5 раз выше прежнего (1.75 -> 8.75).
   ok(Math.abs(g('LOAD_PER_TOUGHNESS') - 8.75) < 1e-9, `предел нагрузки на единицу стойкости ${g('LOAD_PER_TOUGHNESS')}`);
 }
-
+
 console.log('48. Шароид (sim/sharoid.js): тело из стали на трёх ногах, шагает по одной ноге, падает, упирается, прыгает с приседом; управление щелчком');
 {
   const SH = EL.SHAROID, STAND = g('SHAR_STAND');
@@ -2210,7 +2210,8 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   // Стена: тело и ноги останавливаются перед ней.
   box(a, 120, 20, 123, a.h - 6, EL.WALL);
   for (let k = 0; k < 300; k++) a.step();
-  ok(s.x + 11 < 120 && s.legs.every((l) => l.x + 1 < 120), `упёрся в стену: правый край тела ${s.x + 11}, ступни ${s.legs.map((l) => l.x).join(', ')} (стена с 120)`);
+  // Ступня может встать и на саму стену (боком), но не в неё.
+  ok(s.x + 11 < 120 && s.legs.every((l) => l.x < 120 && a.type[a.idx(l.x, l.y)] === EL.EMPTY && a.sharFootHeld(s, l)), `упёрся в стену: правый край тела ${s.x + 11}, ступни ${s.legs.map((l) => `${l.x}${l.n ? ' (на стене)' : ''}`).join(', ')} (стена с 120)`);
   // Прыжок: сначала присед, потом вверх.
   a.playerSlot(0).input.right = false;
   for (let k = 0; k < 40; k++) a.step();
@@ -2318,6 +2319,134 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   }
   ok(firstAir !== null && firstAir > 0.5, `в прыжке нога идёт к своему месту, а не встаёт на него разом: в первом кадре до места ${firstAir && firstAir.toFixed(1)} кл.`);
   ok(stretched >= 1, `поднимаясь, ноги вытянуты вниз на ${stretched} клеток`);
+}
+
+console.log('49. Шароид: склон, опора на стены и шахта, нога не длиннее предела, ступни не в твёрдом, сенсор за курсором; трос: маятник, привязь, живой на тросе');
+{
+  const planted = (s) => s.legs.filter((l, k) => l.on && s.sw !== k).length;
+  // Склон 45° вверх: взбирается (раньше упирался в подножие).
+  const a = new Sim(160, 80); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 75, 159, 79, EL.STONE);
+  for (let x = 60; x < 160; x++) box(a, x, Math.max(20, 75 - (x - 60)), x, 74, EL.STONE);
+  a.placeSharoid(30, 40);
+  const s = a.sharoids[0];
+  for (let k = 0; k < 60; k++) a.step();
+  s.ctrl = 0; a.playerSlot(0).input.right = true;
+  let maxLen = 0, inSolid = 0;
+  for (let k = 0; k < 300; k++) {
+    a.step();
+    for (let j = 0; j < 3; j++) {
+      const l = s.legs[j];
+      maxLen = Math.max(maxLen, a.sharLegLen(s, j, l.x, l.y, l.n));
+      if (l.on && a.type[a.idx(Math.round(l.x), Math.round(l.y))] !== EL.EMPTY) inSolid++;
+    }
+  }
+  ok(s.x > 100 && s.y < 15, `взобрался на склон 45°: тело в (${s.x}, ${s.y})`);
+  ok(maxLen <= g('SHAR_LEG_MAX') + 0.6 && inSolid === 0, `нога не длиннее ${g('SHAR_LEG_MAX')} (было ${maxLen.toFixed(1)}), стоящая ступня ни разу не в твёрдом`);
+  // Шахта шириной 20: падая, держится враспор за обе стены; S — вниз, W — вверх и наружу.
+  const b = new Sim(120, 140); b.lookColor = () => [0, 0, 0];
+  box(b, 0, 135, 119, 139, EL.STONE);
+  box(b, 44, 40, 49, 134, EL.STONE); box(b, 70, 40, 75, 134, EL.STONE);
+  b.placeSharoid(60, 30);
+  const c = b.sharoids[0];
+  c.ctrl = 0;
+  for (let k = 0; k < 120; k++) b.step();
+  const cnt = b.sharCount(c);
+  ok(b.sharHeld(c) && c.y < 60 && cnt.left > 0 && cnt.right > 0, `в шахте держится враспор: верх тела ${c.y}, ступней на стенах слева ${cnt.left}, справа ${cnt.right}`);
+  const y0 = c.y;
+  b.playerSlot(0).input.down = true; for (let k = 0; k < 200; k++) b.step(); b.playerSlot(0).input.down = false;
+  const yDown = c.y;
+  b.playerSlot(0).input.up = true; for (let k = 0; k < 400; k++) b.step(); b.playerSlot(0).input.up = false;
+  ok(yDown - y0 >= 20 && c.y <= 22 && b.sharCount(c).floor > 0, `S — спустился на ${yDown - y0}, W — вылез наверх (верх тела ${c.y}, стоит на полу)`);
+  // Прыжок у стены: ноги не тянутся длиннее предела и не уходят в стену.
+  const j = new Sim(100, 80); j.lookColor = () => [0, 0, 0];
+  box(j, 0, 75, 99, 79, EL.STONE); box(j, 62, 30, 70, 74, EL.STONE);
+  j.placeSharoid(45, 40);
+  const js = j.sharoids[0];
+  for (let k = 0; k < 60; k++) j.step();
+  js.ctrl = 0; j.playerSlot(0).input.jump = true; j.playerSlot(0).input.left = true;
+  let jl = 0, inWall = 0;
+  for (let k = 0; k < 80; k++) {
+    j.step();
+    for (let q = 0; q < 3; q++) {
+      const l = js.legs[q];
+      jl = Math.max(jl, j.sharLegLen(js, q, l.x, l.y, l.n));
+      if (!l.on && j.type[j.idx(Math.round(l.x), Math.round(l.y))] === EL.STONE) inWall++;
+    }
+  }
+  ok(jl <= g('SHAR_LEG_MAX') + 0.6 && inWall === 0, `прыжок у стены: длиннейшая нога ${jl.toFixed(1)}, висящих ступней в камне ${inWall}`);
+  // Сенсор игрока смотрит на курсор (inp.aim).
+  const inp = j.playerSlot(0).input;
+  inp.left = false; inp.aim = true; inp.ax = js.x + 6; inp.ay = js.y - 30;
+  j.step();
+  const up = js.lookY;
+  inp.ax = js.x + 60; inp.ay = js.y + 6;
+  j.step();
+  ok(up === -g('SHAR_LOOK') && js.lookX === g('SHAR_LOOK') && js.lookY === 0, `сенсор за курсором: курсор сверху — взгляд ${up} по высоте, справа — ${js.lookX} вбок`);
+  inp.aim = false;
+}
+{
+  // Трос: камень на крюке раскачивается и успокаивается под крюком, камня не убыло.
+  const t = new Sim(120, 100); t.lookColor = () => [0, 0, 0];
+  box(t, 0, 95, 119, 99, EL.WALL);
+  box(t, 80, 20, 83, 23, EL.STONE);
+  ok(t.addRope(60, 10, 80, 20) && Math.abs(t.ropes[0].len - 1.5 * Math.hypot(20, 10)) < 1e-9, `трос в 1.5 раза длиннее проведённого: ${t.ropes[0].len.toFixed(1)}`);
+  const e = t.ropes[0].b;
+  let minX = 999, maxX = -1;
+  for (let k = 0; k < 900; k++) { t.step(); if (k > 30) { minX = Math.min(minX, e.x); maxX = Math.max(maxX, e.x); } }
+  ok(minX < 55 && maxX > 65 && Math.abs(e.x - 60) <= 2 && Math.hypot(e.x - 60, e.y - 10) <= t.ropes[0].len + 1 && count(t, EL.STONE) === 16,
+    `камень качался от ${minX} до ${maxX} и успокоился под крюком (${e.x}, ${e.y}); камня ${count(t, EL.STONE)} из 16`);
+  // Отмена и файл — с тросом.
+  const snap = t.snapshot(), file = JSON.stringify(t.serialize());
+  t.removeRopesNear(70, 20, 30);
+  ok(t.ropes.length === 0, 'ПКМ убирает трос');
+  t.restore(snap);
+  const t2 = new Sim(120, 100); t2.deserialize(JSON.parse(file));
+  ok(t.ropes.length === 1 && t2.ropes.length === 1 && JSON.stringify(t2.serialize()) === file, 'отмена и файл возвращают трос');
+  // Шароид на привязи у стены не уходит дальше длины троса.
+  const u = new Sim(160, 80); u.lookColor = () => [0, 0, 0];
+  box(u, 0, 75, 159, 79, EL.STONE); box(u, 0, 40, 4, 74, EL.WALL);
+  u.placeSharoid(30, 40);
+  for (let k = 0; k < 60; k++) u.step();
+  const sh = u.sharoids[0];
+  u.addRope(4, 50, sh.x + 6, sh.y + 6);
+  sh.ctrl = 0; u.playerSlot(0).input.right = true;
+  for (let k = 0; k < 400; k++) u.step();
+  const r = u.ropes[0], dist = Math.hypot(sh.x + r.b.dx - 4, sh.y + r.b.dy - 50);
+  ok(sh.x < 50 && dist <= r.len + 0.5, `шароид на привязи: ушёл до x=${sh.x}, до крюка ${dist.toFixed(1)} при длине ${r.len.toFixed(1)}`);
+  // Шароид на тросе в воздухе — маятник.
+  const v = new Sim(160, 120); v.lookColor = () => [0, 0, 0];
+  box(v, 0, 115, 159, 119, EL.STONE);
+  v.placeSharoid(110, 30);
+  v.addRope(70, 5, 110, 30);
+  const vs = v.sharoids[0];
+  let vmin = 999;
+  for (let k = 0; k < 600; k++) { v.step(); if (k > 60) vmin = Math.min(vmin, vs.x); }
+  ok(vmin < 62, `шароид на тросе качнулся за крюк: самый левый x ${vmin} (крюк на 70, начинал с 105)`);
+  // Протагонист на тросе повисает.
+  const p = new Sim(80, 80); p.lookColor = () => [0, 0, 0];
+  box(p, 0, 75, 79, 79, EL.STONE);
+  p.setCell(40, 10, EL.PROTAGONIST, false);
+  p.addRope(40, 5, 40, 10);
+  for (let k = 0; k < 200; k++) p.step();
+  const pi = p.findProtagonist(0);
+  ok(pi >= 0 && ((pi / 80) | 0) <= 5 + Math.ceil(p.ropes[0].len), `протагонист повис на тросе: строка ${(pi / 80) | 0}, крюк на 5, длина ${p.ropes[0].len}`);
+}
+{
+  // Шароид встал поперёк шахты на её края: S — спускается в неё, W со дна —
+  // лезет обратно и выходит.
+  const m = new Sim(120, 140); m.lookColor = () => [0, 0, 0];
+  box(m, 0, 135, 119, 139, EL.STONE); box(m, 40, 40, 49, 134, EL.STONE); box(m, 70, 40, 79, 134, EL.STONE);
+  m.placeSharoid(60, 10);
+  const s = m.sharoids[0];
+  s.ctrl = 0;
+  const inp = m.playerSlot(0).input;
+  for (let k = 0; k < 100; k++) m.step();
+  const top = s.y;
+  inp.down = true; for (let k = 0; k < 300; k++) m.step(); inp.down = false;
+  const bottom = s.y;
+  inp.up = true; for (let k = 0; k < 400; k++) m.step(); inp.up = false;
+  ok(bottom - top > 60 && s.y <= top, `с края шахты S — спустился (верх тела ${top} → ${bottom}), со дна W — вылез (${s.y})`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');

@@ -191,6 +191,12 @@ function buildScene(env, w = 240, h = 160) {
     sim.setCell(30, h - 25, EL.HUMAN, false);
     sim.setCell(70, h - 70, EL.SHAROID, false);
   }
+  // Трос (sim/rope.js): каменный блок без опоры висит на крюке в воздухе и
+  // раскачивается.
+  if (sim.addRope) {
+    box(4, h - 100, 7, h - 97, EL.STONE);
+    sim.addRope(14, h - 120, 4, h - 100);
+  }
   if (sim.pickBeamMaterial) {
     sim.pickBeamMaterial(100, h - 20);             // от металла
     for (let x = 131; x <= 150; x++) sim.setCell(x, h - 26, EL.BEAM, false);
