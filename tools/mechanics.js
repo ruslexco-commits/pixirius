@@ -2201,7 +2201,12 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   const x0 = s.x;
   for (let k = 0; k < 200; k++) { a.step(); minPlanted = Math.min(minPlanted, planted(s)); maxSwing = Math.max(maxSwing, s.legs.filter((l, j) => !l.on || s.sw === j).length); }
   ok(s.x - x0 >= 50 && minPlanted >= 2 && maxSwing <= 1, `прошёл ${s.x - x0} клеток, стоящих ног не меньше ${minPlanted}, в воздухе не больше ${maxSwing}`);
-  ok(a.extra[a.playerCell(0)] === g('SHAR_PART_PLAYER'), 'сенсор игрока — цвета игрока, смотрит по ходу');
+  const eyePart = a.extra[a.playerCell(0)] - g('SHAR_PART_EYE');
+  ok(eyePart >= 0 && ((eyePart / g('SHAR_GLOSS_N')) | 0) === g('SHAR_EYE_PLAYER'), 'сенсор игрока — цвета игрока, смотрит по ходу');
+  // Блик сенсора — по картинке пользователя (свет справа сверху): край креста
+  // темнее, с теневой стороны сильнее, у центра со стороны света — блик.
+  const GL = g('SHAR_EYE_GLOSS'), want = { '5,4': 1, '6,4': 1, '4,5': 0, '5,5': 3, '6,5': 4, '7,5': 1, '4,6': 0, '5,6': 2, '6,6': 3, '7,6': 1, '5,7': 0, '6,7': 1 };
+  ok(Object.entries(want).every(([p, v]) => { const [x, y] = p.split(',').map(Number); return GL[y * 12 + x] === v; }), 'блик сенсора совпадает с картинкой пользователя');
   // Стена: тело и ноги останавливаются перед ней.
   box(a, 120, 20, 123, a.h - 6, EL.WALL);
   for (let k = 0; k < 300; k++) a.step();
@@ -2287,6 +2292,32 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   for (let k = 0; k < 300; k++) wv.step();
   const ws = wv.sharoids[0];
   ok(ws.y === 65 - g('SHAR_STAND') && count(wv, EL.WATER) === w0, `утонул и встал на дно (верх ${ws.y}), воды ${count(wv, EL.WATER)} из ${w0}`);
+}
+{
+  // Ноги в полёте (просьба пользователя): падая — поджаты, поднимаясь в
+  // прыжке — вытянуты вниз; к своему месту идут, а не встают на него разом;
+  // приземлившись с высоты, ядро по инерции приседает и выпрямляется.
+  const STAND = g('SHAR_STAND');
+  const f = new Sim(80, 120); f.lookColor = () => [0, 0, 0];
+  box(f, 0, 115, 79, 119, EL.STONE);
+  f.placeSharoid(40, 10);
+  const s = f.sharoids[0];
+  let tucked = 0;
+  for (let k = 0; k < 40; k++) { f.step(); if (s.vy > 0.8) tucked = Math.max(tucked, STAND - (Math.round(s.legs[0].y) - s.y)); }
+  let lowest = s.y, stood = false;
+  for (let k = 0; k < 120; k++) { f.step(); lowest = Math.max(lowest, s.y); }
+  const standY = 114 - STAND;
+  ok(tucked >= 2, `в падении ступни поджаты на ${tucked} клеток`);
+  ok(lowest - standY >= 2 && s.y === standY, `приземлился: ядро присело на ${lowest - standY} и выпрямилось (верх ${s.y}, стойка ${standY})`);
+  f.playerSlot(0).input.jump = true; s.ctrl = 0;
+  let firstAir = null, stretched = 0;
+  for (let k = 0; k < 30; k++) {
+    f.step();
+    if (s.vy < 0 && firstAir === null) firstAir = Math.abs(s.legs[0].x - f.sharHomeX(s, 0)) + Math.abs(s.legs[0].y - (s.y + f.sharHangRel(s)));
+    if (s.vy < -0.5) stretched = Math.max(stretched, Math.round(s.legs[1].y) - s.y - STAND);
+  }
+  ok(firstAir !== null && firstAir > 0.5, `в прыжке нога идёт к своему месту, а не встаёт на него разом: в первом кадре до места ${firstAir && firstAir.toFixed(1)} кл.`);
+  ok(stretched >= 1, `поднимаясь, ноги вытянуты вниз на ${stretched} клеток`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
