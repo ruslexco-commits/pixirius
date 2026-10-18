@@ -648,15 +648,21 @@ class Renderer {
   // насыщенности, как у настоящего окисла: балка и так приглушена), у
   // остального — цвет элемента. Шейдер повторяет это в beamColor.
   // Цвет части корпуса шароида (extra, SHAR_PART_* в sim/sharoid.js):
-  // кольца и оправа — свои, сенсор игрока — цвет игрока (как у шейдера,
-  // uPlayerColor: нет цвета — цвет протагониста).
+  // кольца и оправа — свои; сенсор — своим цветом (у игрока — цвет игрока,
+  // как у шейдера, uPlayerColor: нет цвета — цвет протагониста) с бликом
+  // SHAR_GLOSS: к белому или чёрному на долю.
   sharoidColor(i) {
     const part = this.sim.extra[i];
-    if (part >= SHAR_PART_PLAYER && part < SHAR_PART_PLAYER + 16) {
+    if (part < SHAR_PART_EYE) return SHAR_PART_COLOR[part] || ELEMENTS[EL.SHAROID].color;
+    const k = part - SHAR_PART_EYE, col = (k / SHAR_GLOSS_N) | 0, gl = SHAR_GLOSS[k % SHAR_GLOSS_N];
+    let c;
+    if (col < SHAR_EYE_PLAYER) c = SHAR_EYE_COLOR[col];
+    else {
       const cols = this.sim.playerColors;
-      return (cols && cols[part - SHAR_PART_PLAYER]) || ELEMENTS[EL.PROTAGONIST].color;
+      c = (cols && cols[col - SHAR_EYE_PLAYER]) || ELEMENTS[EL.PROTAGONIST].color;
     }
-    return SHAR_PART_COLOR[part] || ELEMENTS[EL.SHAROID].color;
+    const a = gl[1] / 255;
+    return [c[0] + (gl[0] - c[0]) * a, c[1] + (gl[0] - c[1]) * a, c[2] + (gl[0] - c[2]) * a];
   }
 
   beamColor(i) {
@@ -939,7 +945,12 @@ class Renderer {
       ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
     };
     const legC = rgb(SHAR_LEG_COLOR), shinC = rgb(SHAR_SHIN_COLOR), footC = rgb(SHAR_FOOT_COLOR);
-    ctx.save();
+    // Ноги в чёрной обводке (просьба пользователя): сначала клетки ног всех
+    // шароидов собираются (клетка → часть), потом вокруг них по 4 соседям —
+    // чёрная обводка, поверх — сами ноги.
+    const PARTS = [[SHAR_LEG_COLOR, legC], [SHAR_SHIN_COLOR, shinC], [SHAR_FOOT_COLOR, footC]];
+    const legs = new Map();
+    const put = (x, y, part) => { if (x >= 0 && x < w && y >= 0 && y < h) legs.set(y * w + x, part); };
     for (const s of list) {
       for (let k = 0; k < 3; k++) {
         const leg = s.legs[k];
@@ -950,16 +961,26 @@ class Renderer {
         const dx = Math.abs(tx - x), dy = -Math.abs(ty - y), sx = x < tx ? 1 : -1, sy = y < ty ? 1 : -1;
         let err = dx + dy;
         for (let g = 0; g < 256; g++) {
-          cell(x, y, SHAR_LEG_COLOR, legC);
+          put(x, y, 0);
           if (x === tx && y === ty) break;
           const e2 = 2 * err;
           if (e2 >= dy) { err += dy; x += sx; }
           if (e2 <= dx) { err += dx; y += sy; }
         }
-        cell(fx, fy - 2, SHAR_SHIN_COLOR, shinC); cell(fx, fy - 1, SHAR_SHIN_COLOR, shinC);
-        for (let d = -1; d <= 1; d++) cell(fx + d, fy, SHAR_FOOT_COLOR, footC);
+        put(fx, fy - 2, 1); put(fx, fy - 1, 1);
+        for (let d = -1; d <= 1; d++) put(fx + d, fy, 2);
       }
     }
+    ctx.save();
+    const black = [0, 0, 0];
+    for (const i of legs.keys()) {
+      const x = i % w, y = (i / w) | 0;
+      if (x > 0 && !legs.has(i - 1)) cell(x - 1, y, black, '#000');
+      if (x < w - 1 && !legs.has(i + 1)) cell(x + 1, y, black, '#000');
+      if (y > 0 && !legs.has(i - w)) cell(x, y - 1, black, '#000');
+      if (y < h - 1 && !legs.has(i + w)) cell(x, y + 1, black, '#000');
+    }
+    for (const [i, part] of legs) cell(i % w, (i / w) | 0, PARTS[part][0], PARTS[part][1]);
     ctx.restore();
   }
 

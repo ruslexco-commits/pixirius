@@ -217,10 +217,15 @@ vec3 beamColor(int mat, uint extra) {
 }
 
 // Renderer.sharoidColor: часть корпуса шароида (extra, SHAR_PART_* в
-// sim/sharoid.js); сенсор игрока — цвет игрока.
+// sim/sharoid.js); сенсор — его цвет (игрока — цвет игрока) с бликом SHAR_GLOSS.
 vec3 sharoidColor(uint part, vec3 fallback) {
-  if (part >= ${SHAR_PART_PLAYER}u && part < ${SHAR_PART_PLAYER + 16}u) return uPlayerColor[int(part) - ${SHAR_PART_PLAYER}];
-${SHAR_PART_COLOR.map((c, k) => c ? `  if (part == ${k}u) return vec3(${c.map((v) => v.toFixed(1)).join(', ')});\n` : '').join('')}  return fallback;
+  if (part < ${SHAR_PART_EYE}u) {
+${SHAR_PART_COLOR.map((c, k) => c ? `    if (part == ${k}u) return vec3(${c.map((v) => v.toFixed(1)).join(', ')});\n` : '').join('')}    return fallback;
+  }
+  int k = int(part) - ${SHAR_PART_EYE}, col = k / ${SHAR_GLOSS_N}, g = k - col * ${SHAR_GLOSS_N};
+  vec3 c = col >= ${SHAR_EYE_PLAYER} ? uPlayerColor[min(col - ${SHAR_EYE_PLAYER}, 15)]
+${SHAR_EYE_COLOR.map((c, k) => `    : col == ${k} ? vec3(${c.map((v) => v.toFixed(1)).join(', ')})\n`).join('')}    : fallback;
+${SHAR_GLOSS.map((gl, k) => gl[1] ? `  if (g == ${k}) c = c + (vec3(${gl[0].toFixed(1)}) - c) * (${gl[1].toFixed(1)} / 255.0);\n` : '').join('')}  return c;
 }
 
 void emit(vec3 c) { outColor = vec4(roundEven(clamp8(c)) / 255.0, 1.0); }
