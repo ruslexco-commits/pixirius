@@ -2218,8 +2218,9 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   const yStand = s.y;
   a.playerSlot(0).input.jump = true;
   let lowest = s.y, highest = s.y, crouchFirst = false;
-  for (let k = 0; k < 60; k++) { a.step(); if (s.y > lowest) { lowest = s.y; if (highest === yStand) crouchFirst = true; } highest = Math.min(highest, s.y); }
-  ok(crouchFirst && lowest - yStand >= 2 && yStand - highest >= 5 && s.y === yStand, `прыжок: присел на ${lowest - yStand}, подпрыгнул на ${yStand - highest}, вернулся на ${s.y} (было ${yStand})`);
+  for (let k = 0; k < 150; k++) { a.step(); if (s.y > lowest) { lowest = s.y; if (highest === yStand) crouchFirst = true; } highest = Math.min(highest, s.y); }
+  // Прыжок втрое выше прежних 8 клеток, подготовка — 12 кадров приседа.
+  ok(crouchFirst && lowest - yStand >= 2 && yStand - highest >= 18 && s.vy === 0 && planted(s) >= 2, `прыжок: присел на ${lowest - yStand}, подпрыгнул на ${yStand - highest}, встал (верх тела ${s.y})`);
   // Опора ушла — падает.
   const yBefore = s.y;
   for (let x = s.x - 12; x < s.x + 24; x++) for (let y = a.h - 5; y < a.h - 1; y++) a.clearCell(y * a.w + x);
@@ -2274,7 +2275,8 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   let cut = 0;
   for (let i = 0; i < c.type.length && cut < 60; i++) if (c.type[i] === SH) { c.clearCell(i); cut++; }
   c.step();
-  ok(c.sharoids.length === 0 && count(c, SH) === 0 && count(c, EL.STEEL) === g('SHAR_CELLS') - 60 && c.playerSlot(2).state.death === 'Шароид разрушен', `разрушен: шароидов ${c.sharoids.length}, стали ${count(c, EL.STEEL)}, игрок 2 — ${c.playerSlot(2).state.death}`);
+  // Остатки тела и ноги — металл (ноги — ещё несколько десятков клеток).
+  ok(c.sharoids.length === 0 && count(c, SH) === 0 && count(c, EL.STEEL) > g('SHAR_CELLS') - 60 + 10 && c.playerSlot(2).state.death === 'Шароид разрушен', `разрушен: шароидов ${c.sharoids.length}, стали ${count(c, EL.STEEL)} (тело и ноги), игрок 2 — ${c.playerSlot(2).state.death}`);
   // Кислота отнимает клетки (они становятся сталью и отпадают).
   const d = new Sim(60, 50); d.lookColor = () => [0, 0, 0];
   box(d, 0, 45, 59, 49, EL.WALL);
@@ -2283,8 +2285,12 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   const ds = d.sharoids[0];
   box(d, ds.x, ds.y - 3, ds.x + 11, ds.y - 1, EL.ACID);
   for (let k = 0; k < 600; k++) d.step();
+  // Разъеденные клетки остаются частью тела (он ходит дальше), пока не
+  // растворятся совсем.
   const left = d.sharoids.length ? d.sharCollect(d.sharoids[0]) : 0;
-  ok(left < g('SHAR_CELLS'), `кислота разъела часть тела: осталось ${left} из ${g('SHAR_CELLS')}`);
+  let eaten = 0;
+  for (let i = 0; i < d.type.length; i++) if (d.type[i] === SH && d.comp(i) !== g('pureCompFor')(EL.STEEL)) eaten++;
+  ok(d.sharoids.length === 1 && (left < g('SHAR_CELLS') || eaten > 0) && count(d, EL.STEEL) === 0, `кислота разъела тело: осталось ${left} из ${g('SHAR_CELLS')} клеток, разъеденных, но своих — ${eaten}, отпавшей стали — ${count(d, EL.STEEL)}`);
   // Вода: тонет, вытесняет её, вода не теряется.
   const wv = new Sim(80, 70); wv.lookColor = () => [0, 0, 0];
   box(wv, 0, 66, 79, 69, EL.WALL); box(wv, 0, 0, 0, 65, EL.WALL); box(wv, 79, 0, 79, 65, EL.WALL); box(wv, 1, 30, 78, 65, EL.WATER);
@@ -2356,7 +2362,7 @@ console.log('49. Шароид: склон, опора на стены и шах�
   const y0 = c.y;
   b.playerSlot(0).input.down = true; for (let k = 0; k < 200; k++) b.step(); b.playerSlot(0).input.down = false;
   const yDown = c.y;
-  b.playerSlot(0).input.up = true; for (let k = 0; k < 400; k++) b.step(); b.playerSlot(0).input.up = false;
+  b.playerSlot(0).input.w = true; for (let k = 0; k < 400; k++) b.step(); b.playerSlot(0).input.w = false;
   ok(yDown - y0 >= 20 && c.y <= 22 && b.sharCount(c).floor > 0, `S — спустился на ${yDown - y0}, W — вылез наверх (верх тела ${c.y}, стоит на полу)`);
   // Прыжок у стены: ноги не тянутся длиннее предела и не уходят в стену.
   const j = new Sim(100, 80); j.lookColor = () => [0, 0, 0];
@@ -2445,8 +2451,108 @@ console.log('49. Шароид: склон, опора на стены и шах�
   const top = s.y;
   inp.down = true; for (let k = 0; k < 300; k++) m.step(); inp.down = false;
   const bottom = s.y;
-  inp.up = true; for (let k = 0; k < 400; k++) m.step(); inp.up = false;
+  inp.w = true; for (let k = 0; k < 400; k++) m.step(); inp.w = false;
   ok(bottom - top > 60 && s.y <= top, `с края шахты S — спустился (верх тела ${top} → ${bottom}), со дна W — вылез (${s.y})`);
+}
+
+console.log('50. Шароид: отламываются куски и ноги (металлом того же цвета), разъеденное остаётся телом, расплав не висит, сенсор не уезжает на пустое, под грузом вжимается, у обрыва нога не висит, W — вытянуться, не прыгнуть');
+{
+  const SH = EL.SHAROID, STAND = g('SHAR_STAND');
+  const planted = (s) => s.legs.filter((l, k) => l.on && s.sw !== k).length;
+  const field = (w = 120, h = 70) => { const s = new Sim(w, h); s.lookColor = () => [0, 0, 0]; box(s, 0, h - 5, w - 1, h - 1, EL.STONE); return s; };
+  const stand = (sim, x = 40) => { sim.placeSharoid(x, 20); for (let k = 0; k < 80; k++) sim.step(); return sim.sharoids[0]; };
+  // Разрез тела по столбцу: меньший кусок отрывается металлом и падает.
+  {
+    const a = field(), s = stand(a);
+    for (let y = s.y; y < s.y + 12; y++) a.clearCell(y * a.w + s.x + 3);
+    a.step();
+    const steel = count(a, EL.STEEL), own = a.sharCollect(s);
+    let island = 0;
+    for (let i = 0; i < a.type.length; i++) if (a.type[i] === SH && !a.sharoidAt(i)) island++;
+    for (let k = 0; k < 40; k++) a.step();
+    let lowSteel = 0;
+    for (let i = 0; i < a.type.length; i++) if (a.type[i] === EL.STEEL) lowSteel = Math.max(lowSteel, (i / a.w) | 0);
+    ok(a.sharoids.length === 1 && steel > 0 && island === 0 && own + steel + 10 >= g('SHAR_CELLS') && lowSteel === a.h - 6,
+      `разрез: отломилось ${steel} клеток металлом, в теле осталось ${own}, отломанное упало до пола (нижняя строка ${lowSteel})`);
+    // Металл — того же цвета, что был корпус: оттенок сдвинут от стали.
+    let shaded = 0;
+    for (let i = 0; i < a.type.length; i++) if (a.type[i] === EL.STEEL && a.shade[i] < -20) shaded++;
+    ok(shaded > 0, `отломанный металл темнее простой стали, как корпус: ${shaded} клеток`);
+  }
+  // Пропала клетка, на которой держится нога, — нога отваливается металлом.
+  {
+    const a = field(), s = stand(a);
+    const st0 = count(a, EL.STEEL);
+    a.clearCell((s.y + g('SHAR_ANCHOR_Y')[0]) * a.w + s.x + g('SHAR_ANCHOR_X')[0]);
+    a.step();
+    ok(s.legs[0].gone && count(a, EL.STEEL) - st0 > 5 && !s.legs[2].gone, `нога без опорной клетки отвалилась: стали +${count(a, EL.STEEL) - st0}, левая нога ${s.legs[0].gone ? 'отвалилась' : 'на месте'}`);
+  }
+  // Разъеденная (смешанная) клетка остаётся шароидом.
+  {
+    const a = field(), s = stand(a);
+    const i = (s.y + 5) * a.w + s.x + 1;
+    a.setComposition(i, g('solWith')(g('pureCompFor')(EL.STEEL) - (3 << 6), EL.METAL_OXIDE, 3));
+    ok(a.type[i] === SH && a.sharoidAt(i) === s, 'окисленная часть тела остаётся телом шароида');
+  }
+  // Перегрев половины тела: расплавленное течёт, клеток шароида, висящих
+  // отдельно от тела, не остаётся.
+  {
+    const a = field(80, 60), s = stand(a);
+    let floating = 0;
+    for (let f = 0; f < 300; f++) {
+      if (a.sharoids.length) for (let y = s.y; y < s.y + 12; y++) for (let x = s.x; x < s.x + 5; x++) { const i = y * a.w + x; if (a.type[i] !== EL.EMPTY) a.temp[i] = 400; }
+      a.step();
+      for (let i = 0; i < a.type.length; i++) if (a.type[i] === SH && !a.sharoidAt(i)) floating++;
+    }
+    ok(floating === 0 && (count(a, EL.MOLTEN_STEEL) > 0 || count(a, EL.STEEL) > 0), `перегрев: отдельно висящих клеток шароида ${floating}, расплава ${count(a, EL.MOLTEN_STEEL)}, металла ${count(a, EL.STEEL)}`);
+  }
+  // Сенсор не уезжает туда, где тела нет: правая половина креста стёрта.
+  {
+    const a = field(), s = stand(a);
+    for (let y = s.y + 3; y < s.y + 9; y++) a.clearCell(y * a.w + s.x + 9);
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.aim = true; inp.ax = s.x + 60; inp.ay = s.y + 6;
+    a.step();
+    ok(a.sharEyeFits(s, s.lookX, s.lookY) && s.lookX < g('SHAR_LOOK'), `сенсор смотрит вправо, но остался на целых клетках: сдвиг ${s.lookX}`);
+  }
+  // Сверху легло — вжимается в пол до предела.
+  {
+    const a = field(), s = stand(a);
+    const y0 = s.y;
+    box(a, s.x + 2, s.y - 6, s.x + 9, s.y - 3, EL.STONE);
+    for (let k = 0; k < 40; k++) a.step();
+    ok(s.y - y0 >= STAND - g('SHAR_FOOT_PRESSED') - 1 && planted(s) >= 2, `под грузом вжался на ${s.y - y0} клеток`);
+  }
+  // У обрыва: тело стоит, ни одна нога не висит в воздухе.
+  {
+    const a = new Sim(140, 90); a.lookColor = () => [0, 0, 0];
+    box(a, 0, 85, 139, 89, EL.STONE); box(a, 0, 50, 70, 84, EL.STONE);
+    a.placeSharoid(40, 20);
+    const s = a.sharoids[0];
+    for (let k = 0; k < 80; k++) a.step();
+    s.ctrl = 0; a.playerSlot(0).input.right = true;
+    for (let k = 0; k < 400; k++) a.step();
+    ok(s.y < 40 && planted(s) === 3 && s.legs.every((l) => a.sharFootHeld(s, l)), `у обрыва остановился (верх тела ${s.y}, ступни ${s.legs.map((l) => l.x).join(', ')}), все три стоят`);
+  }
+  // W: вытянуться выше стойки; нажатие W не прыжок.
+  {
+    const a = field(), s = stand(a);
+    const y0 = s.y;
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.w = true; inp.jump = true;
+    let air = false;
+    for (let k = 0; k < 30; k++) { a.step(); if (s.vy !== 0) air = true; }
+    ok(!air && y0 - s.y >= 2, `W: вытянулся на ${y0 - s.y} клеток и не прыгнул`);
+    inp.w = false;
+  }
+  // В прыжке боковые ноги — к телу.
+  {
+    const a = field(120, 100), s = stand(a);
+    s.ctrl = 0; a.playerSlot(0).input.jump = true;
+    let inward = false;
+    for (let k = 0; k < 30; k++) { a.step(); if (s.vy < -0.5 && s.legs[0].x > a.sharHomeX(s, 0) + 0.5 && s.legs[2].x < a.sharHomeX(s, 2) - 0.5) inward = true; }
+    ok(inward, 'в прыжке боковые ноги сдвигаются к телу');
+  }
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
