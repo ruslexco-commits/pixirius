@@ -96,8 +96,12 @@ const PLAY_RAY_PERIOD = 4;
 // Шароид (sim/sharoid.js) видит дальше (просьба пользователя): во все
 // стороны — в PLAY_SHAR_SIGHT_K раз дальше протагониста (PLAY_SHAR_RAYS
 // лучей: на таком радиусе прямая видимость по каждой клетке была бы слишком
-// дорогой), а в сторону, куда смотрит сенсор, — ещё вдвое дальше, конусом
-// в ±PLAY_SHAR_CONE радиан (PLAY_SHAR_CONE_RAYS лучей). Окно обзора у него
+// дорогой), а туда, где курсор, — ещё вдвое дальше, конусом в
+// ±PLAY_SHAR_CONE радиан (PLAY_SHAR_CONE_RAYS лучей). Сначала конус шёл по
+// сенсору — пользователь уточнил: по курсору. Но только если сенсор смог
+// повернуться в ту сторону: у разбитого корпуса положение сенсора, нужное
+// для этого направления, бывает недоступно (s.lookBlocked) — тогда дальнего
+// конуса нет. Курсор не над экраном — конус по сенсору. Окно обзора у него
 // сразу шире — по этому радиусу (колесо меняет как обычно). Другие шароиды
 // взгляду шароида не мешают (opaque).
 const PLAY_SHAR_SIGHT_K = 3;
@@ -646,14 +650,20 @@ class PlayMode {
   }
 
   // Зрение шароида (см. PLAY_SHAR_*): лучи во все стороны и конус лучей
-  // туда, куда смотрит сенсор. Лучи пересчитываются, как у лучевого зрения,
+  // туда, где курсор (если сенсор может туда повернуться). Лучи пересчитываются, как у лучевого зрения,
   // раз в PLAY_RAY_PERIOD кадров или когда сдвинулся глаз или взгляд.
   lookSharoid(px, py, gen, monitors, players) {
     const sim = this.sim, w = sim.w, h = sim.h, s = sim.sharoidById(this.ownSharoid);
     if (!s) return;
     const far = PLAY_SIGHT * PLAY_SHAR_SIGHT_K;
-    const dir = s.lookX || s.lookY ? Math.atan2(s.lookY, s.lookX) : (s.face < 0 ? Math.PI : 0);
-    const key = `${py * w + px},${dir.toFixed(3)}`;
+    const inp = this.inp();
+    let dir = null;
+    if (!s.lookBlocked) {
+      const ax = inp.ax + 0.5 - (s.x + 6), ay = inp.ay + 0.5 - (s.y + 6);
+      if (inp.aim && this.watching < 0 && ax * ax + ay * ay >= 1) dir = Math.atan2(ay, ax);
+      else dir = s.lookX || s.lookY ? Math.atan2(s.lookY, s.lookX) : (s.face < 0 ? Math.PI : 0);
+    }
+    const key = `${py * w + px},${dir === null ? '-' : dir.toFixed(3)}`;
     if (!this.sharRayCells || this.sharRayKey !== key || ++this.sharRayTick >= PLAY_RAY_PERIOD) {
       this.sharRayTick = 0;
       this.sharRayKey = key;
@@ -672,7 +682,7 @@ class PlayMode {
         }
       };
       for (let r = 0; r < PLAY_SHAR_RAYS; r++) cast((r / PLAY_SHAR_RAYS) * Math.PI * 2, far);
-      for (let r = 0; r <= PLAY_SHAR_CONE_RAYS; r++) cast(dir - PLAY_SHAR_CONE + 2 * PLAY_SHAR_CONE * r / PLAY_SHAR_CONE_RAYS, far * 2);
+      if (dir !== null) for (let r = 0; r <= PLAY_SHAR_CONE_RAYS; r++) cast(dir - PLAY_SHAR_CONE + 2 * PLAY_SHAR_CONE * r / PLAY_SHAR_CONE_RAYS, far * 2);
       this.sharRayCells = cells;
     }
     for (const j of this.sharRayCells) {

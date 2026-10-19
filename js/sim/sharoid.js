@@ -343,7 +343,7 @@ class SimSharoid {
     do { id = id % 30000 + 1; } while (this.sharoidById(id));
     this._sharSeq = id;
     const s = {
-      id, x: x0, y: y0, face: 0, lookX: 0, lookY: 0, ctrl: SHAR_CTRL_NONE, cells: SHAR_CELLS,
+      id, x: x0, y: y0, face: 0, lookX: 0, lookY: 0, lookBlocked: false, ctrl: SHAR_CTRL_NONE, cells: SHAR_CELLS,
       legs: [0, 1, 2].map(() => ({ x: 0, y: 0, on: false, n: SHAR_ON_FLOOR })),
       // Шаг: какая нога в воздухе (-1 — никакая), сколько кадров идёт,
       // откуда и куда, на что встанет.
@@ -857,7 +857,10 @@ class SimSharoid {
     }
     // Сенсор не заезжает туда, где тела уже нет (просьба пользователя):
     // ближайший к желаемому сдвиг, при котором все клетки креста — целые
-    // клетки тела; нет такого — остаётся где был.
+    // клетки тела; нет такого — остаётся где был. lookBlocked — в нужное
+    // положение сенсор не встал: туда шароид и не смотрит (дальнего конуса
+    // обзора в эту сторону нет, js/play.js). Положений сенсора около
+    // дюжины по кругу — по ним и делится, куда смотреть можно.
     let best = null, bestD = Infinity;
     for (let oy = -SHAR_LOOK; oy <= SHAR_LOOK; oy++) {
       for (let ox = -SHAR_LOOK; ox <= SHAR_LOOK; ox++) {
@@ -867,6 +870,7 @@ class SimSharoid {
       }
     }
     if (best) { s.lookX = best[0]; s.lookY = best[1]; }
+    s.lookBlocked = !best || best[0] !== lx || best[1] !== ly;
   }
 
   // Все ли клетки креста сенсора при сдвиге (ox, oy) — клетки тела s.
@@ -1233,6 +1237,7 @@ class SimSharoid {
       if (s.lookX === undefined) { s.lookX = s.face * SHAR_LOOK; s.lookY = 0; }
       if (s.swN0 === undefined) { s.swN0 = SHAR_ON_FLOOR; s.swN1 = SHAR_ON_FLOOR; }
       if (s.pressT === undefined) s.pressT = 0;
+      if (s.lookBlocked === undefined) s.lookBlocked = false;
       for (const leg of s.legs) if (leg.n === undefined) leg.n = SHAR_ON_FLOOR;
     }
     this._sharSweep = true;
