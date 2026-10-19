@@ -204,7 +204,7 @@ function pureCompFor(id) {
   if (id === EL.MOLTEN_ALLOY) return solWith(solPure(EL.MOLTEN_METAL, 5), EL.MOLTEN_COPPER, 5);
   if (id === EL.ALLOY_RUST) return solWith(solPure(EL.METAL_OXIDE, 5), EL.COPPER_OXIDE, 5);
   // Клетка шароида — сталь: id шароида в 6 бит доли не влезает (EL_LIMIT).
-  // Шароидом её оставляет setComposition, пока она чистая сталь.
+  // Шароидом её оставляет setComposition, пока она твёрдая.
   if (id === EL.SHAROID) return SHAROID_COMP;
   return solPure(id);
 }

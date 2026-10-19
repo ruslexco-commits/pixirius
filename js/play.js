@@ -93,6 +93,17 @@ const PLAY_CAM_TAU = 0.12;
 const PLAY_RAYS = 180;
 const PLAY_RAY_RANGE = 400;
 const PLAY_RAY_PERIOD = 4;
+// Шароид (sim/sharoid.js) видит дальше (просьба пользователя): во все
+// стороны — в PLAY_SHAR_SIGHT_K раз дальше протагониста (PLAY_SHAR_RAYS
+// лучей: на таком радиусе прямая видимость по каждой клетке была бы слишком
+// дорогой), а в сторону, куда смотрит сенсор, — ещё вдвое дальше, конусом
+// в ±PLAY_SHAR_CONE радиан (PLAY_SHAR_CONE_RAYS лучей). Окно обзора у него
+// сразу шире — по этому радиусу (колесо меняет как обычно). Другие шароиды
+// взгляду шароида не мешают (opaque).
+const PLAY_SHAR_SIGHT_K = 3;
+const PLAY_SHAR_RAYS = 1200;
+const PLAY_SHAR_CONE = 0.45;
+const PLAY_SHAR_CONE_RAYS = 240;
 const PLAY_CAM_SNAP = 40;
 // Насколько видна память о клетке, которую сейчас не видно.
 const PLAY_MEMORY_ALPHA = 0.35;
@@ -411,6 +422,8 @@ class PlayMode {
       // (зажатие): "вверх" — пока зажата хоть одна из клавиш.
       case 'KeyW': case 'ArrowUp':
         this.upW = down;
+        // Шароиду W — не прыжок, а "вытянуться" и лезть вверх (sim/sharoid.js).
+        inp.w = down;
         inp.up = this.upW || this.upSpace;
         if (down && !e.repeat) inp.jump = true;
         break;
@@ -432,6 +445,7 @@ class PlayMode {
     inp.mine = false;
     // Вне игры сенсор шароида снова смотрит по ходу, а не на курсор.
     inp.aim = false;
+    inp.w = false;
     this.mining = false;
     this.upW = this.upSpace = false;
   }
@@ -527,7 +541,7 @@ class PlayMode {
     if (t === EL.EMPTY || IS_SEE_THROUGH[t] === 1) return false;
     // Свой шароид (sim/sharoid.js) взгляд не заслоняет: смотрит он из сенсора
     // в середине тела (ownSharoid — номер, ставит frame).
-    if (t === EL.SHAROID && this.sim.life[i] === this.ownSharoid) return false;
+    if (t === EL.SHAROID && this.ownSharoid >= 0) return false;
     const el = ELEMENTS[t];
     return !!el && (el.cat === CAT.SOLID || el.cat === CAT.POWDER);
   }
@@ -626,8 +640,50 @@ class PlayMode {
       }
     }
     if (sim.playerRays) this.lookRays(px, py, gen, monitors, players);
+    if (this.ownSharoid >= 0) this.lookSharoid(px, py, gen, monitors, players);
     this.lookMonitors(monitors);
     if (players.length) this.forgetOldPlayers(players, gen);
+  }
+
+  // Зрение шароида (см. PLAY_SHAR_*): лучи во все стороны и конус лучей
+  // туда, куда смотрит сенсор. Лучи пересчитываются, как у лучевого зрения,
+  // раз в PLAY_RAY_PERIOD кадров или когда сдвинулся глаз или взгляд.
+  lookSharoid(px, py, gen, monitors, players) {
+    const sim = this.sim, w = sim.w, h = sim.h, s = sim.sharoidById(this.ownSharoid);
+    if (!s) return;
+    const far = PLAY_SIGHT * PLAY_SHAR_SIGHT_K;
+    const dir = s.lookX || s.lookY ? Math.atan2(s.lookY, s.lookX) : (s.face < 0 ? Math.PI : 0);
+    const key = `${py * w + px},${dir.toFixed(3)}`;
+    if (!this.sharRayCells || this.sharRayKey !== key || ++this.sharRayTick >= PLAY_RAY_PERIOD) {
+      this.sharRayTick = 0;
+      this.sharRayKey = key;
+      const cells = [];
+      const cast = (a, range) => {
+        const ca = Math.cos(a), sa = Math.sin(a);
+        let last = -1;
+        for (let st = 1; st <= range; st++) {
+          const x = Math.round(px + ca * st), y = Math.round(py + sa * st);
+          if (x < 0 || x >= w || y < 0 || y >= h) break;
+          const j = y * w + x;
+          if (j === last) continue;
+          last = j;
+          cells.push(j);
+          if (this.opaque(j)) break;
+        }
+      };
+      for (let r = 0; r < PLAY_SHAR_RAYS; r++) cast((r / PLAY_SHAR_RAYS) * Math.PI * 2, far);
+      for (let r = 0; r <= PLAY_SHAR_CONE_RAYS; r++) cast(dir - PLAY_SHAR_CONE + 2 * PLAY_SHAR_CONE * r / PLAY_SHAR_CONE_RAYS, far * 2);
+      this.sharRayCells = cells;
+    }
+    for (const j of this.sharRayCells) {
+      if (this.visGen[j] === gen) continue;
+      this.visGen[j] = gen;
+      if (sim.type[j] === EL.MONITOR) monitors.push(j);
+      else if (sim.type[j] === EL.PROTAGONIST && sim.life[j] !== this.playerId) players.push(j);
+      const c = this.cellRGB(j);
+      this.memSeen[j] = 1;
+      this.memColor[j] = (c[0] << 16) | (c[1] << 8) | c[2];
+    }
   }
 
   // Лучевое зрение (см. PLAY_RAYS): клетки на лучах — видимые в этом кадре.
@@ -800,6 +856,12 @@ class PlayMode {
     let p = sim.playerCell(this.playerId);
     const own = sim.playerSharoid(this.playerId);
     this.ownSharoid = own ? own.id : -1;
+    // Тело сменилось (шароид / протагонист) — окно обзора по его радиусу.
+    const bodyKind = own ? 'shar' : 'prot';
+    if (this.viewBody !== bodyKind) {
+      this.viewBody = bodyKind;
+      this.setViewHeight(own ? 2 * PLAY_SIGHT * PLAY_SHAR_SIGHT_K + 3 : PLAY_VIEW_H);
+    }
     // Погиб — ломание кончилось: после возрождения — только новым нажатием.
     if (sim.playerDeadAt(p)) this.mining = false;
     // Выбыл насовсем (жизни кончились, возрождения нет; мультиплеер) —

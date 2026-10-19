@@ -134,7 +134,7 @@ class SimProtagonist {
     let p = this.players[n];
     if (!p) {
       p = this.players[n] = {
-        input: { left: false, right: false, up: false, down: false, jump: false, mine: false, ax: 0, ay: 0, aim: false },
+        input: { left: false, right: false, up: false, down: false, jump: false, mine: false, ax: 0, ay: 0, aim: false, w: false },
         state: { wet: 0, rise: 0, riseT: 0, hang: 0, vy: 0, fy: 0, jumpBuf: 0, stamina: SWIM_STAMINA, exhausted: false, death: null, deathKind: null, mineCell: -1, mineHits: 0, mineT: 0 },
         // Где протагонист был в прошлый раз — чтобы findProtagonist не
         // искал его по всему полю каждый кадр.

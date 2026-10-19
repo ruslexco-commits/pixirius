@@ -503,22 +503,22 @@ class Multiplayer {
   cfgOf(s) { const c = {}; for (const k of MP_CFG) c[k] = s[k]; return c; }
 
   // Нажатия всех игроков в мире s: [номер, влево, вправо, вверх, вниз,
-  // прыжок, ломает, клетка прицела x, y, мышь над экраном] (ломание —
-  // sim/protagonist.js, взгляд сенсора шароида — sim/sharoid.js).
+  // прыжок, ломает, клетка прицела x, y, мышь над экраном, W] (ломание —
+  // sim/protagonist.js, взгляд сенсора шароида и W — sim/sharoid.js).
   inputsOf(s) {
     const out = [];
     for (const p of this.state.players) {
       const inp = s.playerSlot(p.n).input;
-      out.push([p.n, +inp.left, +inp.right, +inp.up, +inp.down, +inp.jump, +inp.mine, inp.ax | 0, inp.ay | 0, +!!inp.aim]);
+      out.push([p.n, +inp.left, +inp.right, +inp.up, +inp.down, +inp.jump, +inp.mine, inp.ax | 0, inp.ay | 0, +!!inp.aim, +!!inp.w]);
     }
     return out;
   }
 
   setInputs(s, list) {
-    for (const [n, l, r, u, d, j, m, ax, ay, aim] of list) {
+    for (const [n, l, r, u, d, j, m, ax, ay, aim, wk] of list) {
       const inp = s.playerSlot(n).input;
       inp.left = !!l; inp.right = !!r; inp.up = !!u; inp.down = !!d; inp.jump = !!j;
-      inp.mine = !!m; inp.ax = ax | 0; inp.ay = ay | 0; inp.aim = !!aim;
+      inp.mine = !!m; inp.ax = ax | 0; inp.ay = ay | 0; inp.aim = !!aim; inp.w = !!wk;
     }
   }
 
@@ -774,7 +774,7 @@ class Multiplayer {
     // слало бы хосту сообщение.
     // Взгляд сенсора шароида (inp.aim) — грубо, по участкам 4x4: точнее ему
     // не нужно, а сообщений меньше.
-    const key = `${+inp.left}${+inp.right}${+inp.up}${+inp.down}${+inp.jump}${inp.mine ? `m${inp.ax},${inp.ay}` : ''}${!inp.mine && inp.aim ? `a${inp.ax >> 2},${inp.ay >> 2}` : ''}`;
+    const key = `${+inp.left}${+inp.right}${+inp.up}${+!!inp.w}${+inp.down}${+inp.jump}${inp.mine ? `m${inp.ax},${inp.ay}` : ''}${!inp.mine && inp.aim ? `a${inp.ax >> 2},${inp.ay >> 2}` : ''}`;
     if (key === this.sentInput[world] && !inp.jump) return;
     this.sentInput[world] = key;
     this.send({ t: 'input', cid: this.cid, world, inp: { ...inp } });
@@ -828,7 +828,7 @@ class Multiplayer {
         const inp = s.playerSlot(p.n).input;
         inp.left = !!m.inp.left; inp.right = !!m.inp.right; inp.up = !!m.inp.up; inp.down = !!m.inp.down;
         if (m.inp.jump) inp.jump = true;
-        inp.mine = !!m.inp.mine; inp.ax = m.inp.ax | 0; inp.ay = m.inp.ay | 0; inp.aim = !!m.inp.aim;
+        inp.mine = !!m.inp.mine; inp.ax = m.inp.ax | 0; inp.ay = m.inp.ay | 0; inp.aim = !!m.inp.aim; inp.w = !!m.inp.w;
         break;
       }
       case 'op': {

@@ -947,46 +947,23 @@ class Renderer {
       ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
     };
     const legC = rgb(SHAR_LEG_COLOR), shinC = rgb(SHAR_SHIN_COLOR), footC = rgb(SHAR_FOOT_COLOR);
-    // Ноги в чёрной обводке (просьба пользователя): сначала клетки ног всех
+    // Ноги в обводке (просьба пользователя): сначала клетки ног всех
     // шароидов собираются (клетка → часть), потом вокруг них по 4 соседям —
-    // чёрная обводка, поверх — сами ноги.
+    // обводка, поверх — сами ноги.
     const PARTS = [[SHAR_LEG_COLOR, legC], [SHAR_SHIN_COLOR, shinC], [SHAR_FOOT_COLOR, footC]];
     const legs = new Map();
     const put = (x, y, part) => { if (x >= 0 && x < w && y >= 0 && y < h) legs.set(y * w + x, part); };
-    for (const s of list) {
-      for (let k = 0; k < 3; k++) {
-        const leg = s.legs[k];
-        const fx = Math.round(leg.x), fy = Math.round(leg.y), n = leg.n | 0;
-        // Прямая — по Брезенхэму, от крепления до верха ножки. Ступня на
-        // стене (n — сторона опоры) повёрнута: перекладина стоймя к стене,
-        // ножка — от неё.
-        let x = sim.sharAttachX(s, k), y = sim.sharAttachY(s, k);
-        const tx = sim.sharShinX(fx, n), ty = sim.sharShinY(fy, n);
-        const dx = Math.abs(tx - x), dy = -Math.abs(ty - y), sx = x < tx ? 1 : -1, sy = y < ty ? 1 : -1;
-        let err = dx + dy;
-        for (let g = 0; g < 256; g++) {
-          put(x, y, 0);
-          if (x === tx && y === ty) break;
-          const e2 = 2 * err;
-          if (e2 >= dy) { err += dy; x += sx; }
-          if (e2 <= dx) { err += dx; y += sy; }
-        }
-        if (n === SHAR_ON_FLOOR) { put(fx, fy - 2, 1); put(fx, fy - 1, 1); for (let d = -1; d <= 1; d++) put(fx + d, fy, 2); }
-        else {
-          const d = n === SHAR_ON_LEFT ? 1 : -1;
-          put(fx + d, fy, 1); put(fx + 2 * d, fy, 1);
-          for (let e = -1; e <= 1; e++) put(fx, fy + e, 2);
-        }
-      }
-    }
+    for (const s of list) for (let k = 0; k < 3; k++) if (!s.legs[k].gone) sim.sharLegCells(s, k, put);
     ctx.save();
-    const black = [0, 0, 0];
+    // Обводка — цветом обода корпуса (просьба пользователя: "как обводка
+    // крайнего слоя головы"), а не чёрная.
+    const rim = SHAR_PART_COLOR[SHAR_PART_RIM], rimC = rgb(rim);
     for (const i of legs.keys()) {
       const x = i % w, y = (i / w) | 0;
-      if (x > 0 && !legs.has(i - 1)) cell(x - 1, y, black, '#000');
-      if (x < w - 1 && !legs.has(i + 1)) cell(x + 1, y, black, '#000');
-      if (y > 0 && !legs.has(i - w)) cell(x, y - 1, black, '#000');
-      if (y < h - 1 && !legs.has(i + w)) cell(x, y + 1, black, '#000');
+      if (x > 0 && !legs.has(i - 1)) cell(x - 1, y, rim, rimC);
+      if (x < w - 1 && !legs.has(i + 1)) cell(x + 1, y, rim, rimC);
+      if (y > 0 && !legs.has(i - w)) cell(x, y - 1, rim, rimC);
+      if (y < h - 1 && !legs.has(i + w)) cell(x, y + 1, rim, rimC);
     }
     for (const [i, part] of legs) cell(i % w, (i / w) | 0, PARTS[part][0], PARTS[part][1]);
     ctx.restore();
