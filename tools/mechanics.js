@@ -2513,7 +2513,10 @@ console.log('50. Шароид: отламываются куски и ноги (
     s.ctrl = 0; const inp = a.playerSlot(0).input;
     inp.aim = true; inp.ax = s.x + 60; inp.ay = s.y + 6;
     a.step();
-    ok(a.sharEyeFits(s, s.lookX, s.lookY) && s.lookX < g('SHAR_LOOK'), `сенсор смотрит вправо, но остался на целых клетках: сдвиг ${s.lookX}`);
+    ok(a.sharEyeFits(s, s.lookX, s.lookY) && s.lookX < g('SHAR_LOOK') && s.lookBlocked, `сенсор смотрит вправо, но остался на целых клетках: сдвиг ${s.lookX}, повернуться не смог — дальнего конуса туда нет`);
+    inp.ax = s.x - 60;
+    a.step();
+    ok(s.lookX === -g('SHAR_LOOK') && !s.lookBlocked, 'влево сенсор повернулся — туда дальний конус есть');
   }
   // Сверху легло — вжимается в пол до предела.
   {
