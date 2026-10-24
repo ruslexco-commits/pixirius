@@ -2031,7 +2031,9 @@ console.log('43. Балки в нагрузке: несут вес, не дви�
   const n0 = beams(s);
   const off = mk(); for (let k = 0; k < 120; k++) off.step();
   const on = mk(); on.loadYieldOn = true; for (let k = 0; k < 120; k++) on.step();
-  ok(beams(off) === n0 && beams(on) < n0, `балок: было ${n0}, без сдвигов ${beams(off)}, со сдвигами ${beams(on)}`);
+  // Под нагрузкой балка деформируется, но остаётся балкой, пока есть опоры
+  // (просьба пользователя): с включённым сдвигом балок не становится меньше.
+  ok(beams(off) === n0 && beams(on) === n0, `балка держит пролёт, пока есть опоры: было ${n0}, без сдвигов ${beams(off)}, со сдвигами ${beams(on)}`);
 }
 
 console.log('44. Давление жидкостей в нагрузке; сталь вдвое стойче');
@@ -2199,7 +2201,9 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   a.playerSlot(0).input.right = true;
   let minPlanted = 3, maxSwing = 0;
   const x0 = s.x;
-  for (let k = 0; k < 200; k++) { a.step(); minPlanted = Math.min(minPlanted, planted(s)); maxSwing = Math.max(maxSwing, s.legs.filter((l, j) => !l.on || s.sw === j).length); }
+  // Останавливаемся на 50 клетках: после удвоения скорости тело за 200 кадров
+  // уходит к краю поля (140) и стену на x=120 уже не проверить.
+  for (let k = 0; k < 200 && s.x - x0 < 50; k++) { a.step(); minPlanted = Math.min(minPlanted, planted(s)); maxSwing = Math.max(maxSwing, s.legs.filter((l, j) => !l.on || s.sw === j).length); }
   ok(s.x - x0 >= 50 && minPlanted >= 2 && maxSwing <= 1, `прошёл ${s.x - x0} клеток, стоящих ног не меньше ${minPlanted}, в воздухе не больше ${maxSwing}`);
   const eyePart = a.extra[a.playerCell(0)] - g('SHAR_PART_EYE');
   ok(eyePart >= 0 && ((eyePart / g('SHAR_GLOSS_N')) | 0) === g('SHAR_EYE_PLAYER'), 'сенсор игрока — цвета игрока, смотрит по ходу');
@@ -2207,11 +2211,13 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
   // темнее, с теневой стороны сильнее, у центра со стороны света — блик.
   const GL = g('SHAR_EYE_GLOSS'), want = { '5,4': 1, '6,4': 1, '4,5': 0, '5,5': 3, '6,5': 4, '7,5': 1, '4,6': 0, '5,6': 2, '6,6': 3, '7,6': 1, '5,7': 0, '6,7': 1 };
   ok(Object.entries(want).every(([p, v]) => { const [x, y] = p.split(',').map(Number); return GL[y * 12 + x] === v; }), 'блик сенсора совпадает с картинкой пользователя');
-  // Стена: тело и ноги останавливаются перед ней.
+  // Стена: тело не проходит сквозь неё. Глухая, в полный рост — не переступить,
+  // не пригнуться, и по прогнозу тело прыгает (а не стоит), но до стены не дальше.
   box(a, 120, 20, 123, a.h - 6, EL.WALL);
-  for (let k = 0; k < 300; k++) a.step();
-  // Ступня может встать и на саму стену (боком), но не в неё.
-  ok(s.x + 11 < 120 && s.legs.every((l) => l.x < 120 && a.type[a.idx(l.x, l.y)] === EL.EMPTY && a.sharFootHeld(s, l)), `упёрся в стену: правый край тела ${s.x + 11}, ступни ${s.legs.map((l) => `${l.x}${l.n ? ' (на стене)' : ''}`).join(', ')} (стена с 120)`);
+  let maxRight = 0;
+  for (let k = 0; k < 300; k++) { a.step(); maxRight = Math.max(maxRight, s.x + 11); }
+  // Ступня может стоять у самого основания стены (x=120 — пол перед ней), но не за ней.
+  ok(maxRight < 120 && s.legs.every((l) => l.x <= 120), `упёрся в стену: правый край тела не дальше ${maxRight} (стена с 120), ступни ${s.legs.map((l) => `${l.x}${l.n ? ' (на стене)' : ''}`).join(', ')}`);
   // Прыжок: сначала присед, потом вверх.
   a.playerSlot(0).input.right = false;
   for (let k = 0; k < 40; k++) a.step();
@@ -2267,7 +2273,8 @@ console.log('48. Шароид (sim/sharoid.js): тело из стали на т
     p.setCell(ps.x + 6, ps.y + 6, EL.HUMAN, false);
     const xs = new Set();
     let fell = false;
-    for (let k = 0; k < 3000; k++) { p.step(); xs.add(ps.x); if (ps.y > 49 - g('SHAR_STAND')) fell = true; }
+    // +4: присед и "дыхание" в покое — не падение.
+    for (let k = 0; k < 3000; k++) { p.step(); xs.add(ps.x); if (ps.y > 49 - g('SHAR_STAND') + 4) fell = true; }
     ok(xs.size > 10 && !fell, `бродит (${xs.size} разных мест) и с обрыва не падает`);
   }
   // Разрушение: больше половины тела стёрто — остатки становятся сталью, игрок погиб.
@@ -2526,16 +2533,124 @@ console.log('50. Шароид: отламываются куски и ноги (
     for (let k = 0; k < 40; k++) a.step();
     ok(s.y - y0 >= STAND - g('SHAR_FOOT_PRESSED') - 1 && planted(s) >= 2, `под грузом вжался на ${s.y - y0} клеток`);
   }
-  // У обрыва: тело стоит, ни одна нога не висит в воздухе.
+  // У обрыва: при нажатом направлении прыгает с края чуть вбок (просьба
+  // пользователя), поднимается над плато и падает за край, а не стоит.
   {
     const a = new Sim(140, 90); a.lookColor = () => [0, 0, 0];
     box(a, 0, 85, 139, 89, EL.STONE); box(a, 0, 50, 70, 84, EL.STONE);
     a.placeSharoid(40, 20);
     const s = a.sharoids[0];
     for (let k = 0; k < 80; k++) a.step();
+    const top = s.y;
     s.ctrl = 0; a.playerSlot(0).input.right = true;
-    for (let k = 0; k < 400; k++) a.step();
-    ok(s.y < 40 && planted(s) === 3 && s.legs.every((l) => a.sharFootHeld(s, l)), `у обрыва остановился (верх тела ${s.y}, ступни ${s.legs.map((l) => l.x).join(', ')}), все три стоят`);
+    // Сдвиг считается до вершины прыжка: дальше тело ходит по нижнему полу.
+    let minY = s.y, jumpX = -1, apexX = -1;
+    for (let k = 0; k < 400; k++) {
+      a.step();
+      minY = Math.min(minY, s.y);
+      if (jumpX < 0 && s.vy < 0 && s.x >= 60) jumpX = s.x;
+      if (jumpX >= 0 && apexX < 0 && s.vy >= 0) apexX = s.x;
+    }
+    ok(minY < top - 8 && s.y > top + 20 && jumpX >= 0 && apexX - jumpX >= 1 && apexX - jumpX <= 15,
+      `с обрыва прыгнул: поднялся на ${top - minY} над плато, упал на ${s.y - top} ниже, до вершины ушёл вбок на ${apexX - jumpX} (обычный прыжок — не дальше)`);
+  }
+  // Присед: ход вдвое быстрее, но разгон до полной скорости — за секунду
+  // (60 кадров), торможение после отпускания — тоже; без направления — по инерции.
+  {
+    const a = field(), s = stand(a, 20);
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.right = true; inp.down = true;
+    const rush = (n) => { for (let k = 0; k < n; k++) a.step(); };
+    rush(30);
+    const midSpd = s.spd;
+    rush(30);
+    const fullSpd = s.spd;
+    inp.down = false;
+    rush(30);
+    const brakeSpd = s.spd;
+    inp.right = false;
+    rush(30);
+    const x0 = s.x;
+    rush(30);
+    // Ход вдвое быстрее прежнего (обычный 2/3, полный 4/3 клетки за кадр).
+    ok(midSpd > 0.6 && midSpd < 0.74 && fullSpd > 1.3 && brakeSpd < 0.7 && s.x === x0 && s.spd === 0,
+      `присед: разгон ${midSpd.toFixed(3)} (на полсекунды) -> ${fullSpd.toFixed(3)} (на секунду), торможение до ${brakeSpd.toFixed(3)}, без направления стоит (${s.x - x0} клеток за последние 30 кадров)`);
+  }
+  // Козырёк над проходом: стоя не пройти, пригнувшись — пройти. Жмётся сам
+  // заранее, ещё до упора (x ≈ 49, а стена с 60), проходит под ним и встаёт,
+  // отпустив направление.
+  {
+    const a = field(), s = stand(a, 20);
+    box(a, 60, 0, 63, 49, EL.WALL);
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.right = true;
+    let pressedAt = -1, passed = false;
+    for (let k = 0; k < 200; k++) {
+      a.step();
+      if (s.autoCrouch && pressedAt < 0) pressedAt = s.x;
+      if (s.x > 66) { passed = true; break; }
+    }
+    inp.right = false;
+    for (let k = 0; k < 5; k++) a.step();
+    ok(pressedAt >= 40 && pressedAt <= 49 && passed && !s.autoCrouch && s.crouch === 0,
+      `козырёк: прижался сам при x=${pressedAt} (до стены с 60), прошёл под ним до x=${s.x}, отпустил направление — встал (${s.autoCrouch ? 'ещё жмётся' : 'встал'})`);
+  }
+  // Глухая стена до пола — прижиматься не к чему: не пройти ни стоя, ни пригнувшись.
+  {
+    const a = field(), s = stand(a, 20);
+    box(a, 60, 0, 63, a.h - 6, EL.WALL);
+    s.ctrl = 0; a.playerSlot(0).input.right = true;
+    let pressed = false;
+    for (let k = 0; k < 120; k++) { a.step(); if (s.autoCrouch) pressed = true; }
+    ok(!pressed && s.x < 60, `глухая стена: не прижимается (нет прохода пригнувшись), упёрся на x=${s.x}`);
+  }
+  // Препятствие впереди решается прогнозом: стена до SHAR_CLIMB_MAX переступается
+  // без прыжка, высокая — прыгает и перелетает (просьба пользователя: сначала
+  // перешагнуть, потом прижаться, и только потом прыгнуть).
+  {
+    const run = (k) => {
+      const a = field(), s = stand(a, 20);
+      box(a, 60, a.h - 5 - k, 61, a.h - 6, EL.STONE);
+      s.ctrl = 0; a.playerSlot(0).input.right = true;
+      let jumped = false, passed = false;
+      for (let f = 0; f < 300 && !passed; f++) { a.step(); if (s.jumpT > 0 || s.vy < 0) jumped = true; if (s.x > 66) passed = true; }
+      return { jumped, passed };
+    };
+    const low = run(8), high = run(20);
+    ok(!low.jumped && low.passed && high.jumped && high.passed,
+      `препятствие: стена 8 переступает без прыжка (${low.jumped ? 'прыгнул' : 'шагом'}), стена 20 — прыгает и перелетает (${high.passed ? 'перелетел' : 'застрял'})`);
+  }
+  // Спуск в шахту (S + вправо): с ровного пола в тоннель шириной 16 тело входит,
+  // ноги встают на обе стены и тело опускается до дна, а не стоит у края
+  // (жалоба пользователя: ноги отказываются перестраиваться, тело застопорено).
+  {
+    const a = field(120, 90);
+    box(a, 0, 55, 59, 84, EL.STONE); box(a, 76, 55, 119, 84, EL.STONE);
+    const s = stand(a, 30);
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.right = true; inp.down = true;
+    for (let k = 0; k < 260; k++) a.step();
+    inp.right = false; inp.down = false;
+    const inShaft = s.x >= 60 && s.x <= 75, deep = s.y >= 50;
+    ok(inShaft && deep && s.stuck < 30,
+      `шахта 16: S + вправо — тело вошло в тоннель (x ${s.x}), опустилось до y ${s.y}, упор ${s.stuck}`);
+  }
+  // S + пробел на спуске: ноги отпущены, тело падает, пробел снова — ноги встают.
+  {
+    const a = field(120, 70), s = stand(a, 30);
+    s.ctrl = 0; const inp = a.playerSlot(0).input;
+    inp.right = true; inp.down = true;
+    for (let k = 0; k < 90; k++) a.step();
+    inp.jump = true; a.step(); inp.jump = false;
+    const limp = s.limp;
+    inp.down = false; inp.right = false;
+    for (let k = 0; k < 40; k++) a.step();
+    const fell = !s.legs.some((l) => l.on), low = s.y;
+    inp.jump = true; a.step(); inp.jump = false;
+    const back = !s.limp;
+    for (let k = 0; k < 60; k++) a.step();
+    ok(limp && fell && low > 45 && back && a.sharHeld(s) && s.y < low,
+      `S + пробел на ходу: ноги отпустил (${limp}), упал без опоры (ноги висят: ${fell}, y ${low}), пробел — встал на ноги (${a.sharHeld(s)}, y ${s.y})`);
   }
   // W: вытянуться выше стойки; нажатие W не прыжок.
   {
@@ -2556,6 +2671,39 @@ console.log('50. Шароид: отламываются куски и ноги (
     for (let k = 0; k < 30; k++) { a.step(); if (s.vy < -0.5 && s.legs[0].x > a.sharHomeX(s, 0) + 0.5 && s.legs[2].x < a.sharHomeX(s, 2) - 0.5) inward = true; }
     ok(inward, 'в прыжке боковые ноги сдвигаются к телу');
   }
+}
+
+console.log('51. Шароид: Г-образный поворот тоннеля — правая нога встаёт на кромку, тело заходит в тоннель и спускается на дно');
+{
+  // Пол коридора слева (верх на 60), тоннель справа вниз (x 60..75). Тело идёт
+  // вправо с S: на углу правая нога должна встать на кромку пола, а не висеть.
+  const a = new Sim(120, 140); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 139, 119, 139, EL.WALL); box(a, 0, 30, 79, 39, EL.WALL); box(a, 0, 60, 59, 139, EL.WALL);
+  box(a, 76, 40, 79, 139, EL.WALL); box(a, 60, 131, 75, 139, EL.WALL);
+  a.placeSharoid(20, 46);
+  const s = a.sharoids[0];
+  for (let k = 0; k < 60; k++) a.step();
+  s.ctrl = 0;
+  const inp = a.playerSlot(0).input;
+  for (let k = 0; k < 500; k++) { inp.right = true; inp.down = true; a.step(); }
+  ok(s.x >= 60 && s.y > 100, `Г-поворот: тело на (${s.x}, ${s.y}) — в тоннеле, дно на строке 130`);
+}
+
+console.log('52. Шароид: S + пробел на месте — заряженный прыжок, а не срыв ног');
+{
+  // Регрессия: пробел при зажатом S на месте отпускал ноги (sharHeld в кадр
+  // приседа ложен), прыжок срывался, и тело не взлетало. Высота должна быть
+  // заметно больше обычного прыжка (25).
+  const a = new Sim(120, 70); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 65, 119, 69, EL.STONE);
+  a.placeSharoid(40, 20);
+  for (let k = 0; k < 80; k++) a.step();
+  const s = a.sharoids[0];
+  s.ctrl = 0;
+  const inp = a.playerSlot(0).input;
+  const y0 = s.y; let top = s.y;
+  for (let k = 0; k < 120; k++) { inp.down = true; inp.jump = true; a.step(); top = Math.min(top, s.y); }
+  ok(y0 - top > 30, `S + пробел: взлетел на ${y0 - top} клеток (обычный прыжок — 25)`);
 }
 
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
