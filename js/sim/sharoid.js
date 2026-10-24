@@ -289,6 +289,8 @@ const SHAR_CLIMB_MAX = 14;
 const SHAR_CLIMB_SPAN = SHAR_W + SHAR_STEP_LEAD;
 // Центровка в шахте (sharDescendShift): на сколько клеток смотреть свободное место в стороны.
 const SHAR_CENTER_REACH = 6;
+// Сколько кадров упора на спуске в шахте (S), прежде чем тело отпустит ноги.
+const SHAR_DROP_STUCK = 30;
 // На сколько строк вперёд по ходу в шахте тело смотрит, выбирая середину
 // (sharShaftCenter): заходит в сужение, не задевая углы. Место в стороны
 // меряется до SHAR_CENTER_SPAN клеток — шахты, в которых тело держится
@@ -1350,7 +1352,10 @@ class SimSharoid {
     if (floor && s.ctrl >= 0 && want.vert > 0 && !midGround && !this.sharStepHold(s, 1, 0, 0, true, 0)) { floor = false; mouth = !!want.dir; }
     // На дне шахты W — лезть вверх, а не прыгать: стены по обе стороны в
     // пределах ног.
-    if (floor && s.ctrl >= 0 && want.vert < 0 && this.sharInShaft(s)) floor = false;
+    // Так же — под шахтой, уходящей вверх (перекрёсток тоннелей, пункт 5 плана):
+    // стены шахты выше окна, где ноги ищут стену, и W на полу тоннеля только
+    // вытягивало тело — подъём застревал на перекрёстке.
+    if (floor && s.ctrl >= 0 && want.vert < 0 && (this.sharInShaft(s) || this.sharShaftAbove(s))) floor = false;
     const dir = floor || mouth ? want.dir : 0, vert = floor ? 0 : want.vert;
     if (!floor) { s.jumpBuf = 0; s.jumpT = 0; s.ledge = false; }
     // Скорость хода (см. SHAR_RUSH_FRAMES): зажат S — разгон до полной, отпущен
@@ -1475,6 +1480,14 @@ class SimSharoid {
     // счётчик рос, и ноги начинали переступать "из упора" (SHAR_UNSTUCK).
     if (blocked && !floor && vert > 0 && !side && !this.sharCanMove(s, 0, 1) && this.sharGroundUnder(s) <= s.y + SHAR_H) blocked = false;
     if (blocked !== null) s.stuck = blocked ? s.stuck + 1 : 0;
+    // S в шахте, а ниже ногам опоры нет (перекрёсток с широким тоннелем: ноги
+    // на нижних краях верхней шахты, пол тоннеля дальше длины ноги) — тело
+    // отпускает ноги и падает (ТЗ: "S — спуск или падение, если спуск
+    // невозможен"); внизу ноги ловят опору, как в любом падении.
+    if (!floor && !mouth && want.vert > 0 && s.stuck >= SHAR_DROP_STUCK && s.sw < 0) {
+      for (let k = 0; k < 3; k++) { s.legs[k].on = false; s.legs[k].n = SHAR_ON_FLOOR; }
+      s.stuck = 0;
+    }
     else if (!go && !vert) s.stuck = 0;
     // Прижаться самому — заранее (см. шапку SHAR_LEDGE_VX): впереди стоя не
     // пройти, а пригнувшись — пройти, жмётся сразу; стоя пройдёт — встаёт. Проверка
@@ -1659,6 +1672,16 @@ class SimSharoid {
     return { dir: even ? 0 : l > r ? -1 : 1, even };
   }
 
+  // Шахта над телом: вверх тело проходит, а боковые ноги дотягиваются до её
+  // стен — левая до левой, правая до правой (выше места, где держатся в
+  // шахте; см. sharoidWalk, W на полу).
+  sharShaftAbove(s) {
+    if (!this.sharCanMove(s, 0, -1)) return false;
+    const r = SHAR_SEEK_SHAFT_X, ty = s.y + SHAR_WALL_HOLD;
+    return !!this.sharFindHold(s, 0, this.sharHomeX(s, 0), ty, r, SHAR_LEG_MAX, 0, 0, SHAR_ON_LEFT)
+      && !!this.sharFindHold(s, 2, this.sharHomeX(s, 2), ty, r, SHAR_LEG_MAX, 0, 0, SHAR_ON_RIGHT);
+  }
+
   // Стоит ли шароид в шахте: левой ноге есть опора на левой стене, правой —
   // на правой (там, где они держались бы враспор).
   sharInShaft(s) {
@@ -1779,7 +1802,7 @@ class SimSharoid {
     // ведёт ступню вперёд (пункт 9 плана: верх следующего куба был на клетку
     // дальше длины ноги, и ступня цеплялась за его боковую грань, хотя пол
     // рядом был). У высокой стены ближний пол вперёд не ведёт — нога лезет на неё.
-    let wallH = null;
+    let wallH = null, same = false;
     for (const lead of mx || my ? [SHAR_STEP_LEAD, SHAR_STEP_LEAD >> 1, 0] : [0]) {
       let h = this.sharStepHold(s, k, mx, my, floor, lead, shift);
       if (!h || (only >= 0 && h.n !== only)) continue;
@@ -1787,7 +1810,12 @@ class SimSharoid {
         if (h.n !== SHAR_ON_FLOOR) { if (!wallH) wallH = h; continue; }
         if (wallH && (h.x - leg.x) * mx < SHAR_STEP_LAG) h = wallH;
       }
-      if (leg.on && h.x === leg.x && h.y === leg.y && h.n === leg.n) return 'same';
+      if (leg.on && h.x === leg.x && h.y === leg.y && h.n === leg.n) {
+        // В шахте на ходу вверх-вниз "то же место" — ещё не ответ: сперва
+        // дальний поиск ниже (перекрёсток: средняя стояла на полу тоннеля).
+        if (!floor && my && !shift) { same = true; continue; }
+        return 'same';
+      }
       this.sharBeginSwing(s, k, h);
       return true;
     }
@@ -1796,6 +1824,24 @@ class SimSharoid {
       this.sharBeginSwing(s, k, wallH);
       return true;
     }
+    // В шахте опоры в обычном окне нет — ищем по ходу дальше, на всю длину ноги:
+    // на перекрёстке средняя оставалась на полу тоннеля, а стены верхней шахты
+    // были выше окна, и подъём вставал (пункт 5 плана).
+    if (!floor && my && !shift) {
+      const pref = s.face > 0 ? SHAR_ON_RIGHT : SHAR_ON_LEFT;
+      // Вверх — от крепления ноги (место ступни под телом ниже на целую стойку).
+      // Не нашлось выше крепления — ниже него, но выше ступни: тело, вылезая из
+      // шахты, уходило выше её края, и пол наверху оказывался ниже крепления, но
+      // выше ступней на стенах — ступни висели на верху стен.
+      const hx = this.sharHomeX(s, k), ty = my < 0 ? this.sharAttachY(s, k) : this.sharHomeY(s, k, false);
+      let h = this.sharFindHold(s, k, hx, ty, SHAR_SEEK_SHAFT_X, my < 0 ? SHAR_LEG_MAX : 0, my > 0 ? SHAR_LEG_MAX : 0, 0, only, pref, SHAR_SHAFT_SIDE_COST);
+      if (!h && my < 0) {
+        const down = leg.on ? Math.min(SHAR_LEG_MAX, Math.round(leg.y) - 1 - ty) : SHAR_LEG_MAX;
+        if (down >= 1) h = this.sharFindHold(s, k, hx, ty, SHAR_SEEK_SHAFT_X, 0, down, 0, only, pref, SHAR_SHAFT_SIDE_COST);
+      }
+      if (h && !(leg.on && h.x === leg.x && h.y === leg.y && h.n === leg.n) && (!leg.on || (h.y - leg.y) * my > 0)) { this.sharBeginSwing(s, k, h); return true; }
+    }
+    if (same) return 'same';
     // Висящей (подтянутой, ждущей) ноге впереди опоры нет — ищет шире и выше:
     // крутой склон уходит вверх дальше SHAR_SEEK_UP. Назад не шагает: у обрыва
     // нога тогда ходила бы по кругу — встала позади, отстала, подтянулась.
