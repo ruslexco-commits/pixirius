@@ -84,7 +84,9 @@ class InputController {
     this.debugStability = false;
     this.debugWind = false;
     this.debugTherm = false;
-    this.debugLoad = false;
+    // Вид по клавише 1: устойчивость или нагрузка — выбирает настройка (шестерёнка,
+    // main.js), а не клавиша: две клавиши на один вид — две ручки, которые расходились.
+    this.loadView = false;
 
     // (gx, gy, clientX, clientY) => void — щелчок лупой по клетке. Задаёт
     // main.js: что показать, решает интерфейс, а не ввод.
@@ -419,8 +421,6 @@ class InputController {
       if (!e.repeat) this.debugWind = !this.debugWind;
     } else if (e.code === 'Digit3') {
       if (!e.repeat) this.debugTherm = !this.debugTherm;
-    } else if (e.code === 'Digit4') {
-      if (!e.repeat) this.debugLoad = !this.debugLoad;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -577,7 +577,8 @@ class InputController {
     // Shift — линия; Shift+Ctrl и Shift+Alt — линия с привязкой к 45°.
     // ЛКМ ею рисует, ПКМ — стирает.
     if (shift && (ctrl || alt)) mode = e.button === 0 ? 'lineSnap' : 'lineSnapErase';
-    else if (ctrl && !shift) mode = (e.button === 0) ? 'fill' : 'fillErase';
+    // Заливка — Ctrl или Alt (без Shift: с ним линия).
+    else if ((ctrl || alt) && !shift) mode = (e.button === 0) ? 'fill' : 'fillErase';
     else if (shift) mode = e.button === 0 ? 'line' : 'lineErase';
     else mode = (e.button === 0) ? 'paint' : 'erase';
 
@@ -740,10 +741,10 @@ class InputController {
       lensHandle: this.lensByTouch && this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
-      debugStability: this.debugStability,
+      debugStability: this.debugStability && !this.loadView,
       debugWind: this.debugWind,
       debugTherm: this.debugTherm,
-      debugLoad: this.debugLoad,
+      debugLoad: this.debugStability && this.loadView,
     };
   }
 }

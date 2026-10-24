@@ -617,8 +617,8 @@ lobby = new Lobby({
 // Кнопка в ряду инструментов открывает окно настроек (просьба пользователя:
 // "добавь шестерню в кнопки наряду со скачкой, остановкой времени,
 // мультиплеером; там можно будет это выбрать"). Пока в нём физика нагрузки
-// (sim/load.js): сдвиги под нагрузкой и вид нагрузки — то же, что клавиши 5 и
-// 4; окно читает состояние при открытии, так что клавиши и окно не расходятся.
+// (sim/load.js): сдвиги под нагрузкой (клавиша 5) и вид, который показывает
+// клавиша 1 (нагрузка или устойчивость); окно читает состояние при открытии.
 {
   ICONS.gear = ['0010100', '0111110', '1110111', '1100011', '1110111', '0111110', '0010100'];
   const menu = document.createElement('div');
@@ -637,7 +637,7 @@ lobby = new Lobby({
     menu.innerHTML = '<div class="lb-menu-title">Настройки</div>'
       + '<div class="st-group">Физика нагрузки</div>'
       + row('yield', 'Сдвиги под нагрузкой', 'Перегруженный пиксель продавливается и выдавливается, нависшее проседает (клавиша 5). Тяжёлые постройки, вроде «Вышки», при этом оседают, и кадр дорожает.')
-      + row('view', 'Показывать нагрузку', 'Твёрдое красится от зелёного к красному, перегруженное — белым (клавиша 4).')
+      + row('view', 'Вид стойкости — нагрузка', 'Клавиша 1 показывает нагрузку, а не устойчивость: твёрдое красится от зелёного к красному, перегруженное — белым. Одна из двух, не обе.')
       + '<div class="st-group">Живые</div>'
       + row('regen', 'Регенерация', 'Полученный урон понемногу заживает (у протагониста и людей). Выключено — раны остаются до смерти.')
       + '<div class="lb-menu-hint">В мультиплеере правила задаёт хост.</div>';
@@ -647,9 +647,9 @@ lobby = new Lobby({
     regenBox.addEventListener('change', () => setRule('regenOn', regenBox.checked));
     yieldBox.checked = sim.loadYieldOn;
     yieldBox.disabled = !!(mp && mp.role === 'client');
-    viewBox.checked = input.debugLoad;
+    viewBox.checked = input.loadView;
     yieldBox.addEventListener('change', () => setLoadYield(yieldBox.checked));
-    viewBox.addEventListener('change', () => { input.debugLoad = viewBox.checked; });
+    viewBox.addEventListener('change', () => { input.loadView = viewBox.checked; });
     const r = btn.getBoundingClientRect();
     menu.style.top = (r.bottom + 6) + 'px';
     menu.style.left = Math.max(8, Math.min(window.innerWidth - 300, r.right - 280)) + 'px';
@@ -662,7 +662,7 @@ lobby = new Lobby({
       if (regenBox.checked !== sim.regenOn) regenBox.checked = sim.regenOn;
       regenBox.disabled = !!(mp && mp.role === 'client');
       yieldBox.disabled = !!(mp && mp.role === 'client');
-      if (viewBox.checked !== input.debugLoad) viewBox.checked = input.debugLoad;
+      if (viewBox.checked !== input.loadView) viewBox.checked = input.loadView;
       requestAnimationFrame(sync);
     };
     requestAnimationFrame(sync);
