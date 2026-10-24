@@ -299,6 +299,11 @@ const SHAR_STRETCH_NARROW = 3;
 // SHAR_LEG_MAX) переступает сама.
 const SHAR_UNSTUCK = 6;
 const SHAR_STRAIN = 1.5;
+// Только что вставшую ступню натяжение не снимает SHAR_STRAIN_GRACE кадров:
+// передняя нога на склоне 45° вставала у предела длины, правило "натянутая
+// переступает сама" тут же её снимало, она вставала туда же — и так по кругу,
+// а отставшая средняя, которая и держала тело наверху, шага не получала.
+const SHAR_STRAIN_GRACE = 12;
 // Стоит без дела — "дышит": тело на клетку вверх-вниз раз в SHAR_IDLE_BOB
 // кадров; сенсор ничейного шароида иногда оглядывается: шанс в кадр
 // SHAR_GLANCE_CHANCE, взгляд держится SHAR_GLANCE_FRAMES кадров.
@@ -1500,7 +1505,10 @@ class SimSharoid {
         // дотянуться вниз (спуск 45°, пункт 10). Тело опускается и к стойке над
         // грунтом под собой; на ровном полу обе цели совпадают.
         const byFeet = Math.max(Math.round(sum / m), under - 1) - SHAR_STAND;
-        let target = pressed ? low - SHAR_FOOT_PRESSED : Math.min(byFeet + s.crouch + s.dip + bob, low - SHAR_FOOT_MIN, under - SHAR_FOOT_MIN - 1);
+        // Предел "над ступнёй место для ножки" — только когда ступня под телом:
+        // без неё low — средняя задних ступней, и на спуске 45° тело висело над
+        // ними, а передней ноге было не дотянуться вниз (застревало на склоне).
+        let target = pressed ? low - SHAR_FOOT_PRESSED : Math.min(byFeet + s.crouch + s.dip + bob, footUnder ? low - SHAR_FOOT_MIN : Infinity, under - SHAR_FOOT_MIN - 1);
         // Сидя — нижней клеткой на грунт, если под телом не осталось ступни.
         if (s.sit && !footUnder) target = under - SHAR_H;
         else if (s.sit) target = Math.max(target, low - SHAR_FOOT_PRESSED);
@@ -1540,7 +1548,7 @@ class SimSharoid {
       // Стена — с той же ценой, что при выборе шага: на полу дорогая.
       const wallCost = s.swN1 === SHAR_ON_FLOOR && this.sharCount(s).floor > 0 ? SHAR_WALL_COST : 0;
       const h = this.sharHoldOk(s, s.sw, s.swX1, s.swY1, s.swN1) ? { x: s.swX1, y: s.swY1, n: s.swN1 } : this.sharFindHold(s, s.sw, s.swX1, s.swY1, SHAR_GRAB_X, SHAR_STEP_LEAD, SHAR_STEP_LEAD, wallCost);
-      if (h) { leg.x = h.x; leg.y = h.y; leg.n = h.n; leg.on = true; }
+      if (h) { leg.x = h.x; leg.y = h.y; leg.n = h.n; leg.on = true; leg.landF = this.frame; }
       else { leg.x = s.swX1; leg.y = s.swY1; this.sharHang(s, s.sw); }
       s.sw = -1;
       return;
@@ -1632,7 +1640,9 @@ class SimSharoid {
         // уровне) переступает сама: иначе она держала тело и не давала ему
         // ни опуститься, ни идти (жалоба пользователя).
         const len = this.sharLegLen(s, k, leg.x, leg.y, leg.n);
-        if (leg.on && len > SHAR_LEG_MAX - SHAR_STRAIN) { lag = Math.max(lag, SHAR_STEP_LAG + SHAR_REACH); retract[k] = true; }
+        // (landF из файла бывает впереди счётчика кадров — тогда без поблажки.)
+        const age = this.frame - (leg.landF | 0);
+        if (leg.on && len > SHAR_LEG_MAX - SHAR_STRAIN && !(age >= 0 && age < SHAR_STRAIN_GRACE)) { lag = Math.max(lag, SHAR_STEP_LAG + SHAR_REACH); retract[k] = true; }
         // Упёрся надолго — шагает самая натянутая нога (SHAR_UNSTUCK).
         if ((mx || my) && s.stuck >= SHAR_UNSTUCK) lag = Math.max(lag, SHAR_STEP_LAG + len);
         if (lag < (mx || my ? SHAR_STEP_LAG : 2)) continue;
@@ -1693,11 +1703,25 @@ class SimSharoid {
       const h = this.sharFindHold(s, k, tx, ty, SHAR_SEEK_SHAFT_X, SHAR_SEEK_UP, SHAR_SEEK_DOWN, 0, SHAR_ON_FLOOR);
       if (h) { this.sharBeginSwing(s, k, h); return true; }
     }
+    // На полу стена дальнего выноса уступает полу ближнего, если тот всё же
+    // ведёт ступню вперёд (пункт 9 плана: верх следующего куба был на клетку
+    // дальше длины ноги, и ступня цеплялась за его боковую грань, хотя пол
+    // рядом был). У высокой стены ближний пол вперёд не ведёт — нога лезет на неё.
+    let wallH = null;
     for (const lead of mx || my ? [SHAR_STEP_LEAD, SHAR_STEP_LEAD >> 1, 0] : [0]) {
-      const h = this.sharStepHold(s, k, mx, my, floor, lead, shift);
+      let h = this.sharStepHold(s, k, mx, my, floor, lead, shift);
       if (!h || (only >= 0 && h.n !== only)) continue;
+      if (floor && mx && only < 0) {
+        if (h.n !== SHAR_ON_FLOOR) { if (!wallH) wallH = h; continue; }
+        if (wallH && (h.x - leg.x) * mx < SHAR_STEP_LAG) h = wallH;
+      }
       if (leg.on && h.x === leg.x && h.y === leg.y && h.n === leg.n) return 'same';
       this.sharBeginSwing(s, k, h);
+      return true;
+    }
+    if (wallH) {
+      if (leg.on && wallH.x === leg.x && wallH.y === leg.y && wallH.n === leg.n) return 'same';
+      this.sharBeginSwing(s, k, wallH);
       return true;
     }
     // Висящей (подтянутой, ждущей) ноге впереди опоры нет — ищет шире и выше:
