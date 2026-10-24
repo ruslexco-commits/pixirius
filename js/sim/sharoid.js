@@ -667,7 +667,10 @@ class SimSharoid {
     // грунтом. При падении ступни и так ищут пол (sharGroundBelow), а держащемуся
     // телу не трогаем: цель в стене шахты — норма, подъём ступни на верх стены
     // ломал враспор (тест 49).
-    if (!this.sharHeld(s) && s.vy <= 0) {
+    // И лёжа без ног (S+пробел на ходу, s.limp): тело каждый кадр чуть падает
+    // на пол (vy > 0), а ступня под ним уходила в землю — жалоба владельца
+    // "нижняя нога проваливается под землю".
+    if (!this.sharHeld(s)) {
       const cx = Math.round(tx), r0 = Math.round(ty);
       let r = r0;
       while (r > s.y && !this.sharFreeAt(cx, r)) r--;
@@ -1242,9 +1245,17 @@ class SimSharoid {
     // (mouth в sharoidWalk); подход вбок здесь уводил тело на стену шахты
     // (сцена: шахта 20 на краю, S — тело застревало у правого края).
     if (!this.sharStepHold(s, 1, 0, 0, true, 0)) return 0;
-    for (let d = 1; d <= SHAR_SHAFT_NEAR; d++) {
+    // Вниз — ниже грунта под телом (низ тела на 2 строки ниже его верха): на
+    // ногах тело висит над полом, и "на клетку вниз" проходило на любом ровном
+    // месте — S без хода уводило шароида вбок, а S+пробел становилось
+    // "отпустить ноги" вместо заряженного прыжка (тело ложилось, нога уходила в пол).
+    const dy = this.sharGroundUnder(s) - s.y - SHAR_H + 2;
+    if (dy > SHAR_STAND + SHAR_H) return 0;
+    // SHAR_SHAFT_NEAR — от края тела до края тоннеля; чтобы встать над ним,
+    // тело сдвигается ещё на свою ширину.
+    for (let d = 1; d <= SHAR_SHAFT_NEAR + SHAR_W; d++) {
       for (const sg of [1, -1]) {
-        if (this.sharCanMove(s, sg * d, 0) && this.sharCanMove(s, sg * d, 1)) return sg;
+        if (this.sharCanMove(s, sg * d, 0) && this.sharCanMove(s, sg * d, dy)) return sg;
       }
     }
     return 0;
@@ -1333,7 +1344,7 @@ class SimSharoid {
     // спускается, а не прижимается на месте.
     // Уже в шахте (стены по обе стороны) — подходить некуда: здесь S значит
     // сесть на дно (s.sit ниже), а соседней "шахтой" считалась та же самая.
-    if (floor && s.ctrl >= 0 && want.crouch && !want.dir && !this.sharInShaft(s)) {
+    if (floor && s.ctrl >= 0 && want.crouch && !want.dir && !this.sharBodyInShaft(s)) {
       const near = this.sharShaftNear(s);
       if (near) want = Object.assign({}, want, { dir: near });
     }
@@ -1396,7 +1407,7 @@ class SimSharoid {
     // Сесть на дно (пункт 8 плана): в шахте (стены по обе стороны в пределах
     // ног) S без хода вбок — тело опускается, пока не коснётся дна; средняя
     // нога уходит к стене (sharHomeX). Отпустил S — встаёт.
-    s.sit = floor && s.ctrl >= 0 && !!want.crouch && !want.dir && s.jumpT === 0 && this.sharInShaft(s);
+    s.sit = floor && s.ctrl >= 0 && !!want.crouch && !want.dir && s.jumpT === 0 && this.sharBodyInShaft(s);
     // Сверху что-то лежит или потолок низкий — вжаться до предела
     // (SHAR_FOOT_PRESSED) и держаться так, пока потолок рядом (SHAR_PRESS_NEAR):
     // под низким потолком (козырёк, тоннель) тело садится и остаётся сидеть,
@@ -1680,6 +1691,18 @@ class SimSharoid {
     const r = SHAR_SEEK_SHAFT_X, ty = s.y + SHAR_WALL_HOLD;
     return !!this.sharFindHold(s, 0, this.sharHomeX(s, 0), ty, r, SHAR_LEG_MAX, 0, 0, SHAR_ON_LEFT)
       && !!this.sharFindHold(s, 2, this.sharHomeX(s, 2), ty, r, SHAR_LEG_MAX, 0, 0, SHAR_ON_RIGHT);
+  }
+
+  // Тело между стенами шахты: вбок на уровне самого тела в обе стороны меньше
+  // SHAR_CENTER_SPAN клеток. sharInShaft (опоры ног) верен и над краем дыры —
+  // ноги дотягиваются до её стенок, и S там сажало тело на пол вместо того,
+  // чтобы подойти к дыре и спуститься.
+  sharBodyInShaft(s) {
+    let l = 0, r = 0;
+    while (l < SHAR_CENTER_SPAN && this.sharCanMove(s, -(l + 1), 0)) l++;
+    if (l >= SHAR_CENTER_SPAN) return false;
+    while (r < SHAR_CENTER_SPAN && this.sharCanMove(s, r + 1, 0)) r++;
+    return r < SHAR_CENTER_SPAN;
   }
 
   // Стоит ли шароид в шахте: левой ноге есть опора на левой стене, правой —
