@@ -96,8 +96,10 @@ const PLAY_RAY_PERIOD = 4;
 // Шароид (sim/sharoid.js) видит дальше (просьба пользователя): во все
 // стороны — в PLAY_SHAR_SIGHT_K раз дальше протагониста (PLAY_SHAR_RAYS
 // лучей: на таком радиусе прямая видимость по каждой клетке была бы слишком
-// дорогой), а туда, где курсор, — ещё вдвое дальше, конусом в
-// ±PLAY_SHAR_CONE радиан (PLAY_SHAR_CONE_RAYS лучей). Сначала конус шёл по
+// дорогой), а туда, где курсор, — лучами видимости до самого края поля
+// (просьба пользователя: "идущие далеко-далеко в даль"), конусом в
+// ±PLAY_SHAR_CONE радиан (PLAY_SHAR_CONE_RAYS лучей; луч гаснет на первой
+// непрозрачной клетке). Сначала конус шёл по
 // сенсору — пользователь уточнил: по курсору. Но только если сенсор смог
 // повернуться в ту сторону: у разбитого корпуса положение сенсора, нужное
 // для этого направления, бывает недоступно (s.lookBlocked) — тогда дальнего
@@ -107,7 +109,7 @@ const PLAY_RAY_PERIOD = 4;
 const PLAY_SHAR_SIGHT_K = 3;
 const PLAY_SHAR_RAYS = 1200;
 const PLAY_SHAR_CONE = 0.45;
-const PLAY_SHAR_CONE_RAYS = 240;
+const PLAY_SHAR_CONE_RAYS = 600;
 const PLAY_CAM_SNAP = 40;
 // Насколько видна память о клетке, которую сейчас не видно.
 const PLAY_MEMORY_ALPHA = 0.35;
@@ -682,7 +684,9 @@ class PlayMode {
         }
       };
       for (let r = 0; r < PLAY_SHAR_RAYS; r++) cast((r / PLAY_SHAR_RAYS) * Math.PI * 2, far);
-      if (dir !== null) for (let r = 0; r <= PLAY_SHAR_CONE_RAYS; r++) cast(dir - PLAY_SHAR_CONE + 2 * PLAY_SHAR_CONE * r / PLAY_SHAR_CONE_RAYS, far * 2);
+      // До края поля — диагональ: дальше луч всё равно выходит за границу.
+      const reach = Math.ceil(Math.hypot(w, h));
+      if (dir !== null) for (let r = 0; r <= PLAY_SHAR_CONE_RAYS; r++) cast(dir - PLAY_SHAR_CONE + 2 * PLAY_SHAR_CONE * r / PLAY_SHAR_CONE_RAYS, reach);
       this.sharRayCells = cells;
     }
     for (const j of this.sharRayCells) {
