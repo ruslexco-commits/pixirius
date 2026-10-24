@@ -2706,5 +2706,122 @@ console.log('52. Шароид: S + пробел на месте — заряже
   ok(y0 - top > 30, `S + пробел: взлетел на ${y0 - top} клеток (обычный прыжок — 25)`);
 }
 
+console.log('53. Шароид: полоса кубов — ступня не цепляется за боковую грань, без прыжков; склон 45° вниз — шагом до низа');
+{
+  // Кубы 8x8 через 10 клеток: верх следующего куба на клетку дальше длины
+  // ноги, и раньше ступня хваталась за его боковую грань (26 кадров на грани).
+  const a = new Sim(400, 80); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 75, 399, 79, EL.STONE);
+  for (let x = 60; x < 340; x += 18) box(a, x, 67, x + 7, 74, EL.STONE);
+  a.placeSharoid(25, 20);
+  for (let k = 0; k < 60; k++) a.step();
+  const s = a.sharoids[0];
+  s.ctrl = 0; a.playerSlot(0).input.right = true;
+  let wall = 0, jumps = 0, air = false;
+  for (let k = 0; k < 700; k++) {
+    a.step();
+    if (s.vy < -0.5 && !air) jumps++;
+    air = s.vy < -0.5;
+    // Край поля — тоже "стена", считаем только участок кубов.
+    if (s.x < 345 && s.legs.some((l, j) => l.on && s.sw !== j && l.n !== 0)) wall++;
+  }
+  ok(s.x > 330 && wall === 0 && jumps === 0, `кубы: прошёл до x ${s.x}, кадров со ступнёй на грани ${wall}, прыжков ${jumps}`);
+  // Склон 45° вниз: передняя нога встаёт у предела длины — её не снимает
+  // натяжение сразу (SHAR_STRAIN_GRACE), а тело опускается к грунту под собой.
+  const b = new Sim(260, 200); b.lookColor = () => [0, 0, 0];
+  box(b, 0, 195, 259, 199, EL.STONE);
+  for (let x = 0; x < 260; x++) box(b, x, Math.min(194, 30 + Math.max(0, x - 40)), x, 194, EL.STONE);
+  b.placeSharoid(20, 5);
+  for (let k = 0; k < 80; k++) b.step();
+  const c = b.sharoids[0];
+  c.ctrl = 0; b.playerSlot(0).input.right = true;
+  let up = 0; air = false;
+  for (let k = 0; k < 1200; k++) { b.step(); if (c.vy < -0.5 && !air) up++; air = c.vy < -0.5; }
+  ok(c.y > 160 && up === 0, `склон 45° вниз: тело спустилось до строки ${c.y} (низ склона — 194), прыжков ${up}`);
+}
+
+console.log('54. Шароид в шахте: средняя нога держится одной стены, тело посередине, A/D — к стене; перекрёсток вверх; S без опоры ниже — падает');
+{
+  const shaft = (W, cross) => {
+    const a = new Sim(160, 200); a.lookColor = () => [0, 0, 0];
+    const L = 80 - (W >> 1), R = L + W - 1;
+    box(a, 0, 40, 159, 199, EL.WALL); box(a, L, 40, R, 194, EL.EMPTY);
+    if (cross) box(a, 10, 100 - (cross >> 1), 149, 100 - (cross >> 1) + cross - 1, EL.EMPTY);
+    a.placeSharoid(80, 10);
+    for (let k = 0; k < 80; k++) a.step();
+    const s = a.sharoids[0];
+    s.ctrl = 0;
+    return { a, s, L, R, inp: a.playerSlot(0).input };
+  };
+  // Спуск по шахте 20: средняя на одной стене, тело посередине (зазор до стен).
+  {
+    const { a, s, L, R, inp } = shaft(20, 0);
+    inp.down = true;
+    let flips = 0, lastN = -1, minGap = 99;
+    for (let k = 0; k < 110; k++) {
+      a.step();
+      const m = s.legs[1];
+      if (m.on && m.n !== 0) { if (lastN >= 0 && m.n !== lastN) flips++; lastN = m.n; }
+      if (s.y > 50) minGap = Math.min(minGap, s.x - L, R - (s.x + g('SHAR_W') - 1));
+    }
+    inp.down = false;
+    ok(flips === 0 && minGap >= 3, `шахта 20: средняя нога меняла стену ${flips} раз, зазор до стен не меньше ${minGap}`);
+    const x0 = s.x;
+    inp.left = true; for (let k = 0; k < 60; k++) a.step(); inp.left = false;
+    const xl = s.x;
+    for (let k = 0; k < 30; k++) a.step();
+    ok(xl === L && s.x === L && x0 > L, `A в шахте: ядро прижалось к левой стене (x ${x0} → ${xl}) и осталось там (${s.x})`);
+  }
+  // Перекрёсток с тоннелем 26: со дна W — вылезает наверх; S сверху — проходит
+  // перекрёсток (ноги отпускаются, если ниже опоры нет) до дна.
+  {
+    const { a, s, inp } = shaft(24, 26);
+    inp.down = true; for (let k = 0; k < 600; k++) a.step(); inp.down = false;
+    const bottom = s.y;
+    for (let k = 0; k < 30; k++) a.step();
+    inp.w = true; for (let k = 0; k < 900; k++) a.step(); inp.w = false;
+    ok(bottom > 170 && s.y < 30, `перекрёсток: S — до дна (${bottom}), W — наверх (${s.y})`);
+  }
+}
+
+console.log('55. Шароид: S на ровном полу стоит, у тоннеля в десятке клеток — подходит и спускается; лёжа без ног ступня не в земле');
+{
+  const flat = (hole) => {
+    const a = new Sim(200, 160); a.lookColor = () => [0, 0, 0];
+    box(a, 0, 60, 199, 159, EL.STONE);
+    a.placeSharoid(100, 30);
+    for (let k = 0; k < 80; k++) a.step();
+    const s = a.sharoids[0];
+    if (hole) box(a, s.x + hole, 60, s.x + hole + 15, 150, EL.EMPTY);
+    s.ctrl = 0;
+    return { a, s, inp: a.playerSlot(0).input };
+  };
+  {
+    const { a, s, inp } = flat(0);
+    const x0 = s.x;
+    inp.down = true; for (let k = 0; k < 200; k++) a.step();
+    ok(s.x === x0 && s.y < 60, `ровный пол, S: тело на месте (x ${x0} → ${s.x})`);
+  }
+  {
+    const { a, s, inp } = flat(20);   // край дыры в 8 клетках от правого края тела
+    inp.down = true; for (let k = 0; k < 400; k++) a.step();
+    ok(s.y > 100, `дыра справа в 8 клетках, S: подошёл и спустился (x ${s.x}, y ${s.y})`);
+  }
+  {
+    // S + вправо, на ходу пробел — ноги отпущены (s.limp), тело лежит на полу;
+    // висящая ступня не уходит в грунт.
+    const { a, s, inp } = flat(0);
+    inp.down = true; inp.right = true;
+    for (let k = 0; k < 40; k++) a.step();
+    inp.jump = true; a.step(); inp.jump = false;
+    let buried = 0;
+    for (let k = 0; k < 120; k++) {
+      a.step();
+      for (const l of s.legs) if (!l.gone && Math.round(l.y) >= 60) buried++;
+    }
+    ok(s.limp && buried === 0, `S+пробел на ходу: ноги отпущены (${s.limp}), кадров со ступнёй в грунте ${buried}`);
+  }
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);
