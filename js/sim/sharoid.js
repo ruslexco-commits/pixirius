@@ -289,6 +289,12 @@ const SHAR_CLIMB_MAX = 14;
 const SHAR_CLIMB_SPAN = SHAR_W + SHAR_STEP_LEAD;
 // Центровка в шахте (sharDescendShift): на сколько клеток смотреть свободное место в стороны.
 const SHAR_CENTER_REACH = 6;
+// На сколько строк вперёд по ходу в шахте тело смотрит, выбирая середину
+// (sharShaftCenter): заходит в сужение, не задевая углы. Место в стороны
+// меряется до SHAR_CENTER_SPAN клеток — шахты, в которых тело держится
+// враспор, уже.
+const SHAR_CENTER_LOOK = 8;
+const SHAR_CENTER_SPAN = 10;
 const SHAR_CROUCH_STEP_FRAMES = 3.5;
 const SHAR_CHARGE_PREP_K = 5;
 const SHAR_CHARGE_HEIGHT_K = 2;
@@ -606,10 +612,18 @@ class SimSharoid {
   // обеих сторон (см. шапку).
   // У шароида с двумя ногами тело держит и одна (он ходит, перебирая их —
   // просьба пользователя), с одной ногой он не стоит, а ползёт (sharoidCrawl).
-  sharHeld(s, skip = -1) {
+  // Перехват по своей стене (regrip — ногу skip переставляют по той же стене,
+  // или такой шаг уже идёт): стена этой ноги считается занятой. Иначе одиночная
+  // нога на стене шахты шагнуть не могла, и средняя каждый раз перебегала к ней
+  // на другую стену — жалоба владельца: "нижняя нога болтается то по правой, то
+  // по левой стенке", просьба — приоритет одной стороны (пункт 2 плана).
+  sharHeld(s, skip = -1, regrip = false) {
     const alive = this.sharLegsAlive(s);
     if (alive < 2) return false;
     const c = this.sharCount(s, skip);
+    const side = (n) => { if (n === SHAR_ON_LEFT) c.left++; else if (n === SHAR_ON_RIGHT) c.right++; };
+    if (regrip && skip >= 0 && s.legs[skip].on && s.sw !== skip) side(s.legs[skip].n);
+    if (s.sw >= 0 && s.sw !== skip && s.swN0 === s.swN1 && s.swN1 !== SHAR_ON_FLOOR) side(s.swN1);
     return c.all >= (alive >= 3 ? 2 : 1) && (c.floor > 0 || (c.left > 0 && c.right > 0));
   }
 
@@ -747,7 +761,10 @@ class SimSharoid {
     }
     // SHAR_LIST — по строкам сверху вниз и слева направо: передние клетки
     // в начале списка при ходе вверх и влево, в конце — вниз и вправо.
-    if (dy > 0 || dx > 0) for (let k = n - 1; k >= 0; k--) this.swapFields(SHAR_LIST[k], SHAR_LIST[k] + d);
+    // Порядок — по знаку сдвига индекса d, а не по dx/dy порознь: ход вверх-
+    // вправо (центровка в шахте) шёл с конца списка, клетка вставала на ещё не
+    // сдвинутую свою же, и корпус перемешивался — куски отваливались металлом.
+    if (d > 0) for (let k = n - 1; k >= 0; k--) this.swapFields(SHAR_LIST[k], SHAR_LIST[k] + d);
     else for (let k = 0; k < n; k++) this.swapFields(SHAR_LIST[k], SHAR_LIST[k] + d);
     s.x += dx; s.y += dy;
     // Висящие ступни едут с телом (к своему месту идут сами, sharHang), но
@@ -1401,19 +1418,41 @@ class SimSharoid {
     // никогда не дорастал до SHAR_UNSTUCK.
     // Тело идёт на клетку, когда набралось шагов по скорости хода (rate:
     // клеток за кадр; на полу — s.spd, в шахте — обычный).
-    const rate = floor || mouth ? s.spd : vert ? normal : 0;
+    // Вбок в шахте (пункты 6 и 12 плана, просьба владельца): A/D двигают ядро
+    // между стенами — к стене вплотную или обратно к середине; без A/D на ходу
+    // вверх-вниз тело само держится середины и заранее (по строкам впереди)
+    // встаёт так, чтобы до стен оставалась хотя бы клетка (sharShaftCenter).
+    // Сдвинутое руками стоит, где оставили, пока его не вернут к середине.
+    // Ноги шагают по-прежнему вверх-вниз: сторону средней (по взгляду) это не
+    // трогает.
+    let side = 0;
+    if (floor || mouth) s.shaftManual = false;
+    else if (want.dir && s.ctrl >= 0) { side = want.dir; s.shaftManual = true; }
+    else if (vert || s.shaftManual) {
+      const c = this.sharShaftCenter(s, vert);
+      if (s.shaftManual && c.even) s.shaftManual = false;
+      if (vert && !s.shaftManual) side = c.dir;
+    }
+    const rate = floor || mouth ? s.spd : vert || side ? normal : 0;
     s.walkAcc = rate > 0 && s.jumpT === 0 ? s.walkAcc + rate : 0;
     let blocked = null;
     // За кадр тело может сделать до двух шагов (ход вдвое быстрее: до 4/3 клетки
     // за кадр). Первый упор — конец хода в этом кадре.
     for (let st = 0; st < 2 && s.walkAcc >= 1 - 1e-9; st++) {
       s.walkAcc -= 1;
+      // В шахте вбок не выходит (стена, ноги не дотянутся) — только вверх-вниз;
+      // упор вбок без хода по вертикали — не застревание, тело просто стоит.
+      let mx = floor || mouth ? go : side;
+      if (!floor && !mouth && mx && !(this.sharBodyMoveOk(s, mx, vert) && this.sharCanMove(s, mx, vert))) {
+        mx = 0;
+        if (!vert) { blocked = false; break; }
+      }
       // Тело идёт, пока его держат ноги; у обрыва нога, которой некуда
       // встать, подтягивается и ждёт (sharStartStep), тело стоит у края.
-      const ok = this.sharBodyMoveOk(s, go, vert);
+      const ok = this.sharBodyMoveOk(s, mx, vert);
       blocked = false;
       if (ok) {
-        if (this.moveSharoid(s, go, vert)) {
+        if (this.moveSharoid(s, mx, vert)) {
           for (let k = 0; k < 3; k++) {
             const leg = s.legs[k];
             if (!leg.on || s.sw === k) continue;
@@ -1432,6 +1471,9 @@ class SimSharoid {
       } else if (s.sw < 0) blocked = true;
       if (blocked) break;
     }
+    // Сел корпусом на дно шахты (S) — дальше вниз некуда, но это не упор: иначе
+    // счётчик рос, и ноги начинали переступать "из упора" (SHAR_UNSTUCK).
+    if (blocked && !floor && vert > 0 && !side && !this.sharCanMove(s, 0, 1) && this.sharGroundUnder(s) <= s.y + SHAR_H) blocked = false;
     if (blocked !== null) s.stuck = blocked ? s.stuck + 1 : 0;
     else if (!go && !vert) s.stuck = 0;
     // Прижаться самому — заранее (см. шапку SHAR_LEDGE_VX): впереди стоя не
@@ -1593,6 +1635,30 @@ class SimSharoid {
     return this.sharBodyMoveOk(s, d, 0) && this.moveSharoid(s, d, 0);
   }
 
+  // Куда сдвинуться в шахте, чтобы стоять посередине (см. sharoidWalk): место
+  // слева и справа (сколько клеток тело может уйти вбок, до SHAR_CENTER_REACH) —
+  // меньшее по строкам самого тела и SHAR_CENTER_LOOK шагам вперёд по ходу vert:
+  // сужение впереди тело встречает уже стоя напротив него. dir — -1/0/1, even —
+  // уже посередине (разница не больше клетки). Стены нет в досягаемости с
+  // обеих сторон — не двигаться.
+  sharShaftCenter(s, vert) {
+    let l = SHAR_CENTER_SPAN, r = SHAR_CENTER_SPAN;
+    const room = (d, dy) => { let n = 0; while (n < SHAR_CENTER_SPAN && this.sharCanMove(s, d * (n + 1), dy)) n++; return n; };
+    for (let k = 0; k <= (vert ? SHAR_CENTER_LOOK : 0); k++) {
+      const dy = vert * k;
+      if (k > 0 && !this.sharCanMove(s, 0, dy)) {
+        // Впереди тело не проходит, но проходит со сдвигом — сдвиг и есть путь.
+        const cl = room(-1, dy), cr = room(1, dy);
+        if (cl > 0 || cr > 0) { l = Math.min(l, cl); r = Math.min(r, cr); if (cl === 0) l = -1; if (cr === 0) r = -1; }
+        break;
+      }
+      l = Math.min(l, room(-1, dy)); r = Math.min(r, room(1, dy));
+    }
+    if (l >= SHAR_CENTER_SPAN && r >= SHAR_CENTER_SPAN) return { dir: 0, even: true };
+    const even = Math.abs(l - r) <= 1;
+    return { dir: even ? 0 : l > r ? -1 : 1, even };
+  }
+
   // Стоит ли шароид в шахте: левой ноге есть опора на левой стене, правой —
   // на правой (там, где они держались бы враспор).
   sharInShaft(s) {
@@ -1623,7 +1689,7 @@ class SimSharoid {
     // по ходу или натянута до предела (не при переходе со стены на пол и не
     // от долгого упора: тогда она дёргалась бы туда-сюда).
     let best = -1, bestLag = 0, stuck = -1, shift = 0;
-    const retract = [false, false, false];
+    const retract = [false, false, false], regrip = [false, false, false];
     for (let k = 0; k < 3 && best < 0; k++) if (!s.legs[k].on && !s.legs[k].gone) best = k;
     if (best < 0) {
       for (let k = 0; k < 3; k++) {
@@ -1646,7 +1712,13 @@ class SimSharoid {
         // Упёрся надолго — шагает самая натянутая нога (SHAR_UNSTUCK).
         if ((mx || my) && s.stuck >= SHAR_UNSTUCK) lag = Math.max(lag, SHAR_STEP_LAG + len);
         if (lag < (mx || my ? SHAR_STEP_LAG : 2)) continue;
-        if (!this.sharHeld(s, k)) { stuck = k; continue; }
+        // Нога на стене шахты, без которой стена пуста, — перехватывается по
+        // своей же стене (regrip, см. sharHeld), а не ждёт, пока к ней перебежит
+        // средняя.
+        if (!this.sharHeld(s, k)) {
+          if (!floor && leg.on && leg.n !== SHAR_ON_FLOOR && this.sharHeld(s, k, true)) regrip[k] = true;
+          else { stuck = k; continue; }
+        }
         // Равные — задняя нога первой (у правого хода задняя — левая).
         if (lag > bestLag || (lag === bestLag && mx < 0)) { best = k; bestLag = lag; }
       }
@@ -1658,7 +1730,7 @@ class SimSharoid {
       }
       if (best < 0) return;
     }
-    const res = this.sharStepTo(s, best, mx, my, floor, shift, shift ? s.legs[stuck].n : -1);
+    const res = this.sharStepTo(s, best, mx, my, floor, shift, shift ? s.legs[stuck].n : regrip[best] ? s.legs[best].n : -1);
     if (res) return;
     // Шагнуть некуда, а тело идёт — нога подтягивается к телу и ждёт опору
     // (висящая каждый кадр ищет, куда встать), а не держит тело на месте
