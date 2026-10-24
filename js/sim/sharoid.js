@@ -184,7 +184,10 @@ const SHAR_SHAFT_SIDE_COST = 60;
 // S у края тоннеля (просьба пользователя): если в SHAR_SHAFT_NEAR клетках в
 // сторону тело может уйти вниз, шароид сам подходит к нему, а не прижимается.
 const SHAR_SHAFT_NEAR = 10;
-const SHAR_WALL_COST = 40;
+// Опора на стене при ходьбе по полу — заметно дороже пола (было 40: пол между
+// кубами на 8 строк ниже стоил почти как боковая грань куба, и ступня
+// хваталась за грань — пункт 9 плана).
+const SHAR_WALL_COST = 120;
 // Касание опоры висящей ногой — в пределах SHAR_GRAB клеток по строкам и
 // SHAR_GRAB_X по столбцам: место висящей ступни бывает внутри стены шахты, а
 // её грань — в нескольких клетках сбоку.
@@ -230,6 +233,8 @@ const SHAR_LAND_RECOVER = 3;
 // клетку — только если держится SHAR_HEIGHT_PATIENCE проверок подряд.
 const SHAR_RISE_FRAMES = 2;
 const SHAR_HEIGHT_PATIENCE = 4;
+// Доля, на которую сглаженная цель высоты догоняет настоящую за проверку.
+const SHAR_HEIGHT_SMOOTH = 0.35;
 // Падение: разгон за кадр и предел (клеток за кадр); в жидкости — медленно.
 const SHAR_GRAVITY = 0.09;
 const SHAR_FALL_MAX = 1;
@@ -474,7 +479,10 @@ class SimSharoid {
   // Место ступни ноги k: по столбцу — под телом; по строке — стойка, а в
   // шахте у боковых ног — SHAR_WALL_HOLD.
   // Вытянувшись (W, s.crouch < 0), боковые ноги — ближе к телу.
+  // Сидя на дне шахты (s.sit) средняя нога — сбоку от тела, у стены: под
+  // телом ей нужно 15 строк, и тело не могло сесть (пункт 8 плана).
   sharHomeX(s, k) {
+    if (k === 1 && s.sit) return s.face < 0 ? s.x - 3 : s.x + SHAR_W + 2;
     if (k === 1) return s.x + (s.face < 0 ? 5 : 6);
     const narrow = s.crouch < 0 ? SHAR_STRETCH_NARROW : 0;
     return s.x + SHAR_HOME_X[k] + (k === 0 ? narrow : -narrow);
@@ -526,7 +534,10 @@ class SimSharoid {
     if (n === SHAR_ON_FLOOR) return this.sharSupportFor(s, x - 1, y + 1) || this.sharSupportFor(s, x, y + 1) || this.sharSupportFor(s, x + 1, y + 1);
     const sx = n === SHAR_ON_LEFT ? x - 1 : x + 1;
     if (sx < 0 || sx >= this.w) return true;
-    return this.sharSupportFor(s, sx, y - 1) || this.sharSupportFor(s, sx, y) || this.sharSupportFor(s, sx, y + 1);
+    // Стена — хотя бы две клетки из трёх у перекладины: на угол куба ступня
+    // цеплялась сбоку, как за стену (пункт 9 плана — "хватание за боковую
+    // грань"). На пол хватает и одной — стоять на кромке можно.
+    return (this.sharSupportFor(s, sx, y - 1) ? 1 : 0) + (this.sharSupportFor(s, sx, y) ? 1 : 0) + (this.sharSupportFor(s, sx, y + 1) ? 1 : 0) >= 2;
   }
 
   // Может ли нога k встать ступнёй в (x, y) на опору n: перекладина и ножка —
@@ -655,6 +666,11 @@ class SimSharoid {
     else if (this.sharFreeAt(rx, oy)) leg.x = nx;
     else if (this.sharFreeAt(ox, ry)) leg.y = ny;
     this.sharClampLeg(s, k);
+    // Не за краем мира (пункт 19 плана: ступня уходила на x≈-127 — за краем
+    // поля клетка "не свободна", и правило "внутри твёрдого — выходи свободно"
+    // вело её к цели за краем без конца).
+    leg.x = Math.max(1, Math.min(this.w - 2, leg.x));
+    leg.y = Math.max(0, Math.min(this.h - 1, leg.y));
   }
 
   // Нога k длиннее SHAR_LEG_MAX — ступня подтягивается к телу по прямой ноги
@@ -1291,7 +1307,9 @@ class SimSharoid {
     // S на полу без направления (просьба пользователя): тоннель, в который тело
     // может уйти вниз, в пределах SHAR_SHAFT_NEAR клеток — тело идёт к нему и
     // спускается, а не прижимается на месте.
-    if (floor && s.ctrl >= 0 && want.crouch && !want.dir) {
+    // Уже в шахте (стены по обе стороны) — подходить некуда: здесь S значит
+    // сесть на дно (s.sit ниже), а соседней "шахтой" считалась та же самая.
+    if (floor && s.ctrl >= 0 && want.crouch && !want.dir && !this.sharInShaft(s)) {
       const near = this.sharShaftNear(s);
       if (near) want = Object.assign({}, want, { dir: near });
     }
@@ -1348,6 +1366,10 @@ class SimSharoid {
     } else {
       s.crouch = floor && (want.crouch || s.autoCrouch) ? SHAR_CROUCH : floor && s.ctrl >= 0 && want.vert < 0 ? -SHAR_STRETCH : 0;
     }
+    // Сесть на дно (пункт 8 плана): в шахте (стены по обе стороны в пределах
+    // ног) S без хода вбок — тело опускается, пока не коснётся дна; средняя
+    // нога уходит к стене (sharHomeX). Отпустил S — встаёт.
+    s.sit = floor && s.ctrl >= 0 && !!want.crouch && !want.dir && s.jumpT === 0 && this.sharInShaft(s);
     // Сверху что-то лежит или потолок низкий — вжаться до предела
     // (SHAR_FOOT_PRESSED) и держаться так, пока потолок рядом (SHAR_PRESS_NEAR):
     // под низким потолком (козырёк, тоннель) тело садится и остаётся сидеть,
@@ -1466,6 +1488,7 @@ class SimSharoid {
       // а не Infinity. Иначе вжатие (pressed) проваливало тело на пол, как только
       // ступня уходила из полосы, и поднимало обратно, когда возвращалась —
       // жалоба «придавливает и отпускает» в тоннеле (тест: тоннель 15).
+      const footUnder = low !== Infinity;
       if (low === Infinity && m > 0) low = Math.round(sum / m);
       if (m > 0) {
         // И не ниже, чем позволяет грунт прямо под телом (sharGroundUnder): на
@@ -1477,11 +1500,19 @@ class SimSharoid {
         // дотянуться вниз (спуск 45°, пункт 10). Тело опускается и к стойке над
         // грунтом под собой; на ровном полу обе цели совпадают.
         const byFeet = Math.max(Math.round(sum / m), under - 1) - SHAR_STAND;
-        const target = pressed ? low - SHAR_FOOT_PRESSED : Math.min(byFeet + s.crouch + s.dip + bob, low - SHAR_FOOT_MIN, under - SHAR_FOOT_MIN - 1);
+        let target = pressed ? low - SHAR_FOOT_PRESSED : Math.min(byFeet + s.crouch + s.dip + bob, low - SHAR_FOOT_MIN, under - SHAR_FOOT_MIN - 1);
+        // Сидя — нижней клеткой на грунт, если под телом не осталось ступни.
+        if (s.sit && !footUnder) target = under - SHAR_H;
+        else if (s.sit) target = Math.max(target, low - SHAR_FOOT_PRESSED);
         // Разница в одну клетку ждёт SHAR_HEIGHT_PATIENCE кадров (присед, прыжок,
         // вжатие и приземление — сразу): цель высоты от шага к шагу гуляет на
         // клетку, и тело дрожало вверх-вниз (пункт 1 плана).
-        const diff = target - s.y, quick = s.jumpT > 0 || s.dip > 0 || pressed || s.crouch !== (s.lastCrouch | 0);
+        // Цель сглажена (SHAR_HEIGHT_SMOOTH): ступни переступают то на кубы, то
+        // на пол, и цель за пару кадров ходила на клетку вниз и обратно.
+        const quick0 = s.jumpT > 0 || s.dip > 0 || pressed || s.crouch !== (s.lastCrouch | 0) || s.sit;
+        s.hSmooth = quick0 || s.hSmooth === undefined ? target : s.hSmooth + (target - s.hSmooth) * SHAR_HEIGHT_SMOOTH;
+        target = Math.round(s.hSmooth);
+        const diff = target - s.y, quick = quick0;
         s.lastCrouch = s.crouch;
         if (Math.abs(diff) === 1 && !quick) s.hWait = (s.hWait | 0) + 1; else s.hWait = 0;
         const moveNow = diff !== 0 && (Math.abs(diff) > 1 || quick || s.hWait >= SHAR_HEIGHT_PATIENCE);
@@ -1506,7 +1537,9 @@ class SimSharoid {
     const t = ++s.swT / (s.swDur || SHAR_STEP_FRAMES);
     if (t >= 1) {
       // Пока шагала, место заняли или тело ушло — встаёт на опору рядом.
-      const h = this.sharHoldOk(s, s.sw, s.swX1, s.swY1, s.swN1) ? { x: s.swX1, y: s.swY1, n: s.swN1 } : this.sharFindHold(s, s.sw, s.swX1, s.swY1, SHAR_GRAB_X, SHAR_STEP_LEAD, SHAR_STEP_LEAD, 0);
+      // Стена — с той же ценой, что при выборе шага: на полу дорогая.
+      const wallCost = s.swN1 === SHAR_ON_FLOOR && this.sharCount(s).floor > 0 ? SHAR_WALL_COST : 0;
+      const h = this.sharHoldOk(s, s.sw, s.swX1, s.swY1, s.swN1) ? { x: s.swX1, y: s.swY1, n: s.swN1 } : this.sharFindHold(s, s.sw, s.swX1, s.swY1, SHAR_GRAB_X, SHAR_STEP_LEAD, SHAR_STEP_LEAD, wallCost);
       if (h) { leg.x = h.x; leg.y = h.y; leg.n = h.n; leg.on = true; }
       else { leg.x = s.swX1; leg.y = s.swY1; this.sharHang(s, s.sw); }
       s.sw = -1;
@@ -1691,7 +1724,7 @@ class SimSharoid {
       for (let j = 0; j < 3; j++) {
         const o = s.legs[j];
         if (j === k || !o.on || s.sw === j || this.sharLegLen(s, j, o.x, o.y, o.n) <= SHAR_LEG_MAX - SHAR_STRAIN) continue;
-        const h = this.sharFindHold(s, k, this.sharHomeX(s, k), this.sharHomeY(s, k, floor), SHAR_SEEK_SHAFT_X, SHAR_SEEK_UP, SHAR_LEG_MAX, 0);
+        const h = this.sharFindHold(s, k, this.sharHomeX(s, k), this.sharHomeY(s, k, floor), SHAR_SEEK_SHAFT_X, SHAR_SEEK_UP, SHAR_LEG_MAX, floor ? SHAR_WALL_COST : 0);
         if (h) { this.sharBeginSwing(s, k, h); return true; }
         break;
       }
