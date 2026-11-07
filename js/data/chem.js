@@ -227,12 +227,19 @@ const CHEM_BUILD_ORDER = [
   EL.ACID, EL.REAGENT, EL.GUNP, EL.BLACK_SALT, EL.BLOOD, EL.WOOD, EL.OIL, EL.WATER, EL.SMOKE, EL.ASH,
 ];
 
+// Порядок сборки для того, что живое отдаёт обратно в мир (Sim.chemRelease):
+// безопасные вещества — соль, камень, металлы, вода, зола. Кислота, реагент,
+// порох и кровь из выделений собираться не должны, хоть из тех же атомов они
+// и сложились бы.
+const CHEM_RELEASE_ORDER = [EL.SALT, EL.STONE, EL.METAL, EL.COPPER, EL.WATER, EL.ASH];
+
 // Собрать из простых веществ atoms (изменяется: в нём остаётся то, что не
 // сложилось) не больше maxParts долей. Возвращает состав (comp). Доля
-// берётся, только если на неё хватает всего.
-function chemBuild(atoms, maxParts, temp) {
+// берётся, только если на неё хватает всего. order — какие соединения и в
+// каком порядке собирать (по умолчанию CHEM_BUILD_ORDER).
+function chemBuild(atoms, maxParts, temp, order) {
   let comp = 0, parts = 0, kinds = 0;
-  for (const base of CHEM_BUILD_ORDER) {
+  for (const base of (order || CHEM_BUILD_ORDER)) {
     if (parts >= maxParts) break;
     const f = base * CHEM_N;
     let n = maxParts - parts;

@@ -230,6 +230,121 @@ function chemScene() {
   });
 }
 
+// Живые едят и отдают (Sim.chemBite / chemRelease / chemExhale): стая безымянных
+// едоков, у каждого — store простых веществ. Едят всё вокруг (вода, дерево,
+// камень, соль, песок, металл), делятся пополам, умирают и отдают всё телу мира.
+// Требования из просьбы: вещество сохраняется (клетки + воздух + store — до
+// единицы на каждом кадре), строгое не теряется, и когда все умерли, камень,
+// железо, медь и соль на карте — в прежнем количестве. Едоки — не клетки игры:
+// это проверка того, что на этом фундаменте можно строить живые клетки.
+{
+  console.log('Живые едят и отдают');
+  const w = 90, h = 60;
+  const sim = new Sim(w, h);
+  const box = (x0, y0, x1, y1, id) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) sim.setCell(x, y, id, false); };
+  box(0, h - 3, w - 1, h - 1, EL.WALL);
+  box(2, h - 22, 30, h - 4, EL.WATER);
+  box(33, h - 14, 42, h - 4, EL.WOOD);
+  box(45, h - 12, 58, h - 4, EL.STONE);
+  box(60, h - 8, 66, h - 4, EL.SAND);
+  box(68, h - 8, 72, h - 4, EL.SALT);
+  box(74, h - 8, 80, h - 4, EL.METAL);
+  box(82, h - 8, 86, h - 4, EL.COPPER);
+  box(60, h - 14, 66, h - 10, EL.EARTH);
+  const SYM = (n) => n;
+  const atomsOf = (s) => { const t = new Float64Array(CHEM_N); for (let i = 0; i < s.type.length; i++) if (s.type[i] || s.beam[i]) s.chemCellAdd(i, t, 1); return t; };
+  const strictIdx = [...Array(CHEM_N).keys()].filter((a) => CHEM_STRICT[a]);
+  const cellsStrict0 = atomsOf(sim);
+  const water0 = count0(sim, EL.WATER);
+  function count0(s, id) { let n = 0; for (let i = 0; i < s.type.length; i++) if (s.type[i] === id) n++; return n; }
+
+  const agents = [];
+  const spawnAgent = (x, y, store) => agents.push({ x, y, store: store || new Float64Array(CHEM_N), age: 0, dying: false });
+  for (let k = 0; k < 6; k++) spawnAgent(8 + k * 12, h - 25);
+  let peakStore = 0, peakEaten = 0, born = 0, died = 0, releasedParts = 0, exhaled = 0, killAll = false;
+  const mass = (st) => { let m = 0; for (let a = 0; a < CHEM_N; a++) m += st[a]; return m; };
+  const strictMass = (st) => { let m = 0; for (const a of strictIdx) m += st[a]; return m; };
+  const R = 3;
+
+  function giveBack(a) {
+    // Отдать store на свободные клетки вокруг, расширяя круг; летучий остаток — в воздух.
+    for (let r = 2; r <= 40 && strictMass(a.store) > 0; r += 2) {
+      for (let tries = 0; tries < 30 && strictMass(a.store) > 0; tries++) {
+        const x = Math.max(0, Math.min(w - 1, a.x + ((Math.random() * (2 * r + 1)) | 0) - r));
+        const y = Math.max(0, Math.min(h - 1, a.y + ((Math.random() * (2 * r + 1)) | 0) - r));
+        releasedParts += sim.chemRelease(y * w + x, a.store);
+      }
+    }
+    // Остаток летучего (и воды, которой на целую долю не хватило) — на карту, где получится, иначе в воздух.
+    for (let tries = 0; tries < 20 && mass(a.store) > 0; tries++) {
+      const x = Math.max(0, Math.min(w - 1, a.x + ((Math.random() * 17) | 0) - 8));
+      const y = Math.max(0, Math.min(h - 1, a.y + ((Math.random() * 17) | 0) - 8));
+      releasedParts += sim.chemRelease(y * w + x, a.store);
+    }
+    exhaled += sim.chemExhale(a.store);
+  }
+
+  function life() {
+    for (const a of agents) {
+      a.age++;
+      if (a.dying) continue;
+      // Едят: ближайший случайный съедобный сосед в радиусе R.
+      const x = Math.max(0, Math.min(w - 1, a.x + ((Math.random() * (2 * R + 1)) | 0) - R));
+      const y = Math.max(0, Math.min(h - 1, a.y + ((Math.random() * (2 * R + 1)) | 0) - R));
+      if (sim.chemBite(y * w + x, a.store)) { a.x += Math.sign(x - a.x); a.y += Math.sign(y - a.y); }
+      else a.y = Math.min(h - 5, a.y + (Math.random() < 0.5 ? 1 : 0));   // тянет к земле
+      // Делятся пополам, когда наелись.
+      if (mass(a.store) > 120 && agents.length < 60) {
+        const half = new Float64Array(CHEM_N);
+        for (let k = 0; k < CHEM_N; k++) { half[k] = Math.floor(a.store[k] / 2); a.store[k] -= half[k]; }
+        spawnAgent(a.x, a.y, half); born++;
+      }
+      if (killAll || (a.age > 500 && Math.random() < 0.01)) a.dying = true;
+    }
+    for (let k = agents.length - 1; k >= 0; k--) {
+      const a = agents[k];
+      if (!a.dying) continue;
+      giveBack(a);
+      if (mass(a.store) === 0) { agents.splice(k, 1); died++; }
+    }
+    let m = 0; for (const a of agents) m += mass(a.store);
+    peakStore = Math.max(peakStore, m);
+    peakEaten = Math.max(peakEaten, water0 - count0(sim, EL.WATER));
+  }
+  const origEnd = Sim.prototype.chemEndStep;
+  Sim.prototype.chemEndStep = function () { if (this === sim) life(); return origEnd.call(this); };
+
+  sim.step();
+  const t0 = total(sim);
+  let bad = 0;
+  const totalFrames = Math.max(FRAMES, 1200);
+  for (let f = 0; f < totalFrames + 400; f++) {
+    if (f === totalFrames) killAll = true;
+    sim.step();
+    const t = total(sim);
+    const diff = new Float64Array(CHEM_N);
+    let off = false;
+    for (let a = 0; a < CHEM_N; a++) { diff[a] = t[a] - t0[a]; if (diff[a]) off = true; }
+    if (off && bad++ < 3) fail(`кадр ${f}: сумма с телами существ разошлась на ${vecText(diff)}`);
+  }
+  Sim.prototype.chemEndStep = origEnd;
+  const stores = new Float64Array(CHEM_N);
+  for (const a of agents) for (let k = 0; k < CHEM_N; k++) stores[k] += a.store[k];
+  const lifeLedger = new Float64Array(CHEM_N);
+  for (let k = 0; k < CHEM_N; k++) lifeLedger[k] = -sim.chemExt[env.get('CHEM_EXT_LIFE') * CHEM_N + k];
+  if ([...stores].some((v, k) => v !== lifeLedger[k])) fail(`статья "Живое" (${vecText(lifeLedger)}) не равна телам существ (${vecText(stores)})`);
+  if (sim.chemLeak.some((v) => v !== 0)) fail(`строгое через воздух: ${vecText(sim.chemLeak)}`);
+  if (Math.min(...sim.chemAir) < 0) fail('воздух ушёл в минус');
+  const cellsStrict1 = atomsOf(sim);
+  for (const a of strictIdx) if (cellsStrict1[a] !== cellsStrict0[a]) fail(`${sym(a)}: на карте было ${cellsStrict0[a]}, после смерти всех стало ${cellsStrict1[a]}`);
+  if (agents.length) fail(`не все отдали вещество: осталось ${agents.length} существ`);
+  if (born < 3) fail(`существа не размножались (родилось ${born}): проверка ничего не доказывает`);
+  if (peakEaten < 20) fail(`съедено воды всего ${peakEaten} клеток: проверка ничего не доказывает`);
+  const waterEnd = count0(sim, EL.WATER);
+  console.log(`  родилось ${born}, умерло ${died}; пик вещества в телах ${peakStore | 0} ед., съедено воды до ${peakEaten} клеток из ${water0}; отдано на карту ${releasedParts} долей, выдохнуто ${exhaled | 0}`);
+  console.log(`  строгое на карте: было ${vecText(cellsStrict0.map((v, a) => (CHEM_STRICT[a] ? v : 0)))}, стало ${vecText(cellsStrict1.map((v, a) => (CHEM_STRICT[a] ? v : 0)))}; воды клеток: было ${water0}, стало ${waterEnd}`);
+}
+
 // Сборка соединений: разобрать клетку, забрать углерод, собрать обратно.
 {
   console.log('Сборка соединений');

@@ -51,9 +51,16 @@
 // (кислород стадии окисла).
 const CHEM_HIST = EL_LIMIT + CHEM_N;
 // Статьи внешнего обмена (chemExt).
-const CHEM_EXT_CLONE = 0, CHEM_EXT_VOID = 1, CHEM_EXT_MINE = 2, CHEM_EXT_MECH = 3;
-const CHEM_EXT_N = 4;
-const CHEM_EXT_NAMES = ['Клонер', 'Пустота', 'Добыча игроков', 'Механизмы'];
+// "Живое" — вещество, которое сейчас сидит внутри живых существ (chemBite /
+// chemRelease): с карты съедено, но не пропало — вернётся, когда существо
+// отдаст его миру.
+const CHEM_EXT_CLONE = 0;
+const CHEM_EXT_VOID = 1;
+const CHEM_EXT_MINE = 2;
+const CHEM_EXT_MECH = 3;
+const CHEM_EXT_LIFE = 4;
+const CHEM_EXT_N = 5;
+const CHEM_EXT_NAMES = ['Клонер', 'Пустота', 'Добыча игроков', 'Механизмы', 'Живое'];
 // У живых поле dirt — урон, а не грязь на пикселе (sim/human.js).
 const CHEM_LIVING = idTable([EL.HUMAN, EL.PROTAGONIST, EL.COLONIST]);
 // Влага земли (moisture): единица — одна впитанная клетка воды.
@@ -350,6 +357,88 @@ class SimChem {
     this._chemMain = main;
     if (!changed && solMatter(out) > 0 && !CHEM_RUBBLE_TO[main]) return -1;
     return out;
+  }
+
+  // ---- живое ест и отдаёт: вещество через тело, а не мимо учёта ----
+  //
+  // Просьба пользователя: живые клетки едят всё вокруг, но вещество при этом
+  // сохраняется — они не должны съесть всю воду и исчезнуть. Тело живого — это
+  // store: вектор простых веществ (Float64Array(CHEM_N)), который существо носит
+  // с собой. Съеденное переходит с карты в store (chemBite), отданное — из
+  // store обратно на карту (chemRelease) или в воздух (chemExhale); учёт ведёт
+  // статья "Живое" (CHEM_EXT_LIFE), так что "клетки + воздух + store всех
+  // существ" не меняется ни от одного укуса. Умерло существо — отдайте весь
+  // store (chemRelease на свободных клетках вокруг, остаток — chemExhale).
+  //
+  // Звать надо изнутри кадра и только главным потоком (как chemExternal), то
+  // есть из механики, которая считается в step на главном потоке, — иначе
+  // правка клеток сойдёт за правку игрока и в учёт "Живого" не попадёт.
+
+  // Можно ли съесть клетку i целиком: не пустота и не якорь (стена, клонер,
+  // пустота), не живое (человек, протагонист), не клетка шароида и бура и не
+  // с балкой (у балки нет состава, её не разобрать).
+  chemEdible(i) {
+    const t = this.type[i];
+    return t !== EL.EMPTY && IS_ANCHOR[t] !== 1 && CHEM_LIVING[t] !== 1 && t !== EL.SHAROID && t !== EL.DRILL && this.beam[i] === 0;
+  }
+
+  // Съесть клетку i: всё, что в ней лежит (доли, влага земли, грязь, кислород
+  // окисла), переходит в store, клетка пустеет. false — не съедобна.
+  chemBite(i, store) {
+    if (!this._chemInStep || !this.chemEdible(i)) return false;
+    const v = this._chemBiteVec || (this._chemBiteVec = new Float64Array(CHEM_N));
+    v.fill(0);
+    this.chemCellAdd(i, v, 1, true);
+    this.chemExternal(CHEM_EXT_LIFE, i, -1);
+    for (let a = 0; a < CHEM_N; a++) store[a] += v[a];
+    this.moisture[i] = 0;
+    this.clearCell(i);
+    return true;
+  }
+
+  // Отдать store в пустую клетку i: из простых веществ собираются соединения
+  // (CHEM_RELEASE_ORDER: соль, камень, металлы, вода, зола), агрегат — по
+  // температуре клетки. Летучего, которого store не хватает (кислород на
+  // кремнезём), клетка берёт из воздуха, если его там хватает (chemReserve);
+  // строгое — только из store. Возвращает, сколько долей отдано (0 — клетка
+  // занята или из store ничего не сложилось).
+  chemRelease(i, store) {
+    if (!this._chemInStep || this.type[i] !== EL.EMPTY || this.beam[i] !== 0) return 0;
+    const avail = this._chemAvail || (this._chemAvail = new Float64Array(CHEM_N));
+    const before = this._chemAvail0 || (this._chemAvail0 = new Float64Array(CHEM_N));
+    for (let a = 0; a < CHEM_N; a++) {
+      avail[a] = store[a] + (CHEM_STRICT[a] ? 0 : Math.max(0, this.chemAir[a] - this.chemReserve(a)));
+      before[a] = avail[a];
+    }
+    const comp = chemBuild(avail, SOL_PARTS, this.temp[i], CHEM_RELEASE_ORDER);
+    if (!comp) return 0;
+    // Что израсходовано: сперва из store, остаток — из воздуха (его вычтет
+    // chemEndStep как разницу клеток, не объяснённую внешним обменом).
+    const v = this._chemExtFrame, n0 = CHEM_EXT_LIFE * CHEM_N;
+    for (let a = 0; a < CHEM_N; a++) {
+      const used = before[a] - avail[a], fromStore = Math.min(store[a], used);
+      store[a] -= fromStore;
+      v[a] += fromStore; this.chemExt[n0 + a] += fromStore;
+    }
+    this.setComposition(i, comp);
+    this.moved[i] = 1;
+    return solMatter(comp);
+  }
+
+  // Выдохнуть из store всё летучее в воздух (углекислота, азот...): строгое
+  // остаётся в store, пока ему нет места на карте. Возвращает, сколько выдохнуто.
+  chemExhale(store) {
+    if (!this._chemInStep) return 0;
+    const n0 = CHEM_EXT_LIFE * CHEM_N;
+    let total = 0;
+    for (let a = 0; a < CHEM_N; a++) {
+      if (CHEM_STRICT[a] || store[a] <= 0) continue;
+      this.chemAir[a] += store[a];
+      this.chemExt[n0 + a] += store[a];
+      total += store[a];
+      store[a] = 0;
+    }
+    return total;
   }
 
   // ---- изъять и добавить: основа для живых клеток ----
