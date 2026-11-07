@@ -420,6 +420,40 @@ function addToolButton(toolValue, name, cssColor, infoHTML) {
 // сколько выросло число шагов.
 let measuredStepsPerSec = 0;
 let refreshTimeScaleLabel = () => {};
+let refreshChemPanel = () => {};
+
+// Простые вещества на карте и в воздухе (data/chem.js, sim/chem.js) — во
+// вкладке "Разное", под скоростью времени. Видно, что вещество сохраняется:
+// "на карте + в воздухе" стоит на месте, пока его не меняют кисть, клонер,
+// пустота или добыча (они — отдельной строкой).
+function addChemPanel() {
+  const wrap = document.createElement('div');
+  wrap.className = 'chem-panel';
+  wrap.title = 'Простые вещества: сколько их в клетках карты и в воздухе. Сумма не меняется ни от одной реакции; меняют её только кисть, клонер, пустота и добыча';
+  palette.appendChild(wrap);
+  const fmt = (n) => (Math.abs(n) >= 10000 ? (n / 1000).toFixed(0) + 'к' : String(Math.round(n)));
+  refreshChemPanel = () => {
+    if (!wrap.isConnected) return;
+    const cells = sim.chemCellsCached();
+    if (!cells) { wrap.innerHTML = ''; return; }
+    let rows = '<div class="chem-row chem-head"><span></span><span>карта</span><span>воздух</span></div>';
+    for (let a = 0; a < CHEM_N; a++) {
+      const at = CHEM_ATOMS[a];
+      if (!cells[a] && !sim.chemAir[a]) continue;
+      rows += `<div class="chem-row" title="${at.name}${at.volatile ? '' : ' — в воздух не уходит'}">`
+        + `<span style="color:rgb(${at.color})">${at.sym}</span><span>${fmt(cells[a])}</span><span>${fmt(sim.chemAir[a])}</span></div>`;
+    }
+    let ext = '';
+    for (let c = 0; c < CHEM_EXT_N; c++) {
+      let s = 0;
+      for (let a = 0; a < CHEM_N; a++) s += Math.abs(sim.chemExt[c * CHEM_N + a]);
+      if (s) ext += (ext ? ', ' : '') + CHEM_EXT_NAMES[c].toLowerCase();
+    }
+    wrap.innerHTML = '<div class="chem-title">Простые вещества</div>' + rows
+      + (ext ? `<div class="chem-note">Внешний обмен: ${ext}</div>` : '');
+  };
+  refreshChemPanel();
+}
 
 function addTimeScaleControl() {
   const wrap = document.createElement('div');
@@ -533,6 +567,7 @@ function buildPaletteGrid() {
       + '<div class="mi-row"><span>Раствор, газ</span><span>состав по долям</span></div>'
       + '<div class="mi-row"><span>Esc, щелчок мимо</span><span>закрыть</span></div>');
     addTimeScaleControl();
+    addChemPanel();
   } else {
     // Хост лобби в редакторе карты: точки спавна игроков и точка респавна
     // (sim/spawns.js) — в "Технологиях", первыми.
@@ -778,6 +813,7 @@ function simFrame() {
     measuredStepsPerSec = Math.round(rateSteps * 1000 / (now - rateSince));
     rateSteps = 0; rateSince = now;
     refreshTimeScaleLabel();
+    refreshChemPanel();
   }
 }
 

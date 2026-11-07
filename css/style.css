@@ -145,6 +145,19 @@ html, body {
   accent-color: #7ad1ff;
 }
 
+/* Простые вещества на карте и в воздухе (js/main.js, addChemPanel). */
+.chem-panel {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #b8b8c0;
+  font-variant-numeric: tabular-nums;
+}
+.chem-title { font-size: 12px; margin-bottom: 2px; }
+.chem-row { display: grid; grid-template-columns: 2.5em 1fr 1fr; gap: 6px; }
+.chem-row span:not(:first-child) { text-align: right; }
+.chem-head { color: #7a7a84; }
+.chem-note { color: #7a7a84; margin-top: 2px; white-space: normal; }
+
 #statusLabel {
   border: 1px solid #34343c;
   background: #1a1a20;
