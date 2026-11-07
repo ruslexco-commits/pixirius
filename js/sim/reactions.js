@@ -110,7 +110,8 @@ class SimReactions {
       const ny = y - 1;
       if (this.inBounds(x, ny)) {
         const ni = this.idx(x, ny);
-        if (this.type[ni] === EL.EMPTY) { this.spawn(ni, EL.SMOKE); this.moved[ni] = 1; }
+        // Дым над огнём — из воздуха (углерод, кислород; sim/chem.js).
+        if (this.type[ni] === EL.EMPTY && this.chemAirHas(SMOKE_COMP)) { this.spawn(ni, EL.SMOKE); this.moved[ni] = 1; }
       }
     }
   }
@@ -127,7 +128,7 @@ class SimReactions {
   reactLava(x, y, i) {
     this.mixParts(x, y, i);
     if (this.type[i] !== EL.LAVA) return;
-    if (this.temp[i] < LAVA_SOLIDIFY_TEMP) { this.spawn(i, EL.STONE); return; }
+    if (this.temp[i] < LAVA_SOLIDIFY_TEMP) { this.spawnKeep(i, EL.STONE); return; }
     this.hotNeighbours(x, y, i);
   }
 
@@ -143,7 +144,7 @@ class SimReactions {
       if (nt === EL.WATER) {
         if (Math.random() < 0.6) this.spawn(ni, EL.STEAM);
         if (Math.random() < 0.5) {
-          if (this.type[i] === EL.LAVA) this.spawn(i, EL.STONE);
+          if (this.type[i] === EL.LAVA) this.spawnKeep(i, EL.STONE);
           else this.solidifyMolten(i);
           return true;
         }
@@ -188,7 +189,7 @@ class SimReactions {
       if (!this.inBounds(nx, ny)) continue;
       const nt = this.type[this.idx(nx, ny)];
       if (nt === EL.LAVA || nt === EL.FIRE) {
-        if (Math.random() < 0.01) this.spawn(i, EL.GLASS);
+        if (Math.random() < 0.01) this.spawnKeep(i, EL.GLASS);
         return;
       }
     }
@@ -217,7 +218,7 @@ class SimReactions {
       // свою уже-достаточную-для-плавления температуру, а не подскакивает
       // до полного heatSource лавы (иначе цепная реакция плавления не
       // затухает).
-      this.spawn(i, ELEMENTS[id].meltsInto, false);
+      this.spawnKeep(i, ELEMENTS[id].meltsInto, false);
     }
   }
 
@@ -231,15 +232,16 @@ class SimReactions {
     return this.temp[i] >= el.meltPoint && Math.random() < el.meltChance;
   }
 
+  // Соль растворяется в воде. Раньше клетка соли у воды просто исчезала —
+  // натрий и хлор пропадали с карты (data/chem.js: они в воздух не уходят).
+  // Теперь соль живёт в системе долей, как чёрные соли и грязь
+  // (IS_SOLUTION_MEDIUM, HAS_COMPOSITION): меняется с водой долями — вода
+  // становится рассолом, клетка соли, набрав воды больше, чем соли, сама
+  // становится раствором; выкипит вода — соль выпадет обратно
+  // (setComposition: твёрдого не меньше жидкого), а неполные крупинки
+  // стянутся в полные (tickCompaction).
   reactSalt(x, y, i) {
-    for (let k = 0; k < 4; k++) {
-      const nx = x + DX4[k], ny = y + DY4[k];
-      if (!this.inBounds(nx, ny)) continue;
-      if (this.type[this.idx(nx, ny)] === EL.WATER) {
-        if (Math.random() < 0.03) this.clearCell(i);
-        return;
-      }
-    }
+    this.reactSolutionLike(x, y, i);
   }
 
   // Вода тушит огонь. Кипение — не здесь: оно общее для всех жидкостей
@@ -286,7 +288,9 @@ class SimReactions {
       const ni = this.idx(nx, ny);
       const nt = this.type[ni];
       if (nt !== EL.EMPTY && nt !== EL.WALL && nt !== EL.VOID) {
-        if (Math.random() < 0.9) this.clearCell(ni);
+        // Пустота — нарочно сток вещества: съеденное уходит с карты по
+        // статье "Пустота", а не в воздух (sim/chem.js).
+        if (Math.random() < 0.9) { this.chemExternal(CHEM_EXT_VOID, ni, -1); this.clearCell(ni); }
       }
     }
   }
@@ -309,6 +313,8 @@ class SimReactions {
           const remembered = this.extra[i];
           this.spawn(ni, remembered);
           this.moved[ni] = 1;
+          // Клонер — нарочно источник вещества (статья "Клонер", sim/chem.js).
+          this.chemExternal(CHEM_EXT_CLONE, ni, 1);
         }
       }
     }
@@ -372,6 +378,7 @@ class SimReactions {
       if (targetNi !== -1) {
         if (this.type[targetNi] === EL.EARTH) this.spawn(targetNi, EL.WET_EARTH);
         this.moisture[targetNi]++;
+        this.markDirty(targetNi);
         moisture--;
       }
     }
@@ -391,7 +398,7 @@ class SimReactions {
       }
     }
 
-    this.moisture[i] = moisture;
+    if (this.moisture[i] !== moisture) { this.moisture[i] = moisture; this.markDirty(i); }
     if (curId === EL.WET_EARTH && moisture === 0) this.spawn(i, EL.EARTH);
   }
 
@@ -421,6 +428,7 @@ class SimReactions {
     if (target === -1) return;
     this.spawn(target, EL.STEAM);
     this.moisture[i]--;
+    this.markDirty(i);
     if (this.moisture[i] === 0) this.spawn(i, EL.EARTH);
   }
 }

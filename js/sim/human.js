@@ -704,6 +704,9 @@ class SimHuman {
       if (x < 0 || x >= w || y < 0 || y >= h) continue;
       const j = y * w + x;
       if (this.type[j] !== EL.EMPTY) continue;
+      // Крови больше, чем было в человеке: недостающее — из воздуха
+      // (вода, углерод, азот; sim/chem.js). Нет его — капли нет.
+      if (!this.chemAirHas(BLOOD_COMP)) return;
       this.spawn(j, EL.BLOOD);
       n--;
     }
@@ -781,9 +784,11 @@ class SimHuman {
     return false;
   }
 
-  // Умер от яда — рассыпался сыпучим окислом камня.
+  // Умер от яда — рассыпался прахом. Раньше — сыпучим окислом камня, но
+  // кремнию в человеке взяться неоткуда (вещество на карте сохраняется,
+  // data/chem.js): прах — зола, углерод тела, остальное — в воздух.
   poisonDeath(i) {
-    this.spawn(i, EL.OXIDE_LOOSE, false);
+    this.spawn(i, EL.ASH, false);
   }
 
   // Смерть: человек темнеет и застывает. Память освобождается — она была

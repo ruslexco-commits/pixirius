@@ -936,6 +936,9 @@ class SimSharoid {
       if (this.type[i] !== EL.EMPTY) return;
       this.spawn(i, EL.STEEL);
       this.shade[i] = this.sharShadeFor(colors[part], EL.STEEL);
+      // Нога — не клетки, а часть сущности: её сталь приходит на карту по
+      // статье "Механизмы" (учёт вещества, sim/chem.js).
+      this.chemExternal(CHEM_EXT_MECH, i, 1);
     });
     const leg = s.legs[k];
     leg.gone = true; leg.on = false;

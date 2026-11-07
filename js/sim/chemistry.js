@@ -172,8 +172,11 @@ class SimChemistry {
   //
   // Шансы и расход долей — те же, что у соседей (dissolveNeighbours,
   // oxidiseNeighbours, rustNeighbours); за кадр не больше одной реакции.
-  // Растворённая балка остатка не оставляет — лечь ему некуда, клетка
-  // занята самой кислотой.
+  // Растворённая балка — целая клетка вещества (data/chem.js), и пропасть
+  // она не может: её остаток (кислотный остаток у каменной, рыхлая ржавчина
+  // у металлической) высыпается в свободную соседнюю клетку. Свободной нет
+  // — балка ждёт: раньше она растворялась бесследно, а кислота получала
+  // долю "камня", которого в балке было в десять раз больше.
   reactLiquidOnBeam(x, y, i) {
     const mat = this.beam[i];
     let comp = this.comp(i);
@@ -190,12 +193,15 @@ class SimChemistry {
           comp = solWith(comp, P_ACID, acid - 1);
           comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
         } else {
-          this.removeBeam(i);
-          comp = solMove(comp, P_ACID, solGet(comp, P_STONE) > 0 ? P_REAGENT : P_STONE);
-          if (solGet(comp, P_ACID) === 0) {
-            const st = solGet(comp, P_STONE);
-            for (let k = 0; k < st; k++) comp = solMove(comp, P_STONE, P_REAGENT);
+          const to = CHEM_CORRODE_TO[mat];
+          let target = -1;
+          if (to || CHEM_HAS_STRICT[mat]) {
+            target = this.freeNeighbour(x, y, true);
+            if (target < 0 || !to) return;   // остатку некуда лечь / строгое без остатка кислоте не поддаётся
           }
+          this.removeBeam(i);
+          if (target >= 0) { this.spawn(target, to); this.moved[target] = 1; }
+          comp = this.spendAcid(comp);
           if (Math.random() < 0.2) this.ventGas(x, y, mat);
         }
         this.setComposition(i, comp, false);
@@ -300,11 +306,12 @@ class SimChemistry {
       const nt = this.type[ni];
       const chance = 0.06 / OXIDISE_SLOWER * reagent / SOL_PARTS;
       // Кислотный остаток реагент не окисляет по стадиям, а сразу
-      // переводит в окисел металла первой стадии: осадок это уже не
-      // порода, а продукт реакции, и дальше он живёт по линейке металла.
+      // переводит в окисел первой стадии. Раньше — в окисел МЕТАЛЛА, но
+      // остаток — это кремний (растворённый камень), и железа в нём взяться
+      // неоткуда (data/chem.js): теперь — в окисел камня.
       if (nt === EL.ACID_RESIDUE) {
         if (Math.random() >= chance) continue;
-        this.setOxideStage(ni, 1, OXIDE_LINE[EL.METAL]);
+        this.setOxideStage(ni, 1, OXIDE_LINE_STONE);
         if (Math.random() < OXIDISE_COST) {
           comp = solWith(comp, P_REAGENT, reagent - 1);
           comp = solWith(comp, P_VOID, solGet(comp, P_VOID) + 1);
@@ -409,36 +416,64 @@ class SimChemistry {
   }
 
   // Один акт растворения клетки ni. Возвращает новый состав кислоты.
-  //  1. Одна доля кислоты тратится.
-  //  2. Если доли растворённого вещества ещё не было — она появляется
-  //     вместо потраченной кислоты, а растворённая клетка просто
-  //     исчезает. Если была — прежняя доля вещества становится долей
-  //     реагента, новая встаёт на её место, а растворённая клетка
-  //     превращается в кислотный остаток: так кислота оставляет за собой
-  //     след на каждом следующем растворении.
-  //  3. Когда кислоты не осталось, последняя доля вещества тоже
-  //     становится реагентом.
-  //  4. С шансом 20% выделяется газ (см. ventGas). У клетки из нескольких
+  //  1. Доля кислоты становится долей реагента (spendAcid).
+  //  2. Растворённая клетка разъедается на месте (corrodeCell): камень,
+  //     песок и всё каменное — в кислотный остаток (он легче жидкостей и
+  //     всплывает, открывая кислоте следующий слой), железо и медь — в
+  //     рыхлую ржавчину (осыпается, в металле остаётся дыра), органика и
+  //     прочее летучее — исчезает целиком (в воздух, sim/chem.js).
+  //  3. С шансом 20% выделяется газ (см. ventGas). У клетки из нескольких
   //     веществ (сплав и прочие смеси) газ — газ случайной доли: бросок от 1
   //     до 10 по её долям, какая выпала, та и выделяет свой газ (просьба
   //     пользователя).
+  //
+  // Раньше первое растворение стирало клетку, а кислота получала долю
+  // "растворённого камня", позже — реагент; каждое следующее оставляло
+  // остаток. Девять десятых камня при этом пропадали, а кремний — простое
+  // вещество, в воздух он не уходит (просьба пользователя: вещество на карте
+  // сохраняется, data/chem.js). Теперь кремний остаётся в остатке всегда, а
+  // реагент кислота даёт сразу.
   dissolveInto(x, y, ni, comp, sourceId) {
     const niComp = this.comp(ni);
-    const hadStone = solGet(comp, P_STONE) > 0;
-    if (hadStone) {
-      comp = solMove(comp, P_ACID, P_REAGENT);
-      this.spawn(ni, EL.ACID_RESIDUE);
-    } else {
-      comp = solMove(comp, P_ACID, P_STONE);
-      this.clearCell(ni);
-    }
-    if (solGet(comp, P_ACID) === 0) {
-      const st = solGet(comp, P_STONE);
-      for (let k = 0; k < st; k++) comp = solMove(comp, P_STONE, P_REAGENT);
-    }
+    if (!this.corrodeCell(ni)) return comp;   // строгое без остатка — кислоте не поддаётся
+    comp = this.spendAcid(comp);
     const GAS_CHANCE = 0.2;
     if (Math.random() < GAS_CHANCE) this.ventGas(x, y, niComp >= 1024 ? this.randomMatterPart(niComp) : sourceId);
     return comp;
+  }
+
+  // Потратить долю кислоты: она становится реагентом. Шестой вид не
+  // поместился — доля уходит в пустоту (сера и кислород — в воздух).
+  spendAcid(comp) {
+    const next = solMove(comp, P_ACID, P_REAGENT);
+    if (next !== comp) return next;
+    return solWith(solWith(comp, P_ACID, solGet(comp, P_ACID) - 1), P_VOID, solGet(comp, P_VOID) + 1);
+  }
+
+  // Разъесть клетку ni на месте: каждая доля — в свой вид по
+  // CHEM_CORRODE_TO, летучая без строки — пропадает, строгая без строки —
+  // остаётся. false — ничего не поменялось (кислоте тут нечего делать).
+  corrodeCell(ni) {
+    const c = this.comp(ni);
+    let out = 0, changed = false, main = 0, mainN = 0;
+    for (let s = 0; s < SOL_SLOTS; s++) {
+      const slot = solSlot(c, s);
+      if (!slot) break;
+      const id = slotId(slot), n = slotCount(slot);
+      const to = CHEM_CORRODE_TO[id] || (CHEM_HAS_STRICT[id] ? id : 0);
+      if (to !== id) changed = true;
+      if (!to) continue;
+      const m = solGet(out, to) + n;
+      out = solWith(out, to, m);
+      if (m > mainN) { mainN = m; main = to; }
+    }
+    if (!changed) return false;
+    if (solMatter(out) === 0) { this.clearCell(ni); return true; }
+    // Новая частица — как раньше spawn остатка (свежие life/extra, у рыхлой
+    // ржавчины — последняя стадия), но с долями того, что было.
+    this.spawn(ni, main);
+    this.setComposition(ni, out);
+    return true;
   }
 
   // Газ, выделяющийся при растворении. Половина случаев — привычный
@@ -480,6 +515,9 @@ class SimChemistry {
       life = OIL_GAS_LIFE_MIN + (Math.random() * (OIL_GAS_LIFE_MAX - OIL_GAS_LIFE_MIN) | 0);
     }
     if (solMatter(comp) === 0) return;
+    // Газ берётся из воздуха (сера, кислород, вода — sim/chem.js): в
+    // растворяемом его нет. Не хватает — не выделяется.
+    if (!this.chemAirHas(comp)) return;
     this.placeGas(target, comp, life, hot);
   }
 
@@ -520,30 +558,25 @@ class SimChemistry {
     return comp;
   }
 
-  // Кислотный остаток (сыпучее, extra = уровень 1..4). Смотрит только на
-  // клетку НАД собой:
-  //  - там кислота (чистая или раствор с долей кислоты) — меняется с ней
-  //    местами, пропуская её вниз: остаток не должен ложиться плёнкой
-  //    между кислотой и тем, что она разъедает;
-  //  - там такой же остаток — сливаются в один: уровни складываются
-  //    (остаток становится темнее и менее похожим на камень), с пятого
-  //    уровня остаток превращается в химический реагент.
-  // Обход поля идёт снизу вверх, поэтому из двух остатков друг на друге
-  // первым обрабатывается нижний — он и поглощает верхний.
+  // Кислотный остаток (сыпучее). Смотрит только на клетку НАД собой: там
+  // кислота (чистая или раствор с долей кислоты) — меняется с ней местами,
+  // пропуская её вниз: остаток не должен ложиться плёнкой между кислотой и
+  // тем, что она разъедает.
+  //
+  // Раньше два остатка друг на друге сливались в один (уровни в extra
+  // складывались, с пятого — реагент). Это сжимало пять клеток кремния в
+  // одну клетку реагента, где кремния нет вовсе, — а вещество на карте
+  // теперь сохраняется (data/chem.js). Реагент кислота даёт сразу, при
+  // растворении (dissolveInto); остаток — просто осадок. extra старых
+  // сохранений остаётся только цветом.
   //
   // Остаток — это растворённый камень, поэтому в жару он плавится, как
   // камень, в расплавленный камень (лаву; см. плавление в data/elements.js).
   reactAcidResidue(x, y, i) {
-    if (this.meltRoll(i, EL.ACID_RESIDUE)) { this.spawn(i, ELEMENTS[EL.ACID_RESIDUE].meltsInto, false); return; }
+    if (this.meltRoll(i, EL.ACID_RESIDUE)) { this.spawnKeep(i, ELEMENTS[EL.ACID_RESIDUE].meltsInto, false); return; }
     if (y === 0) return;
     const ai = this.idx(x, y - 1);
     const at = this.type[ai];
-    if (at === EL.ACID_RESIDUE) {
-      this.extra[i] = Math.min(255, this.extra[i] + this.extra[ai]);
-      this.clearCell(ai);
-      if (this.extra[i] >= 5) this.spawn(i, EL.REAGENT);
-      return;
-    }
     if (isSolutionFamily(at) && solGet(this.comp(ai), P_ACID) > 0) {
       this.swap(i, ai); this.moved[ai] = 1;
     }

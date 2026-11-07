@@ -690,7 +690,8 @@ class SimCharges {
       }
       if (!oil) continue;
       this.addCharge(i, CHARGE_YELLOW, GENERATOR_LIFE);
-      if (smokeAt >= 0) this.spawn(smokeAt, EL.SMOKE);
+      // Дым генератора — из воздуха (sim/chem.js): масло он не тратит.
+      if (smokeAt >= 0 && this.chemAirHas(SMOKE_COMP)) this.spawn(smokeAt, EL.SMOKE);
     }
   }
 

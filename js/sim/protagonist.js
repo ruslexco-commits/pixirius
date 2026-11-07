@@ -339,6 +339,8 @@ class SimProtagonist {
     if (st.stamina <= 0) return;
     st.mineT -= full - speed;
     if (++st.mineHits >= this.mineHitsNeeded(j)) {
+      // Добытое уходит с карты "в руки" (статья учёта вещества, sim/chem.js).
+      this.chemExternal(CHEM_EXT_MINE, j, -1);
       this.clearCell(j);
       const pl = this.playerSlot(this.life[i]);
       if (pl.stats) pl.stats.broken++;

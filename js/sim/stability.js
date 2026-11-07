@@ -478,11 +478,12 @@ class SimStability {
     }
     if (touches) return false;
     // Осыпавшаяся балка становится своим материалом — но только если
-    // клетка свободна. Занятую (газом) не трогаем: балка исчезает, ничего
-    // никуда не вытесняя.
+    // клетка свободна. Занятую (газом) не трогаем: деревянная балка
+    // исчезает, ничего никуда не вытесняя, а каменная и металлическая ждут,
+    // пока газ уйдёт, — камень и железо пропасть не могут (data/chem.js).
     for (let k = 0; k < cnt; k++) {
       const c = list[k];
-      if (type[c] === EL.EMPTY) this.dropBeam(c); else this.removeBeam(c);
+      if (type[c] === EL.EMPTY) this.dropBeam(c); else if (!CHEM_HAS_STRICT[beam[c]]) this.removeBeam(c);
     }
     return true;
   }

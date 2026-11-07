@@ -450,13 +450,16 @@ console.log('14. Взрыв сухих чёрных солей');
   Sim.prototype.crackFrom = orig;
   ok(count(dry, EL.BLACK_SALT) === 0 && stone(dry) < stone0 - 60 && cracks >= 3,
     `сухая: соли ${salt0} → ${count(dry, EL.BLACK_SALT)}, камня разрушено ${stone0 - stone(dry)}, трещин ${cracks}`);
-  // Трещины уходят за воронку: пустые клетки дальше радиуса взрыва.
+  // Трещины уходят за воронку: раздробленные клетки дальше радиуса взрыва.
+  // Трещина дробит камень в песок (обломки, data/chem.js: вещество на карте
+  // сохраняется), а не стирает его — так что считаются и песок, и пустота.
   let beyond = 0;
   const R = Math.min(g('BLAST_MAX_R'), g('BLAST_BASE_R') + Math.sqrt(salt0 * 10) * g('BLAST_R_PER_SQRT'));
   for (let y = 20; y < 60; y++) for (let x = 0; x < 80; x++) {
-    if (Math.hypot(x - 39.5, y - 33.5) > R + 1 && dry.type[y * 80 + x] === EL.EMPTY && !(x >= 36 && x <= 43 && y < 30)) beyond++;
+    const t = dry.type[y * 80 + x];
+    if (Math.hypot(x - 39.5, y - 33.5) > R + 1 && (t === EL.EMPTY || t === EL.SAND) && !(x >= 36 && x <= 43 && y < 30)) beyond++;
   }
-  ok(beyond > 0, `трещины за воронкой (радиус ${R.toFixed(1)}): пустых клеток в камне дальше неё ${beyond}`);
+  ok(beyond > 0, `трещины за воронкой (радиус ${R.toFixed(1)}): раздробленных клеток в камне дальше неё ${beyond}`);
 
   const wet = make(true);
   const wet0 = count(wet, EL.BLACK_SALT);
@@ -1831,7 +1834,9 @@ console.log('38. Грязь растворяется в воде, как чёр�
 console.log('40. Отравление реагентом, сыпучие растворы, цвет грязи, спавн у открытого места');
 {
   const solColor = g('solColor'), solWith = g('solWith'), solPure = g('solPure'), PART_COLOR = g('PART_COLOR'), MUD_DARK_COLOR = g('MUD_DARK_COLOR');
-  // Протагонист касается реагента: желтеет, живёт, потом рассыпается окислом.
+  // Протагонист касается реагента: желтеет, живёт, потом рассыпается прахом
+  // (золой: раньше — окислом камня, но кремнию в теле взяться неоткуда,
+  // data/chem.js).
   const p = new Sim(20, 10);
   box(p, 0, 8, 19, 9, EL.WALL);
   p.placeProtagonist(p.idx(5, 7));
@@ -1841,8 +1846,8 @@ console.log('40. Отравление реагентом, сыпучие рас�
   let frames = 20;
   for (; frames < 400 && p.findProtagonist(0) >= 0; frames++) p.step();
   // Чистый реагент — смертельная доза за полторы секунды (~90 кадров).
-  ok(aliveEarly && early >= 40 && p.type[p.idx(5, 7)] === EL.OXIDE_LOOSE && p.playerState.death === 'Отравлен реагентом' && frames >= 80 && frames <= 100,
-    `протагонист у реагента: через 20 кадров жив и желтеет (${early}), погиб на кадре ${frames} — рассыпался окислом (${p.type[p.idx(5, 7)] === EL.OXIDE_LOOSE}), причина: ${p.playerState.death}`);
+  ok(aliveEarly && early >= 40 && p.type[p.idx(5, 7)] === EL.ASH && p.playerState.death === 'Отравлен реагентом' && frames >= 80 && frames <= 100,
+    `протагонист у реагента: через 20 кадров жив и желтеет (${early}), погиб на кадре ${frames} — рассыпался прахом (${p.type[p.idx(5, 7)] === EL.ASH}), причина: ${p.playerState.death}`);
   // Отравленный человек без яда рядом — приходит в себя (просьба
   // пользователя: отошёл от реагента — перестаёшь желтеть).
   const hs = new Sim(20, 10);
@@ -2820,6 +2825,62 @@ console.log('55. Шароид: S на ровном полу стоит, у то�
       for (const l of s.legs) if (!l.gone && Math.round(l.y) >= 60) buried++;
     }
     ok(s.limp && buried === 0, `S+пробел на ходу: ноги отпущены (${s.limp}), кадров со ступнёй в грунте ${buried}`);
+  }
+}
+
+console.log('59. Химия (data/chem.js): кислота оставляет кремний остатком, соль растворяется долями, взрыв дробит, а не стирает');
+{
+  const CHEM = g('CHEM');
+  const strict = (s) => { const t = s.chemCellsTotal(); return { si: t[CHEM.SI], fe: t[CHEM.FE], na: t[CHEM.NA], cl: t[CHEM.CL] }; };
+  // Кислота на камне и металле: кремний и железо остаются на карте
+  // (остаток, рыхлая ржавчина), кислота становится реагентом.
+  {
+    const s = new Sim(40, 30);
+    box(s, 0, 28, 39, 29, EL.WALL);
+    box(s, 2, 20, 18, 27, EL.STONE);
+    box(s, 4, 14, 16, 19, EL.ACID);
+    box(s, 22, 20, 37, 27, EL.METAL);
+    box(s, 24, 14, 35, 19, EL.ACID);
+    const before = strict(s), stone0 = count(s, EL.STONE), metal0 = count(s, EL.METAL);
+    for (let k = 0; k < 600; k++) s.step();
+    const after = strict(s);
+    let reagent = 0;
+    for (let i = 0; i < s.type.length; i++) reagent += solGet(s.comp(i), EL.REAGENT);
+    ok(after.si === before.si && after.fe === before.fe && count(s, EL.STONE) < stone0 && count(s, EL.METAL) < metal0
+      && count(s, EL.ACID_RESIDUE) > 0 && reagent > 0 && s.chemLeak.every((v) => v === 0),
+      `кислота: камня ${stone0} → ${count(s, EL.STONE)}, остатка ${count(s, EL.ACID_RESIDUE)}, металла ${metal0} → ${count(s, EL.METAL)}, долей реагента ${reagent}; кремний ${before.si} → ${after.si}, железо ${before.fe} → ${after.fe}`);
+  }
+  // Соль в воде: исчезает как пиксель, но натрий и хлор остаются долями
+  // рассола; выкипела вода — соль выпала обратно.
+  {
+    const s = new Sim(30, 30);
+    box(s, 0, 28, 29, 29, EL.WALL); box(s, 0, 10, 0, 27, EL.WALL); box(s, 29, 10, 29, 27, EL.WALL);
+    box(s, 1, 20, 28, 27, EL.WATER);
+    box(s, 10, 17, 14, 19, EL.SALT);
+    const before = strict(s), salt0 = count(s, EL.SALT);
+    for (let k = 0; k < 1500; k++) s.step();
+    const mid = strict(s), salt1 = count(s, EL.SALT);
+    let brine = 0;
+    for (let i = 0; i < s.type.length; i++) if (s.type[i] === EL.SOLUTION && solGet(s.comp(i), EL.SALT) > 0) brine++;
+    s.applyTempBrush(14, 24, 20, 20, 1);
+    for (let k = 0; k < 1500; k++) { if (k % 5 === 0) s.applyTempBrush(14, 24, 20, 20, 1); s.step(); }
+    const after = strict(s);
+    ok(salt1 < salt0 && brine > 0 && mid.na === before.na && mid.cl === before.cl && after.na === before.na && count(s, EL.SALT) > 0,
+      `соль: пикселей ${salt0} → ${salt1}, клеток рассола ${brine}, натрий ${before.na} → ${mid.na} → ${after.na}; после выкипания соли ${count(s, EL.SALT)}`);
+  }
+  // Взрыв в камне: кремний сохраняется (воронка — обломками песка).
+  {
+    const s = new Sim(80, 60);
+    box(s, 0, 20, 79, 59, EL.STONE);
+    box(s, 36, 30, 43, 37, EL.BLACK_SALT);
+    box(s, 36, 26, 43, 29, EL.EMPTY);
+    const before = strict(s);
+    env.reseed(1);
+    s.stampBrush(40, 28, 'circle', 1, 1, EL.FIRE, false);
+    for (let k = 0; k < 30; k++) s.step();
+    const after = strict(s);
+    ok(after.si === before.si && count(s, EL.SAND) > 0 && count(s, EL.BLACK_SALT) === 0,
+      `взрыв: соли не осталось, обломков-песка ${count(s, EL.SAND)}, кремний ${before.si} → ${after.si}`);
   }
 }
 

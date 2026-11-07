@@ -130,9 +130,10 @@ class SimExplosion {
         const i = this.idx(x, y);
         this.temp[i] += BLAST_HEAT * dmg;
         const t = this.type[i];
-        if (t !== EL.EMPTY && dmg > this.blastResist(t) + Math.random() * BLAST_RESIST_SPREAD) this.clearCell(i);
-        if (this.beam[i] && dmg > this.blastResist(this.beam[i]) + Math.random() * BLAST_RESIST_SPREAD) this.removeBeam(i);
-        if (this.type[i] === EL.EMPTY && Math.random() < BLAST_FIRE_CHANCE * dmg) {
+        if (t !== EL.EMPTY && dmg > this.blastResist(t) + Math.random() * BLAST_RESIST_SPREAD) this.blastBreak(i, cx, cy, R);
+        if (this.beam[i] && dmg > this.blastResist(this.beam[i]) + Math.random() * BLAST_RESIST_SPREAD) this.blastBeam(i, cx, cy, R);
+        // Огонь в пустоте воронки — из воздуха (углерод, кислород; sim/chem.js).
+        if (this.type[i] === EL.EMPTY && Math.random() < BLAST_FIRE_CHANCE * dmg && this.chemAirHas(FIRE_COMP)) {
           // seedHeat=false: у огня своя температура источника (1590), и
           // десятки таких клеток в воронке плавили её стенки. Огонь взрыва
           // берёт жар самого взрыва — горючее он всё равно поджигает
@@ -166,6 +167,59 @@ class SimExplosion {
   // виляющую и ветвящуюся линию. Трещина — это опустевшие клетки: она
   // видна тёмной щелью и по-настоящему ослабляет тело — отколотый ею кусок
   // лишается опоры и падает (устойчивость пересчитается в следующем кадре).
+  // Клетка в воронке. Раньше она просто стиралась — но камень и металл в
+  // воздух не уходят (вещество на карте сохраняется, data/chem.js). Теперь
+  // летучее (органика, вода, газы) по-прежнему сгорает и исчезает, а
+  // строгое дробится в обломки (chemRubble: камень — в песок, металл — в
+  // окалину) и вылетает из воронки по лучу от центра в первую свободную
+  // клетку за её краем — воронка остаётся пустой, вокруг ложатся обломки.
+  // Свободной нет — обломки остаются на месте.
+  blastBreak(i, cx, cy, R) {
+    const c = this.comp(i);
+    const out = this.chemRubble(c);
+    if (out === 0) { this.clearCell(i); return; }
+    if (out < 0) return;
+    const main = this._chemMain, T = this.temp[i];
+    const to = this.blastLanding(i, cx, cy, R);
+    if (to >= 0) this.clearCell(i);
+    const at = to >= 0 ? to : i;
+    this.spawn(at, main, false);
+    this.setComposition(at, out);
+    this.temp[at] = T;
+    this.moved[at] = 1;
+  }
+
+  // Балка в воронке: летучая (деревянная) сгорает, каменная и
+  // металлическая вылетает обломками, как клетка. Вылететь некуда —
+  // остаётся балкой.
+  blastBeam(i, cx, cy, R) {
+    const mat = this.beam[i];
+    if (!CHEM_HAS_STRICT[mat]) { this.removeBeam(i); return; }
+    const to = this.blastLanding(i, cx, cy, R);
+    if (to < 0) return;
+    this.removeBeam(i);
+    this.spawn(to, CHEM_RUBBLE_TO[mat] || mat, false);
+    this.moved[to] = 1;
+  }
+
+  // Куда летит обломок клетки i: первая пустая клетка на луче от центра
+  // взрыва за краем воронки (до двух радиусов), -1 — некуда. Из центра —
+  // вверх.
+  blastLanding(i, cx, cy, R) {
+    const w = this.w, x = i % w, y = (i / w) | 0;
+    let dx = x - cx, dy = y - cy;
+    const d = Math.hypot(dx, dy);
+    if (d < 0.5) { dx = 0; dy = -1; } else { dx /= d; dy /= d; }
+    for (let r = Math.max(d, R) + 1; r <= R * 2 + 2; r++) {
+      const tx = Math.round(cx + dx * r), ty = Math.round(cy + dy * r);
+      if (tx < 0 || tx >= w || ty < 0 || ty >= this.h) return -1;
+      const t = ty * w + tx;
+      if (this.type[t] === EL.EMPTY) return t;
+      if (IS_ANCHOR[this.type[t]] === 1) return -1;
+    }
+    return -1;
+  }
+
   blastCracks(cx, cy, R) {
     const n = CRACK_MIN + (Math.random() * (CRACK_EXTRA + 1) | 0);
     for (let k = 0; k < n; k++) {
@@ -197,7 +251,16 @@ class SimExplosion {
       const i = this.idx(ix, iy);
       const t = this.type[i];
       if (IS_ANCHOR[t] === 1) break;
-      if (IS_STRUCTURAL[t] === 1) { this.clearCell(i); gaps = 0; }
+      // Трещина дробит клетку в обломки на месте (камень — в песок, металл
+      // — в окалину): сыпучее тело не держит, так что трещина по-прежнему
+      // раскалывает его, а вещество остаётся (data/chem.js). Летучее
+      // (дерево, лёд) — исчезает, как раньше.
+      if (IS_STRUCTURAL[t] === 1) {
+        const out = this.chemRubble(this.comp(i));
+        if (out === 0) this.clearCell(i);
+        else if (out > 0) { const T = this.temp[i]; this.spawn(i, this._chemMain, false); this.setComposition(i, out); this.temp[i] = T; }
+        gaps = 0;
+      }
       else if (++gaps > 2) break;
       a += (Math.random() - 0.5) * CRACK_JITTER * 2;
       fx += Math.cos(a); fy += Math.sin(a);

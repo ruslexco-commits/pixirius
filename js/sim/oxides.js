@@ -157,8 +157,11 @@ class SimOxides {
     const target = this.gasOutlet(x, y);
     if (target < 0) return false;
     const stage = this.oxideStage(i);
-    this.spawn(i, ELEMENTS[id].meltsInto, false);
-    this.placeGas(target, solPure(EL.REAGENT_GAS, stage), 0, false);
+    this.spawnKeep(i, ELEMENTS[id].meltsInto, false);
+    // Газ реагента — сера из воздуха, кислород окисла (sim/chem.js). Серы
+    // в воздухе нет — окисел плавится без газа.
+    const gas = solPure(EL.REAGENT_GAS, stage);
+    if (this.chemAirHas(gas)) this.placeGas(target, gas, 0, false);
     return true;
   }
 
@@ -247,7 +250,17 @@ class SimOxides {
   // неё балка рассыпается и исчезает (клетка занята самой жидкостью).
   oxidiseBeam(i, line, stage) {
     const next = stage + 1;
-    if (next >= line.maxStage) { this.removeBeam(i); return; }
+    // Последняя стадия: балка рассыпается рыхлым окислом в свободную клетку
+    // рядом (вниз). Раньше она исчезала — а железо в воздух не уходит
+    // (data/chem.js). Осыпаться некуда — держится на предпоследней стадии.
+    if (next >= line.maxStage) {
+      const t = this.freeNeighbour(i % this.w, (i / this.w) | 0, false);
+      if (t < 0) return;
+      this.removeBeam(i);
+      this.spawn(t, line.loose);
+      this.moved[t] = 1;
+      return;
+    }
     this.beam[i] = line.solid;
     this.beamExtra[i] = next;
     this.markDirty(i);   // материал балки — часть скелета
