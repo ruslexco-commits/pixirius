@@ -137,6 +137,8 @@ class SimComposition {
     // ходит дальше (просьба пользователя; раньше такая клетка становилась
     // простой сталью и отпадала). Растаяла в жидкость — уже не шароид.
     if (cur === EL.SHAROID && liquid + solid > 0 && solid >= liquid) id = EL.SHAROID;
+    // Пиксель бура — так же: разъеденный, он всё ещё бур, пока твёрдый.
+    if (cur === EL.DRILL && liquid + solid > 0 && solid >= liquid) id = EL.DRILL;
     if (this.type[i] !== id) { this.type[i] = id; this.markDirty(i); }
     this.setComp(i, comp);
   }

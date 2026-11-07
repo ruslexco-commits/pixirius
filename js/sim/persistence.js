@@ -56,6 +56,7 @@ class SimPersistence {
     snap.sharoids = this.sharoidsDump();
     // Тросы (sim/rope.js) — так же.
     snap.ropes = this.ropesDump();
+    snap.segs = this.segsDump();
     // Воздух и внешний обмен (sim/chem.js): отмена горения возвращает и
     // дерево, и кислород, иначе вещество задвоилось бы.
     snap.chemAir = this.chemAir.slice();
@@ -80,6 +81,8 @@ class SimPersistence {
     if (snap.rules) { this.loadYieldOn = snap.rules.loadYieldOn; if (snap.rules.regenOn !== undefined) this.regenOn = snap.rules.regenOn; }
     this.sharoidsLoad(snap.sharoids);
     this.ropesLoad(snap.ropes);
+    this.segsLoad(snap.segs);
+    this.objReset();
     if (snap.chemAir) this.chemAir.set(snap.chemAir); else this.chemAirReset();
     if (snap.chemExt) this.chemExt.set(snap.chemExt); else this.chemExt.fill(0);
     this.moved.fill(0);
@@ -98,6 +101,8 @@ class SimPersistence {
       sharoids: this.sharoids,
       // Тросы (sim/rope.js).
       ropes: this.ropes,
+      // Сегменты шароидов (sim/segment.js).
+      segs: this.segs,
       // Воздух и внешний обмен (sim/chem.js) — простыми массивами чисел.
       chemAir: Array.from(this.chemAir), chemExt: Array.from(this.chemExt) };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
@@ -166,6 +171,8 @@ class SimPersistence {
     // Файл без шароидов — их нет; клетки шароидов без хозяина станут сталью.
     this.sharoidsLoad(obj.sharoids);
     this.ropesLoad(obj.ropes);
+    this.segsLoad(obj.segs);
+    this.objReset();
     // Сохранение без воздуха (старое) — воздух нового поля.
     if (Array.isArray(obj.chemAir) && obj.chemAir.length === CHEM_N) this.chemAir.set(obj.chemAir); else this.chemAirReset();
     if (Array.isArray(obj.chemExt) && obj.chemExt.length === this.chemExt.length) this.chemExt.set(obj.chemExt); else this.chemExt.fill(0);

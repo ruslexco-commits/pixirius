@@ -82,6 +82,10 @@ const PARTICLE_FIELDS = [
   // обычная.
   { name: 'fall', empty: 0, moves: true },
   { name: 'crushed', empty: 0, moves: true },
+  // Номер отдельного объекта (sim/objects.js): кусок, оторвавшийся от целого и упавший
+  // телом, больше не сливается с землёй — он свой, его можно сдуть, смыть, схватить.
+  // 0 — часть местности. Едет с частицей.
+  { name: 'obj', empty: 0, moves: true },
   // Балка — второй слой, стоит на месте, частицы проходят сквозь неё.
   // beam — материал балки (id элемента), beamExtra — стадия окисла этого
   // материала (см. Sim.beamStage).
@@ -274,6 +278,7 @@ class Sim {
     this.dirt = new Uint8Array(n);
     this.fall = new Uint8Array(n);
     this.crushed = new Uint8Array(n);
+    this.obj = new Uint16Array(n);
     // Стадия окисла, которую кисть ставит поставленной клетке (0 — как
     // обычно, стадия из spawn). Выбирает палитра: во вкладке "Все" есть
     // кнопка окисла второй стадии, у которой своего элемента нет (см.
@@ -303,6 +308,8 @@ class Sim {
     this.initBody();
     this.initSharoids();
     this.initRopes();
+    this.initSegments();
+    this.initObjects();
     // Учёт простых веществ и воздух (sim/chem.js).
     this.initChem();
   }
@@ -328,6 +335,7 @@ class Sim {
     this.dirt[i] = 0;
     this.fall[i] = 0;
     this.crushed[i] = 0;
+    this.obj[i] = 0;
     this.markDirty(i);
   }
 
@@ -374,6 +382,7 @@ class Sim {
     this.dirt[i] = 0;
     this.fall[i] = 0;
     this.crushed[i] = 0;
+    this.obj[i] = 0;
     // Состав принадлежит той частице, что была здесь раньше, — новая о нём
     // знать не должна (та же причина, по которой обнуляется extra). Свежая
     // частица всегда ПОЛНАЯ и чистая: 10 долей своего вещества — у любого
@@ -475,6 +484,8 @@ class Sim {
     this._humans.clear();
     this.sharoids = [];
     this.ropes = [];
+    this.segs = [];
+    this.objReset();
     this.spawnMarks = [];
     this.respawnMarks = [];
     // Новое поле — и воздух нового поля (sim/chem.js).
@@ -537,6 +548,7 @@ class Sim {
     t = this.dirt[i]; this.dirt[i] = this.dirt[j]; this.dirt[j] = t;
     t = this.fall[i]; this.fall[i] = this.fall[j]; this.fall[j] = t;
     t = this.crushed[i]; this.crushed[i] = this.crushed[j]; this.crushed[j] = t;
+    t = this.obj[i]; this.obj[i] = this.obj[j]; this.obj[j] = t;
     // Движение будит оба куска поля (sim/sleep.js).
     this.markDirty(i);
     this.markDirty(j);
@@ -590,9 +602,13 @@ class Sim {
     // Крупные падающие тела — целиком (sim/body.js), до обхода клеток.
     // Тела на тросах (sim/rope.js) — до падения тел: их оно не трогает.
     this.updateRopes();
+    // Захват: схваченный объект держится в воздухе и идёт за рукой (sim/objects.js).
+    this.updateGrips();
     this.updateBodies();
     // Шароиды (sim/sharoid.js) — тоже целиком и главным потоком.
     this.updateSharoids();
+    // Сегменты шароидов на тросах (sim/segment.js) — после них: видно, куда ушёл якорь.
+    this.updateSegments();
     // Обход клеток — несколькими потоками, если они запущены и готовы
     // (sim/threads.js), иначе одним. В мультиплеере — полосами, одинаково у
     // всех вкладок, с потоками и без (updateBands, sim/threads.js).
@@ -608,6 +624,9 @@ class Sim {
     this.updateCharges();
     // Точки респавна: падение и кислота (sim/spawns.js).
     this.updateRespawnMarks();
+    // Отдельные объекты: ветер и течение сносят их целиком (sim/objects.js) — в конце
+    // кадра, когда moved показывает, где вода двигалась сейчас.
+    this.updateObjects();
     // Всё, что за кадр появилось в клетках или пропало из них, — обмен с
     // воздухом (sim/chem.js). Последним: после всех механик кадра.
     this.chemEndStep();
@@ -751,7 +770,7 @@ class Sim {
       case EL.STONE: case EL.METAL: case EL.STEEL: case EL.GLASS:
       case EL.CAMERA: case EL.MONITOR: case EL.SOLAR: case EL.GENERATOR: this.reactMelt(x, y, i, id); break;
       // Клетка шароида плавится, как сталь (и выпадает из его тела).
-      case EL.SHAROID: this.reactMelt(x, y, i, id); break;
+      case EL.SHAROID: case EL.DRILL: this.reactMelt(x, y, i, id); break;
       // Усилитель — медь, но на воздухе не зеленеет (copperAir): патина
       // сменила бы тип, и через минуту усилителя на проводе бы не осталось.
       case EL.AMPLIFIER: this.reactMelt(x, y, i, id); break;

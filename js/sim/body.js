@@ -154,6 +154,8 @@ class SimBody {
       if (type[t] !== EL.EMPTY) return 2;
     }
     for (let k = 0; k < humans.length; k++) this.crushBody(humans[k]);
+    // Оторвавшееся тело — отдельный объект (sim/objects.js): метка остаётся на клетках и после падения.
+    this.objLabel(list, n);
     // Сдвиг снизу вверх: клетка под каждой уже свободна.
     const order = list.subarray(0, n).sort();
     const fall = this.fall, moved = this.moved;

@@ -172,6 +172,7 @@ class Renderer {
     this.debugWind = false;
     this.debugTherm = false;
     this.debugLoad = false;
+    this.debugObjects = false;
     // Вспышки мониторов (updateMonitorGlow): номер монитора → { seq, start }
     // и клетки, светящиеся в этом кадре, → сила 0..1.
     this._glowSeen = new Map();
@@ -538,6 +539,9 @@ class Renderer {
   cellColor(i) {
     const sim = this.sim;
     const id = sim.type[i];
+    // Вид «объекты» (клавиша 4, sim/objects.js): каждый отдельный объект своим цветом,
+    // местность — тёмной, схваченный — белым; остальное рисуется как обычно.
+    if (this.debugObjects && isStructural(id)) return sim.objViewColor(i) || [52, 52, 58];
     if (this.debugStability && isStructural(id)) return this.stabilityColor(id, sim.stability[i]);
     if (this.debugLoad && isStructural(id)) return this.loadColor(i);
     const x = i % sim.w, y = (i / sim.w) | 0;
@@ -831,12 +835,12 @@ class Renderer {
   drawFrame() {
     // Вид нагрузки есть только на CPU-пути (отладка, шейдер ему не нужен):
     // видеокарта на это время просто пропускается, а не отключается.
-    if (this.gpu && !this.debugLoad && this.gpu.paint(this.debugFlags())) {
+    if (this.gpu && !this.debugLoad && !this.debugObjects && this.gpu.paint(this.debugFlags())) {
       this.frameSource = this.gpu.canvas;
     } else {
       // Нет видеокарты или потерян контекст — рисуем на CPU. Потерянный
       // контекст сам не вернётся, поэтому GPU-путь отключается совсем.
-      if (this.gpu && !this.debugLoad) { console.warn('WebGL-контекст потерян, рисуем на CPU'); this.gpu = null; }
+      if (this.gpu && !this.debugLoad && !this.debugObjects) { console.warn('WebGL-контекст потерян, рисуем на CPU'); this.gpu = null; }
       this.buildImage();
       this.offCtx.putImageData(this.imageData, 0, 0);
       this.frameSource = this.off;
@@ -933,6 +937,7 @@ class Renderer {
   drawSharoids(ox = 0, oy = 0, scale = this.zoom, x0 = 0, y0 = 0, x1 = this.sim.w - 1, y1 = this.sim.h - 1, opt = null) {
     // Тросы (sim/rope.js) — тем же слоем, позади ног.
     this.drawRopes(ox, oy, scale, x0, y0, x1, y1, opt);
+    this.drawSegments(ox, oy, scale, x0, y0, x1, y1, opt);
     const sim = this.sim, list = sim.sharoids;
     if (!list || !list.length) return;
     const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
@@ -951,9 +956,17 @@ class Renderer {
     // шароидов собираются (клетка → часть), потом вокруг них по 4 соседям —
     // обводка, поверх — сами ноги.
     const PARTS = [[SHAR_LEG_COLOR, legC], [SHAR_SHIN_COLOR, shinC], [SHAR_FOOT_COLOR, footC]];
-    const legs = new Map();
+    const legs = new Map(), legRust = new Map();
     const put = (x, y, part) => { if (x >= 0 && x < w && y >= 0 && y < h) legs.set(y * w + x, part); };
-    for (const s of list) for (let k = 0; k < 3; k++) if (!s.legs[k].gone) sim.sharLegCells(s, k, put);
+    // Ржавчина ноги (sim/rope.js, leg.rust): клетки ноги мешаются с цветом ржавчины.
+    for (const s of list) {
+      for (let k = 0; k < 3; k++) {
+        const leg = s.legs[k];
+        if (leg.gone) continue;
+        const rust = leg.rust | 0;
+        sim.sharLegCells(s, k, rust > 0 ? (x, y, part) => { put(x, y, part); if (x >= 0 && x < w && y >= 0 && y < h) legRust.set(y * w + x, rust); } : put);
+      }
+    }
     ctx.save();
     // Обводка — цветом обода корпуса (просьба пользователя: "как обводка
     // крайнего слоя головы"), а не чёрная.
@@ -965,40 +978,92 @@ class Renderer {
       if (y > 0 && !legs.has(i - w)) cell(x, y - 1, rim, rimC);
       if (y < h - 1 && !legs.has(i + w)) cell(x, y + 1, rim, rimC);
     }
-    for (const [i, part] of legs) cell(i % w, (i / w) | 0, PARTS[part][0], PARTS[part][1]);
+    for (const [i, part] of legs) {
+      const rust = legRust.get(i);
+      if (rust) { const c = this.rustMix(PARTS[part][0], rust); cell(i % w, (i / w) | 0, c, rgb(c)); }
+      else cell(i % w, (i / w) | 0, PARTS[part][0], PARTS[part][1]);
+    }
     ctx.restore();
   }
 
+  // Цвет col, проржавевший до стадии stage (ROPE_RUST_MAX — целиком ржавчина).
+  rustMix(col, stage) {
+    const k = Math.min(1, stage / ROPE_RUST_MAX) * 0.85;
+    return [col[0] + (ROPE_RUST_COLOR[0] - col[0]) * k, col[1] + (ROPE_RUST_COLOR[1] - col[1]) * k, col[2] + (ROPE_RUST_COLOR[2] - col[2]) * k];
+  }
+
   // Тросы (sim/rope.js) поверх поля, параметры — как у drawSharoids. Натянутый
-  // — прямой, со слабиной — провисает (кривая Безье, прогиб по лишней длине).
-  // За твёрдым и сыпучим троса не видно.
+  // — прямой, со слабиной — провисает (sim.ropeCells). За твёрдым и сыпучим
+  // троса не видно. Цвет — материал, к которому крепится (rope.mat, как у
+  // балки), границы — тёмные пиксели вокруг (ROPE_EDGE_K); на заднем плане,
+  // под сегментами и ногами.
   drawRopes(ox, oy, scale, x0, y0, x1, y1, opt) {
     const sim = this.sim, list = sim.ropes;
     if (!list || !list.length) return;
     const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
     const seen = opt && opt.seen, lit = !!(opt && opt.lit);
-    const css = `rgb(${ROPE_COLOR[0]},${ROPE_COLOR[1]},${ROPE_COLOR[2]})`;
+    const put = (i, col) => {
+      const x = i % w, y = (i / w) | 0;
+      if (x < x0 || x > x1 || y < y0 || y > y1) return;
+      const tp = sim.type[i];
+      if (tp !== EL.EMPTY && !sim.sharPassable(tp)) return;
+      if (seen && !seen(i)) return;
+      const c = lit ? this.litColor(i, col) : col;
+      ctx.fillStyle = `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+      ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+    };
     ctx.save();
     for (const r of list) {
-      const a = sim.ropeEndPos(r.a), b = sim.ropeEndPos(r.b);
-      if (!a || !b) continue;
-      const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.sqrt(dx * dx + dy * dy);
-      const sag = Math.min(r.len, Math.sqrt(Math.max(0, r.len * r.len - d * d)) / 2);
-      const cx = (a[0] + b[0]) / 2, cy = (a[1] + b[1]) / 2 + 2 * sag;
-      const steps = Math.ceil((d + 4 * sag) * 2) + 2;
-      let last = -1;
-      for (let k = 0; k <= steps; k++) {
-        const t = k / steps, u = 1 - t;
-        const x = Math.round(u * u * a[0] + 2 * u * t * cx + t * t * b[0]), y = Math.round(u * u * a[1] + 2 * u * t * cy + t * t * b[1]);
-        if (x < x0 || x > x1 || y < y0 || y > y1 || x < 0 || x >= w || y < 0 || y >= h) continue;
-        const i = y * w + x;
-        if (i === last) continue;
-        last = i;
-        const tp = sim.type[i];
-        if (tp !== EL.EMPTY && !sim.sharPassable(tp)) continue;
-        if (seen && !seen(i)) continue;
-        if (lit) { const c = this.litColor(i, ROPE_COLOR); ctx.fillStyle = `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`; } else ctx.fillStyle = css;
-        ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+      const cells = sim.ropeCells(r);
+      if (!cells.length) continue;
+      const base = r.mat && ELEMENTS[r.mat] ? ELEMENTS[r.mat].color : ROPE_COLOR;
+      const edge = [base[0] * ROPE_EDGE_K, base[1] * ROPE_EDGE_K, base[2] * ROPE_EDGE_K];
+      const own = new Set(cells);
+      // Проржавевшие звенья (rope.rust) красятся ржавчиной, и границы тоже.
+      const rustAt = (k) => (r.rust ? r.rust[Math.min(ROPE_LINKS - 1, (k * ROPE_LINKS / cells.length) | 0)] : 0);
+      for (let k = 0; k < cells.length; k++) {
+        const i = cells[k], x = i % w, e = r.rust ? this.rustMix(edge, rustAt(k)) : edge;
+        if (x > 0 && !own.has(i - 1)) put(i - 1, e);
+        if (x < w - 1 && !own.has(i + 1)) put(i + 1, e);
+        if (i >= w && !own.has(i - w)) put(i - w, e);
+        if (i + w < w * h && !own.has(i + w)) put(i + w, e);
+      }
+      for (let k = 0; k < cells.length; k++) put(cells[k], r.rust ? this.rustMix(base, rustAt(k)) : base);
+    }
+    ctx.restore();
+  }
+
+  // Сегменты шароидов на тросах (sim/segment.js): коробка 5x5 с ободом и
+  // болтом; у бура — бронзовая коробка и жало (полосы светлой и тёмной стали,
+  // кончик светлый). Параметры — как у drawRopes.
+  drawSegments(ox, oy, scale, x0, y0, x1, y1, opt) {
+    const sim = this.sim, list = sim.segs;
+    if (!list || !list.length) return;
+    const ctx = (opt && opt.ctx) || this.ctx, w = sim.w, h = sim.h;
+    const seen = opt && opt.seen, lit = !!(opt && opt.lit);
+    const put = (x, y, col) => {
+      if (x < x0 || x > x1 || y < y0 || y > y1 || x < 0 || x >= w || y < 0 || y >= h) return;
+      const i = y * w + x, tp = sim.type[i];
+      if (tp !== EL.EMPTY && !sim.sharPassable(tp)) return;
+      if (seen && !seen(i)) return;
+      const c = lit ? this.litColor(i, col) : col;
+      ctx.fillStyle = `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+      ctx.fillRect(ox + (x - x0) * scale, oy + (y - y0) * scale, scale, scale);
+    };
+    ctx.save();
+    for (const g of list) {
+      const drill = g.kind === 1;
+      const rim = [44, 44, 50], fill = drill ? [150, 118, 58] : [98, 98, 106], bolt = drill ? [214, 176, 92] : [152, 152, 160];
+      for (let dy = -SEG_HALF; dy <= SEG_HALF; dy++) {
+        for (let dx = -SEG_HALF; dx <= SEG_HALF; dx++) {
+          const edge = Math.abs(dx) === SEG_HALF || Math.abs(dy) === SEG_HALF;
+          put(g.x + dx, g.y + dy, edge ? rim : dx === 0 && dy === 0 ? bolt : fill);
+        }
+      }
+      if (!drill) continue;
+      for (let k = 1; k <= SEG_BIT; k++) {
+        const col = k === SEG_BIT ? [236, 236, 244] : k % 2 ? [190, 190, 200] : [116, 116, 126];
+        put(g.x + g.bdx * (SEG_HALF + k), g.y + g.bdy * (SEG_HALF + k), col);
       }
     }
     ctx.restore();
@@ -1283,6 +1348,7 @@ class Renderer {
     this.debugWind = !!cursor.debugWind;
     this.debugTherm = !!cursor.debugTherm;
     this.debugLoad = !!cursor.debugLoad;
+    this.debugObjects = !!cursor.debugObjects;
     this.sim.loadWanted = this.debugLoad;
     // На паузе шаг не идёт, а кистью мир правят: данные видов — свежие.
     if (this.sim.paused && (this.debugLoad || this.debugStability)) this.sim.refreshLoad(this.debugLoad);

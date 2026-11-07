@@ -172,6 +172,7 @@ class SimPainting {
         if (t === EL.SHAROID) this._sharSweep = true;
         this.fall[i] = 0;
         this.crushed[i] = 0;
+        this.obj[i] = 0;   // вставленное — местность, а не отдельный объект
         this.markDirty(i);
       }
     }

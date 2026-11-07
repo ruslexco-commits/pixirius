@@ -84,9 +84,10 @@ class InputController {
     this.debugStability = false;
     this.debugWind = false;
     this.debugTherm = false;
-    // Вид по клавише 1: устойчивость или нагрузка — выбирает настройка (шестерёнка,
-    // main.js), а не клавиша: две клавиши на один вид — две ручки, которые расходились.
-    this.loadView = false;
+    this.debugObjects = false;
+    // Вид по клавише 1 — устойчивость или нагрузка — следует за физикой мира
+    // (sim.loadYieldOn, шестерёнка / клавиша 5): просьба пользователя — «какая
+    // физика включена, такая и отображается», одна настройка, а не две ручки.
 
     // (gx, gy, clientX, clientY) => void — щелчок лупой по клетке. Задаёт
     // main.js: что показать, решает интерфейс, а не ввод.
@@ -421,6 +422,9 @@ class InputController {
       if (!e.repeat) this.debugWind = !this.debugWind;
     } else if (e.code === 'Digit3') {
       if (!e.repeat) this.debugTherm = !this.debugTherm;
+    } else if (e.code === 'Digit4') {
+      // Отдельные объекты (sim/objects.js): каждый своим цветом, местность тёмная.
+      if (!e.repeat) this.debugObjects = !this.debugObjects;
     } else if (e.code === 'KeyZ') {
       if (e.ctrlKey) {
         if (!e.repeat) this.undo();
@@ -550,6 +554,36 @@ class InputController {
       return;
     }
 
+    // Сегмент и бур на тросе (sim/segment.js): щелчок у шароида — новый
+    // сегмент в конец его цепочки, ПКМ — убрать сегмент под курсором.
+    if (elementId === TOOL_SEGMENT) {
+      this.pushUndo();
+      if (e.button === 2) this.sim.removeSegmentNear(egx, egy);
+      else this.sim.addSegment(egx, egy);
+      return;
+    }
+
+    // Клей (sim/objects.js): ЛКМ склеивает объекты в области кисти, ПКМ —
+    // выделяет твёрдое области в новый отдельный объект; мазок держится, пока
+    // кнопка зажата.
+    if (elementId === TOOL_GLUE) {
+      this.pushUndo();
+      const cut = e.button === 2;
+      this.drag = { mode: cut ? 'glueCut' : 'glue', startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
+      this.sim.glueBrush(egx, egy, this.brushShape, this.brushRX, this.brushRY, cut);
+      return;
+    }
+
+    // Захват (sim/objects.js): взял объект под курсором — тащит его за курсором,
+    // пока кнопка зажата; отпустил — объект падает.
+    if (elementId === TOOL_GRAB) {
+      if (e.button === 0 && this.sim.objGrabAt(egx, egy)) {
+        this.pushUndo();
+        this.drag = { mode: 'grab', startX: egx, startY: egy, lastX: egx, lastY: egy, elementId };
+      }
+      return;
+    }
+
     // Электрический разряд: заряд по проводнику под курсором (или ближайшему
     // в пределах кисти), без шага истории — заряды в отмену не входят.
     if (elementId === TOOL_ZAP) {
@@ -632,6 +666,12 @@ class InputController {
       } else if (d.mode === 'tempInc' || d.mode === 'tempDec') {
         this.sim.applyTempBrush(egx, egy, this.brushRX, this.brushRY, d.mode === 'tempInc' ? 1 : -1);
         d.lastX = egx; d.lastY = egy;
+      } else if (d.mode === 'glue' || d.mode === 'glueCut') {
+        this.sim.glueBrush(egx, egy, this.brushShape, this.brushRX, this.brushRY, d.mode === 'glueCut');
+        d.lastX = egx; d.lastY = egy;
+      } else if (d.mode === 'grab') {
+        if (egx !== d.lastX || egy !== d.lastY) this.sim.objHandTo(egx, egy);
+        d.lastX = egx; d.lastY = egy;
       }
     }
     this.gx = gx; this.gy = gy;
@@ -641,6 +681,7 @@ class InputController {
     if (this.selDrag) { this.finishSelection(); return; }
     if (!this.drag) return;
     const d = this.drag;
+    if (d.mode === 'grab') this.sim.objHandDrop();
     if (isLineMode(d.mode)) {
       let ex = d.lastX, ey = d.lastY;
       if (isSnapLine(d.mode)) [ex, ey] = snapAngle(d.startX, d.startY, ex, ey);
@@ -702,6 +743,8 @@ class InputController {
       this.sim.applyPressureBrush(d.lastX, d.lastY, this.brushRX, this.brushRY, d.mode === 'pressureInc' ? 1 : -1);
     } else if (d.mode === 'tempInc' || d.mode === 'tempDec') {
       this.sim.applyTempBrush(d.lastX, d.lastY, this.brushRX, this.brushRY, d.mode === 'tempInc' ? 1 : -1);
+    } else if (d.mode === 'glue' || d.mode === 'glueCut') {
+      this.sim.glueBrush(d.lastX, d.lastY, this.brushShape, this.brushRX, this.brushRY, d.mode === 'glueCut');
     }
   }
 
@@ -741,10 +784,11 @@ class InputController {
       lensHandle: this.lensByTouch && this.zoomPinned,
       zoomPinnedGX: this.zoomPinnedGX, zoomPinnedGY: this.zoomPinnedGY,
       zoomHoverGX: this.zoomHoverGX, zoomHoverGY: this.zoomHoverGY,
-      debugStability: this.debugStability && !this.loadView,
+      debugStability: this.debugStability && !this.sim.loadYieldOn,
       debugWind: this.debugWind,
       debugTherm: this.debugTherm,
-      debugLoad: this.debugStability && this.loadView,
+      debugObjects: this.debugObjects,
+      debugLoad: this.debugStability && !!this.sim.loadYieldOn,
     };
   }
 }

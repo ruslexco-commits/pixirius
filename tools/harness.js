@@ -197,6 +197,11 @@ function buildScene(env, w = 240, h = 160) {
     box(4, h - 100, 7, h - 97, EL.STONE);
     sim.addRope(14, h - 120, 4, h - 100);
   }
+  // Сегменты шароида на тросе (sim/segment.js): простой и бур под шароидом (70, h - 70).
+  if (sim.addSegment) {
+    sim.addSegment(76, h - 64, 0);
+    sim.addSegment(76, h - 64, 1);
+  }
   if (sim.pickBeamMaterial) {
     sim.pickBeamMaterial(100, h - 20);             // от металла
     for (let x = 131; x <= 150; x++) sim.setCell(x, h - 26, EL.BEAM, false);

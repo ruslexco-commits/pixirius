@@ -197,7 +197,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code !== 'Digit5' || e.repeat || (lobby && lobby.visible) || document.body.classList.contains('start')) return;
   if (mp && mp.role === 'client') return;
   setLoadYield(!sim.loadYieldOn);
-  statusLabel.textContent = sim.loadYieldOn ? 'Нагрузка: сдвиги вкл (клавиша 5)' : 'Нагрузка: сдвиги выкл (клавиша 5)';
+  statusLabel.textContent = sim.loadYieldOn ? 'Реалистичная физика вкл (клавиша 5), клавиша 1 — нагрузка' : 'Реалистичная физика выкл (клавиша 5), клавиша 1 — устойчивость';
 });
 
 window.addEventListener('keydown', (e) => {
@@ -596,6 +596,21 @@ function buildPaletteGrid() {
         + '<div class="mi-row"><span>Концы</span><span>за твёрдое, шароида, человека, протагониста; в пустоте — крюк</span></div>'
         + '<div class="mi-row"><span>Оторвавшееся</span><span>висит и качается, пока не успокоится</span></div>'
         + '<div class="mi-row"><span>ПКМ</span><span>отменить начатый или убрать трос под курсором</span></div>');
+      addToolButton(TOOL_SEGMENT, 'Сегмент на тросе', '#7a7a86',
+        '<div class="mi-title">Сегмент на тросе</div>'
+        + '<div class="mi-row"><span>Щелчок у шароида</span><span>сегмент в конец его цепочки (до ' + SEG_MAX + '); рядом пиксели бура — сегмент с буром (они уходят в него)</span></div>'
+        + '<div class="mi-row"><span>Ход</span><span>следует за шароидом, висит на стальном тросе, качается на ветру</span></div>'
+        + '<div class="mi-row"><span>ПКМ</span><span>убрать сегмент под курсором</span></div>');
+      addToolButton(TOOL_GLUE, 'Клей', '#e8d9a0',
+        '<div class="mi-title">Клей</div>'
+        + '<div class="mi-row"><span>ЛКМ</span><span>склеить отдельные объекты в области кисти в один</span></div>'
+        + '<div class="mi-row"><span>ПКМ</span><span>выделить твёрдое области (и местность) в новый отдельный объект</span></div>'
+        + '<div class="mi-row"><span>Клавиша 4</span><span>показать все отдельные объекты</span></div>');
+      addToolButton(TOOL_GRAB, 'Захват', '#9ad0e8',
+        '<div class="mi-title">Захват</div>'
+        + '<div class="mi-row"><span>ЛКМ на объекте</span><span>тащить его за курсором; отпустил — падает</span></div>'
+        + '<div class="mi-row"><span>У шароида</span><span>клавиша E в игре: схватить объект до ' + GRIP_MAX_CELLS + ' пикселей у курсора, ещё раз — отпустить</span></div>'
+        + '<div class="mi-row"><span>Объект</span><span>оторвавшийся кусок; его можно сдуть, смыть, схватить</span></div>');
     }
     for (const id of ELEMENT_ORDER) {
       if (activeCategory === 'all' || materialCategoryKey(id) === activeCategory) {
@@ -671,20 +686,17 @@ lobby = new Lobby({
   function openSettings() {
     menu.innerHTML = '<div class="lb-menu-title">Настройки</div>'
       + '<div class="st-group">Физика нагрузки</div>'
-      + row('yield', 'Сдвиги под нагрузкой', 'Перегруженный пиксель продавливается и выдавливается, нависшее проседает (клавиша 5). Тяжёлые постройки, вроде «Вышки», при этом оседают, и кадр дорожает.')
-      + row('view', 'Вид стойкости — нагрузка', 'Клавиша 1 показывает нагрузку, а не устойчивость: твёрдое красится от зелёного к красному, перегруженное — белым. Одна из двух, не обе.')
+      + row('yield', 'Реалистичная физика', 'Перегруженный пиксель продавливается и выдавливается, нависшее проседает (клавиша 5). Клавиша 1 при этом показывает нагрузку, при выключенной — устойчивость: вид всегда соответствует включённой физике. Тяжёлые постройки, вроде «Вышки», оседают, и кадр дорожает.')
       + '<div class="st-group">Живые</div>'
       + row('regen', 'Регенерация', 'Полученный урон понемногу заживает (у протагониста и людей). Выключено — раны остаются до смерти.')
       + '<div class="lb-menu-hint">В мультиплеере правила задаёт хост.</div>';
-    const yieldBox = menu.querySelector('[data-k=yield]'), viewBox = menu.querySelector('[data-k=view]'), regenBox = menu.querySelector('[data-k=regen]');
+    const yieldBox = menu.querySelector('[data-k=yield]'), regenBox = menu.querySelector('[data-k=regen]');
     regenBox.checked = sim.regenOn;
     regenBox.disabled = !!(mp && mp.role === 'client');
     regenBox.addEventListener('change', () => setRule('regenOn', regenBox.checked));
     yieldBox.checked = sim.loadYieldOn;
     yieldBox.disabled = !!(mp && mp.role === 'client');
-    viewBox.checked = input.loadView;
     yieldBox.addEventListener('change', () => setLoadYield(yieldBox.checked));
-    viewBox.addEventListener('change', () => { input.loadView = viewBox.checked; });
     const r = btn.getBoundingClientRect();
     menu.style.top = (r.bottom + 6) + 'px';
     menu.style.left = Math.max(8, Math.min(window.innerWidth - 300, r.right - 280)) + 'px';
@@ -697,7 +709,6 @@ lobby = new Lobby({
       if (regenBox.checked !== sim.regenOn) regenBox.checked = sim.regenOn;
       regenBox.disabled = !!(mp && mp.role === 'client');
       yieldBox.disabled = !!(mp && mp.role === 'client');
-      if (viewBox.checked !== input.loadView) viewBox.checked = input.loadView;
       requestAnimationFrame(sync);
     };
     requestAnimationFrame(sync);

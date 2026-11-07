@@ -43,6 +43,8 @@ const LOCKSTEP_SKIP = new Set(['paused', 'timeScale', 'lockstep', '_rngFn', 'pai
   '_tctrl', '_tstripes', '_tparams', '_deferQ', '_threadCount', '_threadHandles', '_rowsHeavy',
   // Рабочие буферы троса (sim/rope.js): отметки по клетке поля, пересоздаются сами.
   '_ropeSeen', '_ropeList',
+  // Рабочие буферы отдельных объектов (sim/objects.js): отметки по клетке, пересоздаются сами.
+  '_objMark', '_objStack',
   // Учёт простых веществ (sim/chem.js): кэш кусков пересчитывается после
   // загрузки сам, правки игрока — справка своей вкладки. Воздух и внешний
   // обмен (chemAir, chemExt) — мир.

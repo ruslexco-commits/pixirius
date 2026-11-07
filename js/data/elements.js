@@ -86,6 +86,10 @@ const EL = {
   // состав клетки (6 бит на id доли) он не попадает никогда — состав его
   // клеток стальной (pureCompFor), а таблицы по id — на EL_LIMIT.
   SHAROID: 64,
+  // Бур (просьба пользователя: «буквально пиксель бур, а не отдельный инструмент»):
+  // стальной пиксель, который дробит то, во что его упирают. Те же 6 бит, что у
+  // шароида: id за 63, в состав клетки не попадает — состав стальной (pureCompFor).
+  DRILL: 65,
 };
 
 // Размер таблиц по id элемента (idTable, DENSITY, HEAT_WEIGHT, uElem в
@@ -110,6 +114,14 @@ const TOOL_ZAP = 'tool:zap';
 // Трос (вкладка "Технологии", sim/rope.js): щелчок по одной точке, потом по
 // второй — между ними трос; ПКМ — убрать трос под курсором.
 const TOOL_ROPE = 'tool:rope';
+// Сегмент на тросе (вкладка "Технологии", sim/segment.js): щелчок у
+// шароида цепляет ему в конец цепочки сегмент (рядом пиксели бура — сегмент с буром);
+// ПКМ — убрать сегмент под курсором.
+const TOOL_SEGMENT = 'tool:segment';
+// Клей и захват (вкладка "Технологии", sim/objects.js): клей объединяет отдельные
+// объекты в области кисти, захват таскает объект за курсором.
+const TOOL_GLUE = 'tool:glue';
+const TOOL_GRAB = 'tool:grab';
 
 const CAT = {
   POWDER: 'powder',
@@ -299,6 +311,7 @@ const ELEMENTS = {
   // целиком sim/sharoid.js. Прочее — сталь (копируется ниже, после таблицы).
   // Цвет — средний серый корпуса (палитра); на поле — по кольцам (extra).
   [EL.SHAROID]: { id: EL.SHAROID, name: 'Шароид', cat: CAT.SOLID, color: [140, 140, 146], density: 40, flammable: false },
+  [EL.DRILL]: { id: EL.DRILL, name: 'Бур', cat: CAT.SOLID, color: [201, 161, 74], density: 40, flammable: false },
   // Техника (sim/charges.js): камера, монитор и солнечная панель по
   // физике — металл (плавление, ржавчина, кислота — ниже копируется у
   // металла, линейки окисла в data/oxides.js). Панель рисуется шахматкой
@@ -401,6 +414,7 @@ for (const key of ['maxStability', 'toughness', 'meltPoint', 'meltChance', 'melt
 // стойкость, кислота, плавление — её, и плавится он в расплав стали.
 for (const key of ['density', 'acidSlow', 'maxStability', 'toughness', 'meltPoint', 'meltChance', 'meltsInto']) {
   ELEMENTS[EL.SHAROID][key] = ELEMENTS[EL.STEEL][key];
+  ELEMENTS[EL.DRILL][key] = ELEMENTS[EL.STEEL][key];
 }
 // Свойства балки берутся от её материала (см. Sim.pickBeamMaterial), а эти
 // — только для справки в палитре: по умолчанию балка каменная, поэтому
@@ -415,7 +429,7 @@ for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltCha
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID,
+  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.DRILL, EL.DRILL,
   EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке
@@ -429,7 +443,7 @@ const ELEMENT_ORDER = [
 // (балка — обычное CAT.SOLID, как камень; колонист — CAT.POWDER, как
 // земля), но их место среди технологий, не среди сырых материалов (см.
 // materialCategoryKey в main.js).
-const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
+const TECH_ELEMENTS = new Set([EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.DRILL, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
 
 // Приборы и то, чем они являются по физике: под растворителем становятся
 // простым металлом (просьба: "не имея особых пикселей для этого"), а
@@ -479,7 +493,7 @@ function idTable(ids) {
 // Замёрзшие кислота и реагент — такие же твёрдые тела, как лёд (раньше их
 // тут не было, и без опоры они висели в воздухе).
 const IS_STRUCTURAL = idTable([EL.STONE, EL.WOOD, EL.METAL, EL.GLASS, EL.ICE, EL.ACID_ICE, EL.REAGENT_ICE, EL.DISSOLVER_ICE, EL.OILFILM, EL.WET_EARTH, EL.BEAM, EL.OXIDE, EL.METAL_OXIDE, EL.STEEL,
-  EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.COPPER_OXIDE, EL.ALLOY, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP]);
+  EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.COPPER_OXIDE, EL.ALLOY, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP, EL.DRILL]);
 function isStructural(id) { return IS_STRUCTURAL[id] === 1; }
 
 // Окисел любой стадии и любого металла-основы (число стадии — в
@@ -502,7 +516,7 @@ function isAnchor(id) { return IS_ANCHOR[id] === 1; }
 // прочих твёрдых тел (камень, дерево, стекло, лёд и т.д.), которые для
 // потоков воздуха прозрачны. Пустота (VOID) намеренно НЕ входит сюда —
 // роль непроницаемой стены отдана именно "Стене", а не "Пустоте".
-const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL, EL.SHAROID, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.ALLOY, EL.GENERATOR]);
+const IS_AIRTIGHT = idTable([EL.WALL, EL.METAL, EL.STEEL, EL.SHAROID, EL.DRILL, EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.ALLOY, EL.GENERATOR]);
 function isAirtight(id) { return IS_AIRTIGHT[id] === 1; }
 
 // Твёрдое, сквозь которое видно: взгляд камеры (Sim.lookOpaque), человека

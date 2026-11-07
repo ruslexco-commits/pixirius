@@ -260,9 +260,22 @@ const SHAR_AIR_CTRL = 0.15;
 // к нему в 3 раза дольше"): толчок 2.3 вместо 1.5 — на деле прыжок с
 // приседа и с ногами выходит примерно втрое выше прежнего.
 const SHAR_JUMP_PREP = 12;
+// Прыжок на ходу (просьба: "во время невысокого прыжка, если зажата клавиша
+// движения, продолжать двигаться и в последствии в нём прыгнуть, чтобы не
+// тормозил"): незаряженный прыжок при зажатой стороне и идущем теле готовится
+// SHAR_JUMP_PREP_RUN кадров, не останавливаясь (s.jumpRun), и уходит в воздух с
+// прежней скоростью хода (s.airVx), а не с SHAR_AIR_VX.
+const SHAR_JUMP_PREP_RUN = 4;
 const SHAR_JUMP_CROUCH = 3;
 const SHAR_JUMP_V = 2.3;
 const SHAR_JUMP_BUFFER = 8;
+// Ржавение ног (просьба: «ноги подвержены окислению и ржавению; в этом месте теряет
+// подвижность»): стадия leg.rust растёт от воды и кислоты у ноги (rustChanceAround,
+// sim/rope.js), раз в SHAR_RUST_PERIOD кадров; с SHAR_RUST_STIFF нога не шагает, а
+// сорвавшаяся с опоры висит неподвижно относительно тела и не считается опорой.
+const SHAR_RUST_PERIOD = 6;
+const SHAR_RUST_MAX = 3;
+const SHAR_RUST_STIFF = 2;
 // Высота обычного взлёта, клеток: v²/(2g). Меньше места над телом — прыгать в препятствие незачем.
 const SHAR_JUMP_HEAD = Math.ceil(SHAR_JUMP_V * SHAR_JUMP_V / (2 * SHAR_GRAVITY));
 const SHAR_CROUCH = 4;
@@ -639,10 +652,38 @@ class SimSharoid {
   }
 
   // Сколько ног не отвалилось.
+  // Проржавевшая нога, не стоящая на опоре, не в счёт: она не шагает и не встанет.
   sharLegsAlive(s) {
     let n = 0;
-    for (let k = 0; k < 3; k++) if (!s.legs[k].gone) n++;
+    for (let k = 0; k < 3; k++) {
+      const leg = s.legs[k];
+      if (!leg.gone && !((leg.rust | 0) >= SHAR_RUST_STIFF && !leg.on && s.sw !== k)) n++;
+    }
     return n;
+  }
+
+  // Проржавели две и больше ног: шароид не ходит и вбок не двигается (иначе он
+  // «полз» бы по полу в режиме воздуха).
+  sharImmobile(s) {
+    let n = 0;
+    for (let k = 0; k < 3; k++) if (!s.legs[k].gone && (s.legs[k].rust | 0) >= SHAR_RUST_STIFF) n++;
+    return n >= 2;
+  }
+
+  // Ржавение ног (раз в SHAR_RUST_PERIOD кадров): по клеткам, которые нога рисует.
+  sharRustTick(s) {
+    const w = this.w, h = this.h;
+    for (let k = 0; k < 3; k++) {
+      const leg = s.legs[k];
+      if (leg.gone || (leg.rust | 0) >= SHAR_RUST_MAX) continue;
+      let best = 0;
+      this.sharLegCells(s, k, (x, y) => {
+        if (x < 0 || x >= w || y < 0 || y >= h) return;
+        const c = this.rustChanceAround(y * w + x);
+        if (c > best) best = c;
+      });
+      if (best > 0 && Math.random() < best) leg.rust = (leg.rust | 0) + 1;
+    }
   }
 
   // ---- ноги: висящие ----
@@ -660,6 +701,14 @@ class SimSharoid {
   sharHang(s, k, snap = false) {
     const leg = s.legs[k];
     if (leg.gone) return;
+    // Проржавевшая нога висит неподвижно относительно тела (оттуда, где застыла).
+    if ((leg.rust | 0) >= SHAR_RUST_STIFF) {
+      if (leg.rox === undefined) { leg.rox = leg.x - s.x; leg.roy = leg.y - s.y; }
+      const nx = s.x + leg.rox, ny = s.y + leg.roy;
+      if (nx >= 0 && nx < this.w && ny >= 0 && ny < this.h && this.sharFreeAt(nx, ny)) { leg.x = nx; leg.y = ny; }
+      leg.on = false; leg.n = SHAR_ON_FLOOR;
+      return;
+    }
     // В прыжке боковые ноги — к телу, в падении — в стороны (SHAR_LEG_TUCK_X),
     // и падая, нога тянется к опоре под собой (sharGroundBelow).
     // Стоит на двух других и ждёт опору (sharStartStep) — подтянута к телу.
@@ -734,7 +783,7 @@ class SimSharoid {
   sharGrabHolds(s) {
     for (let k = 0; k < 3; k++) {
       const leg = s.legs[k];
-      if (leg.on || leg.gone || s.sw === k) continue;
+      if (leg.on || leg.gone || s.sw === k || (leg.rust | 0) >= SHAR_RUST_STIFF) continue;
       const h = this.sharFindHold(s, k, Math.round(leg.x), Math.round(leg.y), SHAR_GRAB_X, SHAR_GRAB, SHAR_GRAB, 0);
       if (h) { leg.x = h.x; leg.y = h.y; leg.n = h.n; leg.on = true; }
     }
@@ -1082,18 +1131,20 @@ class SimSharoid {
 
   updateSharoid(s) {
     const want = this.sharoidIntent(s);
+    if ((this.frame + s.id) % SHAR_RUST_PERIOD === 0) this.sharRustTick(s);
     if (want.dir) s.face = want.dir;
     this.sharLook(s, want);
-    // Пробел при спуске (просьба пользователя): S зажата, а тело идёт или
-    // уже в воздухе — отпускает ноги и падает, пока пробел не нажат снова.
-    // Пробел без S на ходу — обычный прыжок, заряженный (с приседа) — тоже
-    // обычный: из приседа на месте отпускать нечего.
+    // Пробел при спуске (просьба пользователя): S зажата, а тело уже не
+    // держится ногами (в воздухе, над обрывом) — отпускает ноги и падает, пока
+    // пробел не нажат снова. Пробел с S на полу — заряженный прыжок, и на бегу
+    // тоже: раньше бег (S + сторона) считался "спуском", ноги отпускались и тело
+    // вдавливалось в пол (жалоба: "высокий прыжок на бегу ломает анимацию").
     if (want.jump && s.ctrl >= 0) {
       if (s.limp) { s.limp = false; want.jump = false; }
       // Заряжание прыжка (jumpT > 0) — не отпускание: присед сдвигает тело, и
       // sharHeld в этот кадр ложен, а пробел с S на месте тогда срывал прыжок
       // (ноги отпускались и тут же вставали — сцена: S+пробел, высота 0).
-      else if (want.crouch && s.jumpT === 0 && (s.spd > 0 || !this.sharHeld(s))) {
+      else if (want.crouch && s.jumpT === 0 && !this.sharHeld(s)) {
         s.limp = true; s.sw = -1; s.jumpT = 0; s.jumpBuf = 0;
         for (let k = 0; k < 3; k++) s.legs[k].on = false;
         want.jump = false;
@@ -1117,14 +1168,15 @@ class SimSharoid {
   // — качается (ropeSwingSharoid). Ноги висят и встают на опору, которой
   // коснутся (только на спуске).
   sharoidAir(s, dir) {
-    s.sw = -1; s.crouch = 0; s.jumpT = 0;
+    s.sw = -1; s.crouch = 0; s.jumpT = 0; s.jumpRun = false;
     s.spd = 0; s.walkAcc = 0; s.autoCrouch = false;
     const below = s.y + SHAR_H < this.h ? this.type[(s.y + SHAR_H) * this.w + s.x + (SHAR_W >> 1)] : EL.EMPTY;
     const max = IS_LIQUID[below] === 1 ? SHAR_SINK_MAX : SHAR_FALL_MAX;
     s.vy = Math.min(max, s.vy + SHAR_GRAVITY);
     // Вбок — только пока держат клавишу: без неё скорость сохраняется
     // (инерция прыжка, качание на тросе).
-    if (dir) s.vx += (dir * SHAR_AIR_VX - s.vx) * SHAR_AIR_CTRL;
+    // Две проржавевшие ноги — тело не управляется вбок и в воздухе (теряет подвижность).
+    if (dir && !this.sharImmobile(s)) s.vx += (dir * (s.airVx || SHAR_AIR_VX) - s.vx) * SHAR_AIR_CTRL;
     if (this.ropes.length) this.ropeSwingSharoid(s);
     s.fy += s.vy;
     s.fx += s.vx;
@@ -1147,7 +1199,7 @@ class SimSharoid {
     if (this.sharHeld(s)) {
       // Встал с разгона — ядро по инерции приседает (SHAR_LAND_DIP_*).
       if (s.vy >= SHAR_LAND_DIP_MIN_V) { s.dip = Math.min(SHAR_LAND_DIP_MAX, Math.round(s.vy * SHAR_LAND_DIP_PER_V)); s.dipT = 0; }
-      s.vy = 0; s.fy = 0; s.vx = 0; s.fx = 0;
+      s.vy = 0; s.fy = 0; s.vx = 0; s.fx = 0; s.airVx = 0;
     }
   }
 
@@ -1396,8 +1448,12 @@ class SimSharoid {
     if (s.jumpT === 0 && s.jumpBuf > 0) {
       s.jumpBuf = 0;
       s.jumpCharged = !!want.crouch;
-      s.jumpPrep = s.jumpCharged ? SHAR_JUMP_PREP * SHAR_CHARGE_PREP_K : SHAR_JUMP_PREP;
+      s.jumpRun = !s.jumpCharged && !s.ledge && !!dir && s.spd > 0;
+      s.jumpPrep = s.jumpCharged ? SHAR_JUMP_PREP * SHAR_CHARGE_PREP_K : s.jumpRun ? SHAR_JUMP_PREP_RUN : SHAR_JUMP_PREP;
       s.jumpT = s.jumpPrep;
+      // Скорость хода в начале прыжка: за долгую подготовку s.spd успевает разогнаться
+      // до полной, а в воздух он должен уйти с той, с какой бежал.
+      s.jumpSpd = s.spd;
     }
     if (s.jumpT > 0) {
       if (--s.jumpT === 0) {
@@ -1405,8 +1461,10 @@ class SimSharoid {
         for (let k = 0; k < 3; k++) { s.legs[k].on = false; s.legs[k].n = SHAR_ON_FLOOR; }
         s.vy = -SHAR_JUMP_V * (s.jumpCharged ? Math.sqrt(SHAR_CHARGE_HEIGHT_K) : 1);
         // С обрыва — чуть вбок (SHAR_LEDGE_VX), а не как обычный прыжок.
-        s.vx = dir * (s.ledge ? SHAR_LEDGE_VX : SHAR_AIR_VX);
+        s.airVx = (s.jumpRun || s.jumpCharged) && !s.ledge && dir ? Math.max(SHAR_AIR_VX, Math.min(s.spd, s.jumpSpd || s.spd)) : 0;
+        s.vx = dir * (s.ledge ? SHAR_LEDGE_VX : s.airVx || SHAR_AIR_VX);
         s.ledge = false;
+        s.jumpRun = false;
         s.fy = 0;
         this.sharoidAir(s, dir);
         return;
@@ -1462,7 +1520,7 @@ class SimSharoid {
       if (vert && !s.shaftManual) side = c.dir;
     }
     const rate = floor || mouth ? s.spd : vert || side ? normal : 0;
-    s.walkAcc = rate > 0 && s.jumpT === 0 ? s.walkAcc + rate : 0;
+    s.walkAcc = rate > 0 && (s.jumpT === 0 || s.jumpRun) ? s.walkAcc + rate : 0;
     let blocked = null;
     // За кадр тело может сделать до двух шагов (ход вдвое быстрее: до 4/3 клетки
     // за кадр). Первый упор — конец хода в этом кадре.
@@ -1748,11 +1806,11 @@ class SimSharoid {
     // от долгого упора: тогда она дёргалась бы туда-сюда).
     let best = -1, bestLag = 0, stuck = -1, shift = 0;
     const retract = [false, false, false], regrip = [false, false, false];
-    for (let k = 0; k < 3 && best < 0; k++) if (!s.legs[k].on && !s.legs[k].gone) best = k;
+    for (let k = 0; k < 3 && best < 0; k++) if (!s.legs[k].on && !s.legs[k].gone && (s.legs[k].rust | 0) < SHAR_RUST_STIFF) best = k;
     if (best < 0) {
       for (let k = 0; k < 3; k++) {
         const leg = s.legs[k];
-        if (leg.gone) continue;
+        if (leg.gone || (leg.rust | 0) >= SHAR_RUST_STIFF) continue;
         const ox = this.sharHomeX(s, k) - leg.x, oy = this.sharHomeY(s, k, floor) - leg.y;
         let lag = mx || my ? ox * mx + oy * my : (floor ? Math.abs(ox) : 0);
         if ((mx || my) && lag >= SHAR_STEP_LAG) retract[k] = true;
@@ -1928,7 +1986,7 @@ class SimSharoid {
   sharEdgeFootFree(s, mx) {
     for (let k = 0; k < 3; k++) {
       const leg = s.legs[k];
-      if (leg.on || leg.gone || s.sw === k) continue;
+      if (leg.on || leg.gone || s.sw === k || (leg.rust | 0) >= SHAR_RUST_STIFF) continue;
       if (this.sharEdgeHold(s, k, mx)) return true;
     }
     return false;

@@ -2640,22 +2640,28 @@ console.log('50. Шароид: отламываются куски и ноги (
     ok(inShaft && deep && s.stuck < 30,
       `шахта 16: S + вправо — тело вошло в тоннель (x ${s.x}), опустилось до y ${s.y}, упор ${s.stuck}`);
   }
-  // S + пробел на спуске: ноги отпущены, тело падает, пробел снова — ноги встают.
+  // S + пробел на бегу (жалоба: «высокий прыжок на бегу ломает анимацию и вдавливает
+  // шароида в пол»): с пола это заряженный прыжок — высоко, тело не уходит в пол ниже
+  // приседа, ход вбок сохраняется. В воздухе S + пробел отпускает ноги, пробел снова —
+  // ноги снова вольны встать.
   {
-    const a = field(120, 70), s = stand(a, 30);
+    const a = field(160, 70), s = stand(a, 30);
     s.ctrl = 0; const inp = a.playerSlot(0).input;
     inp.right = true; inp.down = true;
-    for (let k = 0; k < 90; k++) a.step();
+    for (let k = 0; k < 60; k++) a.step();
+    const y0 = s.y, x0 = s.x;
+    inp.jump = true; a.step(); inp.jump = false;
+    let top = s.y, low = s.y, buried = 0;
+    for (let k = 0; k < 110 && !(k > 70 && s.vy > 0.5); k++) {
+      a.step(); top = Math.min(top, s.y); low = Math.max(low, s.y);
+      for (const l of s.legs) if (!l.gone && Math.round(l.y) >= 70 - 15 + 15) buried++;
+    }
+    ok(!s.limp && y0 - top > 30 && low - y0 <= g('SHAR_CROUCH') + 1 && s.x > x0 + 6,
+      `S + пробел на бегу: заряженный прыжок (взлёт ${y0 - top}, ниже стойки на ${low - y0}, прошёл ${s.x - x0}), ноги не отпущены (${!s.limp})`);
     inp.jump = true; a.step(); inp.jump = false;
     const limp = s.limp;
-    inp.down = false; inp.right = false;
-    for (let k = 0; k < 40; k++) a.step();
-    const fell = !s.legs.some((l) => l.on), low = s.y;
     inp.jump = true; a.step(); inp.jump = false;
-    const back = !s.limp;
-    for (let k = 0; k < 60; k++) a.step();
-    ok(limp && fell && low > 45 && back && a.sharHeld(s) && s.y < low,
-      `S + пробел на ходу: ноги отпустил (${limp}), упал без опоры (ноги висят: ${fell}, y ${low}), пробел — встал на ноги (${a.sharHeld(s)}, y ${s.y})`);
+    ok(limp && !s.limp, `в воздухе S + пробел: ноги отпущены (${limp}), пробел снова — ноги вольны (${!s.limp})`);
   }
   // W: вытянуться выше стойки; нажатие W не прыжок.
   {
@@ -2824,8 +2830,256 @@ console.log('55. Шароид: S на ровном полу стоит, у то�
       a.step();
       for (const l of s.legs) if (!l.gone && Math.round(l.y) >= 60) buried++;
     }
-    ok(s.limp && buried === 0, `S+пробел на ходу: ноги отпущены (${s.limp}), кадров со ступнёй в грунте ${buried}`);
+    ok(!s.limp && buried === 0, `S+пробел на бегу: заряженный прыжок, ноги не отпущены (${!s.limp}), кадров со ступнёй в грунте ${buried}`);
   }
+}
+
+{
+  // Прыжок на ходу (просьба пользователя): зажата сторона, тело идёт — прыжок
+  // не останавливает его, а уходит в воздух с прежней скоростью.
+  const a = new Sim(200, 90); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 85, 199, 89, EL.STONE);
+  a.placeSharoid(30, 50);
+  const s = a.sharoids[0];
+  for (let k = 0; k < 80; k++) a.step();
+  s.ctrl = 0;
+  const inp = a.playerSlot(0).input;
+  inp.right = true;
+  for (let k = 0; k < 40; k++) a.step();
+  const x0 = s.x;
+  inp.jump = true; a.step(); inp.jump = false;
+  let air = -1;
+  for (let k = 0; k < 14; k++) { a.step(); if (air < 0 && s.vy < 0) air = k; }
+  const x1 = s.x;
+  for (let k = 0; k < 40; k++) a.step();
+  ok(air >= 0 && air <= 10 && x1 - x0 >= 5 && s.x - x1 >= 5, `прыжок на ходу: взлёт через ${air} кадров, за 14 кадров ушёл на ${x1 - x0} клеток, потом ещё на ${s.x - x1}`);
+}
+{
+  // Сегменты шароида на тросе (sim/segment.js): цепочка висит на стальных
+  // тросах и тянется за шароидом.
+  const a = new Sim(200, 90); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 85, 199, 89, EL.WALL);
+  a.placeSharoid(30, 50);
+  const s = a.sharoids[0];
+  for (let k = 0; k < 80; k++) a.step();
+  const cx = s.x + 6, cy = s.y + 6;
+  ok(a.addSegment(cx, cy, 0) && a.addSegment(cx, cy, 1) && a.segs.length === 2 && a.ropes.length === 2, `два сегмента в цепочке: сегментов ${a.segs.length}, тросов ${a.ropes.length}`);
+  ok(a.ropes.every((r) => r.mat === EL.STEEL), 'трос сегментов — стальной');
+  for (let k = 0; k < 60; k++) a.step();
+  const inBody = a.segs.some((g) => !a.segFree(g.x, g.y, g.bdx, g.bdy, g.kind));
+  ok(!inBody, 'сегменты стоят в свободном месте');
+  s.ctrl = 0;
+  const inp = a.playerSlot(0).input;
+  const gx0 = a.segs[1].x;
+  inp.right = true;
+  for (let k = 0; k < 160; k++) a.step();
+  inp.right = false;
+  for (let k = 0; k < 60; k++) a.step();
+  const last = a.segs[1];
+  ok(s.x > 60 && last.x > gx0 + 25 && Math.abs(last.x - (s.x + 6)) <= 26, `цепочка тянется за шароидом: тело x=${s.x}, последний сегмент x=${last.x} (был ${gx0})`);
+  ok(a.segs.length === 2 && a.ropes.length === 2, 'тросы цепочки целы');
+  // Отмена и файл — с сегментами.
+  const snap = a.snapshot(), file = JSON.stringify(a.serialize());
+  a.removeSegmentNear(a.segs[1].x, a.segs[1].y);
+  ok(a.segs.length === 1 && a.ropes.length === 1, 'ПКМ убирает сегмент вместе с тросом');
+  a.restore(snap);
+  const a2 = new Sim(200, 90); a2.deserialize(JSON.parse(file));
+  ok(a.segs.length === 2 && a2.segs.length === 2 && JSON.stringify(a2.serialize()) === file, 'отмена и файл возвращают сегменты');
+}
+{
+  // Бур: камень рядом с шароидом, цель на камне и ЛКМ — жало дробит и подаётся вперёд.
+  const a = new Sim(200, 90); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 85, 199, 89, EL.WALL);
+  box(a, 42, 70, 50, 84, EL.STONE);
+  a.placeSharoid(30, 50);
+  const s = a.sharoids[0];
+  for (let k = 0; k < 80; k++) a.step();
+  a.addSegment(s.x + 6, s.y + 6, 1);
+  for (let k = 0; k < 40; k++) a.step();
+  s.ctrl = 0;
+  const inp = a.playerSlot(0).input;
+  const before = count(a, EL.STONE);
+  inp.aim = true; inp.ax = 42; inp.ay = 80; inp.mine = false;
+  for (let k = 0; k < 120; k++) a.step();
+  ok(count(a, EL.STONE) === before, 'без ЛКМ бур камень не трогает');
+  inp.mine = true;
+  // Прицел идёт вглубь камня (как мышь игрока): бур подаётся за ним, жало касается цели.
+  // Коробка бура в камень не входит, только жало (SEG_BIT клеток): дальше него ход не пробить.
+  for (let ax = 42; ax <= 46; ax++) { inp.ax = ax; for (let k = 0; k < 120; k++) a.step(); }
+  const after = count(a, EL.STONE), g = a.segs[0];
+  ok(after <= before - 4 && g.bdx === 1 && g.x >= 38, `бур с ЛКМ прошёл в камень за прицелом: было ${before}, стало ${after}, центр x ${g.x}, жало на (${g.bdx}, ${g.bdy})`);
+  const wallBefore = count(a, EL.WALL);
+  inp.ax = 100; inp.ay = 87;
+  for (let k = 0; k < 300; k++) a.step();
+  ok(count(a, EL.WALL) === wallBefore, 'стену бур не берёт');
+}
+{
+  // Трос — материал того, к чему крепится; лава его рвёт; тело тяжелее, чем
+  // держит трос по стойкости материала, рвёт его; ветер относит тело.
+  const t = new Sim(120, 100); t.lookColor = () => [0, 0, 0];
+  box(t, 0, 95, 119, 99, EL.WALL);
+  box(t, 38, 8, 42, 12, EL.STONE);
+  t.addRope(40, 10, 70, 30);
+  ok(t.ropes[0].mat === EL.STONE, `материал троса — камень первого конца: ${t.ropes[0].mat}`);
+  const cells = t.ropeCells(t.ropes[0]), mid = cells[cells.length >> 1];
+  t.setCell(mid % 120, (mid / 120) | 0, EL.LAVA, false);
+  for (let k = 0; k < 8; k++) t.step();
+  ok(t.ropes.length === 0, 'лава на пути рвёт трос');
+  const u = new Sim(120, 100); u.lookColor = () => [0, 0, 0];
+  box(u, 0, 95, 119, 99, EL.WALL);
+  box(u, 50, 30, 69, 49, EL.STONE);
+  u.addRope(60, 5, 60, 30);
+  u.ropes[0].mat = EL.STONE;
+  for (let k = 0; k < 4; k++) u.step();
+  ok(u.ropes.length === 0 && count(u, EL.STONE) === 400, `400 клеток тяжелее, чем держит каменный трос (${u.ropeCapacity({ mat: EL.STONE })}): трос порван, камень цел`);
+  const sway = (wind) => {
+    const v = new Sim(120, 100); v.lookColor = () => [0, 0, 0];
+    box(v, 0, 95, 119, 99, EL.WALL);
+    box(v, 58, 40, 61, 43, EL.STONE);
+    v.addRope(60, 10, 60, 40);
+    let sum = 0, n = 0;
+    for (let k = 0; k < 400; k++) {
+      if (wind) v.windVX.fill(wind);
+      v.step();
+      if (k > 100 && v.ropes.length) { sum += v.ropes[0].b.x; n++; }
+    }
+    return n ? sum / n - 60 : NaN;
+  };
+  const calm = sway(0), windy = sway(2);
+  ok(Math.abs(calm) < 1 && windy > 1.5, `ветер относит тело на тросе: без ветра ${calm.toFixed(1)}, с ветром ${windy.toFixed(1)} клеток от крюка`);
+}
+
+console.log('57. Отдельные объекты: отрыв, клей, ветер, рука, захват шароида, бур-пиксель');
+{
+  const ids = (sim) => { const m = new Map(); for (let i = 0; i < sim.obj.length; i++) if (sim.obj[i]) m.set(sim.obj[i], (m.get(sim.obj[i]) || 0) + 1); return m; };
+  // Куб, повисший в воздухе, падает и остаётся отдельным объектом; земля — местность.
+  const a = new Sim(120, 80); a.lookColor = () => [0, 0, 0];
+  box(a, 0, 70, 119, 79, EL.STONE);
+  box(a, 20, 20, 29, 29, EL.STONE);
+  for (let k = 0; k < 90; k++) a.step();
+  let m = ids(a);
+  let ground = 0; for (let x = 0; x < 120; x++) if (a.obj[75 * 120 + x]) ground++;
+  ok(m.size === 1 && [...m.values()][0] === 100 && ground === 0, `упавший куб — один объект из 100 клеток (${[...m.values()]}), земля не помечена (${ground})`);
+  // Разорвался на части — каждая часть самостоятельна.
+  for (let y = 60; y < 70; y++) a.clearCell(y * 120 + 24);
+  for (let k = 0; k < 6; k++) a.step();
+  m = ids(a);
+  ok(m.size === 2, `куб разрезан пополам: объектов ${m.size}`);
+  // Клей: два касающихся куба разных объектов — склеиваются в один.
+  const b = new Sim(120, 80); b.lookColor = () => [0, 0, 0];
+  box(b, 0, 70, 119, 79, EL.STONE);
+  box(b, 20, 20, 29, 29, EL.STONE); box(b, 30, 20, 39, 29, EL.STONE);
+  for (let k = 0; k < 90; k++) b.step();
+  // Оба куба упали отдельным телом? Они касаются — одно тело; режем клеем ПКМ левую половину.
+  b.glueBrush(25, 65, 'square', 5, 5, true);
+  const split = ids(b).size;
+  b.glueBrush(30, 65, 'square', 8, 8, false);
+  ok(split === 2 && ids(b).size === 1, `клей: ПКМ выделил половину (${split} объекта), ЛКМ склеил обратно (${ids(b).size})`);
+  // Ветер сдувает объект, местность — нет.
+  const c = new Sim(120, 40); c.lookColor = () => [0, 0, 0];
+  box(c, 0, 35, 119, 39, EL.STONE); box(c, 20, 15, 27, 22, EL.STONE);
+  for (let k = 0; k < 60; k++) c.step();
+  const left = () => { let mx = 1e9; for (let i = 0; i < c.obj.length; i++) if (c.obj[i]) mx = Math.min(mx, i % 120); return mx; };
+  const x0 = left(), groundBefore = count(c, EL.STONE);
+  c.getWindVX = () => 3;
+  for (let k = 0; k < 60; k++) c.step();
+  ok(left() > x0 + 10 && count(c, EL.STONE) === groundBefore, `ветер сносит объект (${x0} → ${left()}), местность на месте`);
+  // Рука редактора: берёт объект и тащит за курсором; отпущен — падает.
+  const d = new Sim(120, 80); d.lookColor = () => [0, 0, 0];
+  box(d, 0, 70, 119, 79, EL.STONE); box(d, 20, 20, 29, 29, EL.STONE);
+  for (let k = 0; k < 90; k++) d.step();
+  ok(d.objGrabAt(25, 65), 'рука берёт объект под курсором');
+  d.objHandTo(70, 40);
+  for (let k = 0; k < 80; k++) d.step();
+  let cx = 0, n = 0, cy = 0; for (let i = 0; i < d.obj.length; i++) if (d.obj[i]) { cx += i % 120; cy += (i / 120) | 0; n++; }
+  ok(n === 100 && Math.abs(cx / n - 70) < 8 && Math.abs(cy / n - 40) < 8, `рука доставила объект к курсору: центр (${(cx / n).toFixed(0)}, ${(cy / n).toFixed(0)}) из 100 клеток`);
+  d.objHandDrop();
+  for (let k = 0; k < 80; k++) d.step();
+  let low = 0; for (let i = 0; i < d.obj.length; i++) if (d.obj[i]) low = Math.max(low, (i / 120) | 0);
+  ok(low === 69, `отпущенный объект упал на землю (низ ${low})`);
+  // Захват шароида: до 20 клеток держит у тела и ведёт за ним; больше — не берёт.
+  const e = new Sim(200, 90); e.lookColor = () => [0, 0, 0];
+  box(e, 0, 85, 199, 89, EL.STONE);
+  e.placeSharoid(30, 50);
+  for (let k = 0; k < 80; k++) e.step();
+  box(e, 60, 20, 63, 23, EL.STONE); box(e, 100, 20, 104, 24, EL.STONE);
+  for (let k = 0; k < 90; k++) e.step();
+  const s = e.sharoids[0]; s.ctrl = 0; const inp = e.playerSlot(0).input;
+  inp.aim = true; inp.ax = 62; inp.ay = 83; inp.grip = true; e.step();
+  const grabbed = !!s.grip;
+  for (let k = 0; k < 60; k++) e.step();
+  const cell = s.grip && s.grip.cell, gx = cell % 200, gy = (cell / 200) | 0;
+  const near = Math.hypot(gx - (s.x + 6), gy - (s.y + 6));
+  ok(grabbed && near < 16 && gy < 80, `захват: объект в 16 клетках схвачен и висит у тела (расстояние ${near.toFixed(1)}, y ${gy})`);
+  inp.right = true; for (let k = 0; k < 60; k++) e.step(); inp.right = false;
+  const gx2 = s.grip ? s.grip.cell % 200 : -1;
+  ok(s.grip && Math.abs(gx2 - (s.x + 6)) < 16 && s.x > 35, `объект идёт за шароидом (тело x ${s.x}, объект x ${gx2})`);
+  inp.grip = true; e.step();
+  ok(!s.grip, 'повторное нажатие отпускает');
+  inp.aim = true; inp.ax = 102; inp.ay = 83; inp.grip = true; e.step();
+  ok(!s.grip, 'объект из 25 клеток (больше 20) не берётся');
+  // Бур: объект из пикселей бура в захвате дробит стену, во что его упирают.
+  const f = new Sim(200, 90); f.lookColor = () => [0, 0, 0];
+  box(f, 0, 85, 199, 89, EL.STONE); box(f, 56, 40, 80, 84, EL.STONE);
+  f.placeSharoid(30, 50);
+  for (let k = 0; k < 80; k++) f.step();
+  box(f, 42, 78, 44, 80, EL.STEEL); box(f, 45, 79, 47, 79, EL.DRILL);
+  f.glueBrush(45, 79, 'square', 4, 4, true);
+  for (let k = 0; k < 10; k++) f.step();
+  const sf = f.sharoids[0]; sf.ctrl = 0; const pf = f.playerSlot(0).input;
+  pf.aim = true; pf.ax = 44; pf.ay = 79; pf.grip = true; f.step();
+  const held = !!sf.grip;
+  const wall0 = count(f, EL.STONE);
+  pf.ax = 70; pf.ay = 72; pf.mine = true;
+  for (let k = 0; k < 300; k++) f.step();
+  pf.mine = false;
+  ok(held && count(f, EL.STONE) <= wall0 - 3, `бур в захвате: схвачен (${held}), камня стало меньше на ${wall0 - count(f, EL.STONE)} клеток`);
+  // Сегмент из пикселей бура: пиксели уходят в сегмент с буром.
+  const g2 = new Sim(200, 90); g2.lookColor = () => [0, 0, 0];
+  box(g2, 0, 85, 199, 89, EL.WALL);
+  g2.placeSharoid(30, 50);
+  for (let k = 0; k < 80; k++) g2.step();
+  const sg = g2.sharoids[0];
+  box(g2, sg.x + 14, sg.y + 5, sg.x + 15, sg.y + 6, EL.DRILL);
+  const before = count(g2, EL.DRILL);
+  ok(g2.addSegment(sg.x + 14, sg.y + 5) && g2.segs[0].kind === 1 && count(g2, EL.DRILL) === 0 && before === 4, `пиксели бура рядом: сегмент с буром, пиксели ушли в него (${before} → ${count(g2, EL.DRILL)})`);
+}
+
+console.log('58. Ржавение троса и ног шароида: в воде проржавевшее теряет подвижность');
+{
+  // Стальной трос с сегментом в воде ржавеет и становится жёстким; в воздухе — нет.
+  const mk = (water) => {
+    const a = new Sim(160, 90); a.lookColor = () => [0, 0, 0];
+    box(a, 0, 85, 159, 89, EL.WALL);
+    a.placeSharoid(30, 20);
+    for (let k = 0; k < 120; k++) a.step();
+    const s = a.sharoids[0];
+    a.addSegment(s.x + 6, s.y + 6, 0);
+    for (let k = 0; k < 60; k++) a.step();
+    // Воду наливают потом, на стоящего шароида (в пустые клетки).
+    if (water) for (let y = 40; y <= 84; y++) for (let x = 0; x < 160; x++) a.setCell(x, y, EL.WATER, true);
+    return { a, s };
+  };
+  const dry = mk(false), wet = mk(true);
+  for (let k = 0; k < 2500; k++) { dry.a.step(); wet.a.step(); }
+  const rope = wet.a.ropes[0];
+  ok(!dry.a.ropes[0].rust && rope && rope.rust && wet.a.ropeStiff(rope), `трос в воде проржавел (звенья ${rope && rope.rust}), в воздухе чист`);
+  // Жёсткий трос: сегмент больше не качается — расстояние до якоря не меняется.
+  const g = wet.a.segs[0], anchor = wet.a.ropeEndPos(rope.a);
+  const d0 = Math.hypot(g.x - anchor[0], g.y - anchor[1]);
+  wet.s.ctrl = 0; wet.a.playerSlot(0).input.right = true;
+  let dmax = 0;
+  for (let k = 0; k < 120; k++) { wet.a.step(); const an = wet.a.ropeEndPos(rope.a); if (an) dmax = Math.max(dmax, Math.abs(Math.hypot(g.x - an[0], g.y - an[1]) - d0)); }
+  ok(dmax < 3, `сегмент на жёстком тросе держит расстояние до якоря (отклонение ${dmax.toFixed(1)})`);
+  // Ноги шароида в воде ржавеют: проржавевший не шагает.
+  const legsRust = wet.s.legs.map((l) => l.rust | 0);
+  ok(legsRust.every((v) => v >= 2) && dry.s.legs.every((l) => !(l.rust | 0)), `ноги в воде проржавели (${legsRust}), в воздухе чисты`);
+  wet.a.playerSlot(0).input.right = false;
+  for (let k = 0; k < 60; k++) wet.a.step();
+  const wx0 = wet.s.x;
+  wet.a.playerSlot(0).input.right = true;
+  for (let k = 0; k < 200; k++) wet.a.step();
+  ok(Math.abs(wet.s.x - wx0) <= 3, `проржавевшими ногами шароид не ходит (x ${wx0} → ${wet.s.x})`);
 }
 
 console.log('59. Химия (data/chem.js): кислота оставляет кремний остатком, соль растворяется долями, взрыв дробит, а не стирает');

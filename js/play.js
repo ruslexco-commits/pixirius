@@ -434,6 +434,8 @@ class PlayMode {
         if (down && !e.repeat) inp.jump = true;
         break;
       case 'KeyS': case 'ArrowDown': inp.down = down; break;
+      // E — захват шароида: схватить объект у курсора / отпустить (sim/objects.js).
+      case 'KeyE': if (down && !e.repeat) inp.grip = true; break;
       case 'Space':
         this.upSpace = down;
         inp.up = this.upW || this.upSpace;
@@ -448,6 +450,7 @@ class PlayMode {
   releaseKeys() {
     const inp = this.inp();
     inp.left = inp.right = inp.up = inp.down = inp.jump = false;
+    inp.grip = false;
     inp.mine = false;
     // Вне игры сенсор шароида снова смотрит по ходу, а не на курсор.
     inp.aim = false;
