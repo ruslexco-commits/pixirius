@@ -80,6 +80,8 @@ class SimSleep {
       for (let x = 0; x < this.w; x++) this._chunkOf[y * this.w + x] = row + ((x / SLEEP_CHUNK) | 0);
     }
     this._chunkDirty = new Uint8Array(count).fill(1);   // что-то менялось в этом кадре
+    // Менялось с прошлого пересчёта учёта простых веществ (sim/chem.js).
+    this._chemDirty = new Uint8Array(count).fill(1);
     // Пометки, снятые прошлым updateSleep. Общие проходы в начале кадра
     // (подпись скелета, непроницаемость воздуха) идут ДО updateSleep и
     // смотрят на dirty || prevDirty: иначе изменения, сделанные в прошлом
@@ -108,6 +110,10 @@ class SimSleep {
   markDirty(i) {
     const c = this._chunkOf[i];
     if (this._chunkDirty[c] === 0) this._chunkDirty[c] = 1;
+    // Своя пометка учёта простых веществ (sim/chem.js): её снимает пересчёт
+    // в начале и в конце кадра, а не updateSleep посреди него. Так же —
+    // запись, только если пометки ещё нет.
+    if (this._chemDirty[c] === 0) this._chemDirty[c] = 1;
   }
 
   // Менялось ли что-то в куске с прошлого прохода (см. _chunkPrevDirty).
@@ -123,6 +129,8 @@ class SimSleep {
     // Продавленные (sim/landing.js) могли прийти с отменой или файлом в
     // обход crushPixel: пусть следующий отсчёт пересчитает их заново.
     this._crushLive = 1;
+    // Учёт простых веществ пересчитает кэш кусков заново (sim/chem.js).
+    if (this.chemInvalidate) this.chemInvalidate();
   }
 
   // Раз в кадр, после всех общих проходов (устойчивость, ветер, тепло,

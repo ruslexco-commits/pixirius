@@ -303,6 +303,8 @@ class Sim {
     this.initBody();
     this.initSharoids();
     this.initRopes();
+    // Учёт простых веществ и воздух (sim/chem.js).
+    this.initChem();
   }
 
   idx(x, y) { return y * this.w + x; }
@@ -475,6 +477,8 @@ class Sim {
     this.ropes = [];
     this.spawnMarks = [];
     this.respawnMarks = [];
+    // Новое поле — и воздух нового поля (sim/chem.js).
+    this.chemClear();
     this.wakeAll();
   }
 
@@ -540,6 +544,9 @@ class Sim {
 
   step() {
     if (this.paused) return;
+    // Правки между кадрами (кисть, отмена, действия игроков) — до того, как
+    // кадр что-то поменяет: в учёте они не химия (sim/chem.js).
+    this.chemBeginStep();
     this.frame++;
     this.moved.fill(0);
     this.computeStability();
@@ -601,6 +608,9 @@ class Sim {
     this.updateCharges();
     // Точки респавна: падение и кислота (sim/spawns.js).
     this.updateRespawnMarks();
+    // Всё, что за кадр появилось в клетках или пропало из них, — обмен с
+    // воздухом (sim/chem.js). Последним: после всех механик кадра.
+    this.chemEndStep();
   }
   // Столбцы x0..x1-1 (вертикальная полоса параллельного обхода, см.
   // sim/threads.js) — строками снизу вверх, как updateRows, с тем же
@@ -667,7 +677,9 @@ class Sim {
     // В параллельной полосе (sim/threads.js) люди и колонисты
     // откладываются на главный поток: их память — в Map главного потока.
     // Туда же — клонер, который копирует человека.
-    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || id === EL.PROTAGONIST || (id === EL.CLONE && this.extra[i] === EL.HUMAN))) {
+    // Клонер и пустота — тоже: они меняют вещество на карте не по химии, и
+    // учёт (chemExternal, sim/chem.js) ведёт главный поток.
+    if (this._inBand && (id === EL.HUMAN || id === EL.COLONIST || id === EL.PROTAGONIST || id === EL.CLONE || id === EL.VOID)) {
       this.defer(DEFER_UPDATE, i);
       return;
     }

@@ -106,6 +106,14 @@ async function runScene(kind, steps) {
   // Прогрев, потом замер.
   for (let k = 0; k < 30 + steps; k++) ref.step();
   for (let k = 0; k < 30; k++) { single.step(); multi.step(); }
+  // Учёт простых веществ (sim/chem.js) по потокам: клетки + воздух -
+  // внешний обмен - правки не меняются, строгое через воздух не ходит.
+  const chemTotal = (sim) => {
+    const t = sim.chemCellsTotal(), n = t.length, ext = sim.chemExt;
+    for (let a = 0; a < n; a++) { t[a] += sim.chemAir[a] - sim.chemUser[a]; for (let c = a; c < ext.length; c += n) t[a] -= ext[c]; }
+    return t;
+  };
+  const chem0 = chemTotal(multi);
   // Общая фаза (ветер, тепло, выходы луж — globalPassesParallel) обязана
   // совпасть с однопоточными проходами побитно: тот же мир, один проход
   // там и там.
@@ -132,6 +140,9 @@ async function runScene(kind, steps) {
   t0 = process.hrtime.bigint();
   for (let k = 0; k < steps; k++) multi.step();
   const msN = Number(process.hrtime.bigint() - t0) / 1e6 / steps;
+  const chem1 = chemTotal(multi);
+  if (chem1.some((v, a) => v !== chem0[a])) fail(`${kind}: по потокам вещество не сохранилось: было ${[...chem0]}, стало ${[...chem1]}`);
+  if (multi.chemLeak.some((v) => v !== 0)) fail(`${kind}: по потокам строгое ушло в воздух: ${[...multi.chemLeak]}`);
   const cS = counts(envS, single), cT = counts(envT, multi), cR = counts(envR, ref);
   const ig = integrity(envT, multi);
   multi.stopThreads();

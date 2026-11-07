@@ -56,6 +56,10 @@ class SimPersistence {
     snap.sharoids = this.sharoidsDump();
     // Тросы (sim/rope.js) — так же.
     snap.ropes = this.ropesDump();
+    // Воздух и внешний обмен (sim/chem.js): отмена горения возвращает и
+    // дерево, и кислород, иначе вещество задвоилось бы.
+    snap.chemAir = this.chemAir.slice();
+    snap.chemExt = this.chemExt.slice();
     return snap;
   }
 
@@ -76,6 +80,8 @@ class SimPersistence {
     if (snap.rules) { this.loadYieldOn = snap.rules.loadYieldOn; if (snap.rules.regenOn !== undefined) this.regenOn = snap.rules.regenOn; }
     this.sharoidsLoad(snap.sharoids);
     this.ropesLoad(snap.ropes);
+    if (snap.chemAir) this.chemAir.set(snap.chemAir); else this.chemAirReset();
+    if (snap.chemExt) this.chemExt.set(snap.chemExt); else this.chemExt.fill(0);
     this.moved.fill(0);
     // Мир переписан целиком в обход обычных записей — будим все куски.
     this.wakeAll();
@@ -91,7 +97,9 @@ class SimPersistence {
       // Шароиды (sim/sharoid.js): положение, ноги, кто управляет.
       sharoids: this.sharoids,
       // Тросы (sim/rope.js).
-      ropes: this.ropes };
+      ropes: this.ropes,
+      // Воздух и внешний обмен (sim/chem.js) — простыми массивами чисел.
+      chemAir: Array.from(this.chemAir), chemExt: Array.from(this.chemExt) };
     for (const f of PARTICLE_FIELDS) out[f.saveKey || f.name] = bufToB64(this[f.name].buffer);
     return out;
   }
@@ -158,6 +166,11 @@ class SimPersistence {
     // Файл без шароидов — их нет; клетки шароидов без хозяина станут сталью.
     this.sharoidsLoad(obj.sharoids);
     this.ropesLoad(obj.ropes);
+    // Сохранение без воздуха (старое) — воздух нового поля.
+    if (Array.isArray(obj.chemAir) && obj.chemAir.length === CHEM_N) this.chemAir.set(obj.chemAir); else this.chemAirReset();
+    if (Array.isArray(obj.chemExt) && obj.chemExt.length === this.chemExt.length) this.chemExt.set(obj.chemExt); else this.chemExt.fill(0);
+    this.chemUser.fill(0);
+    this.chemLeak.fill(0);
     this.respawnMarks = Array.isArray(obj.respawnMarks) ? obj.respawnMarks.map((m) => ({ x: m.x | 0, y: m.y | 0, players: m.players || null, kinds: m.kinds || null, physics: !!m.physics, acid: !!m.acid })) : [];
     this.moved.fill(0);
     this.wakeAll();

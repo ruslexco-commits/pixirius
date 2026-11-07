@@ -42,7 +42,11 @@
 const LOCKSTEP_SKIP = new Set(['paused', 'timeScale', 'lockstep', '_rngFn', 'paintOxideStage', 'beamPaintMaterial', 'beamPaintExtra', 'loadWanted',
   '_tctrl', '_tstripes', '_tparams', '_deferQ', '_threadCount', '_threadHandles', '_rowsHeavy',
   // Рабочие буферы троса (sim/rope.js): отметки по клетке поля, пересоздаются сами.
-  '_ropeSeen', '_ropeList']);
+  '_ropeSeen', '_ropeList',
+  // Учёт простых веществ (sim/chem.js): кэш кусков пересчитывается после
+  // загрузки сам, правки игрока — справка своей вкладки. Воздух и внешний
+  // обмен (chemAir, chemExt) — мир.
+  'chemUser', '_chemHist', '_chemDirty', '_chemTmp', '_chemTmp2', '_chemDelta', '_chemVec', '_chemExtFrame', '_chemNeed']);
 
 class SimLockstep {
   rngSeed(seed) { this._rngState = seed >>> 0; }
@@ -137,6 +141,8 @@ class SimLockstep {
     for (const k of d.dropped) this[k] = null;
     for (const k in d.rest) this[k] = d.rest[k];
     this.paused = false;
+    // Кэш учёта простых веществ в мир не входит — пересчитается (sim/chem.js).
+    this.chemInvalidate();
   }
 
   // Отпечаток мира для сверки вкладок (см. шапку): генератор, кадр и поля,
