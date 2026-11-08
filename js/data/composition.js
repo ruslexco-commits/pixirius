@@ -206,6 +206,8 @@ function pureCompFor(id) {
   // Клетка шароида — сталь: id шароида в 6 бит доли не влезает (EL_LIMIT).
   // Шароидом её оставляет setComposition, пока она твёрдая.
   if (id === EL.SHAROID || id === EL.DRILL) return SHAROID_COMP;
+  // Живая клетка — органика: тело из долей дерева (sim/life.js).
+  if (id === EL.CELL) return solPure(EL.WOOD);
   return solPure(id);
 }
 const SHAROID_COMP = solPure(EL.STEEL);
@@ -256,7 +258,7 @@ function hasComposition(id) { return HAS_COMPOSITION[id] === 1; }
 // выпала бы новой стеной где попало) и живых (человек, колонист).
 const DISSOLVER_MIXABLE = new Uint8Array(EL_LIMIT);
 for (let id = 1; id < EL_LIMIT; id++) {
-  DISSOLVER_MIXABLE[id] = (PART_STATE[id] !== 0 && !isAnchor(id) && id !== EL.HUMAN && id !== EL.COLONIST && id !== EL.PROTAGONIST) ? 1 : 0;
+  DISSOLVER_MIXABLE[id] = (PART_STATE[id] !== 0 && !isAnchor(id) && id !== EL.HUMAN && id !== EL.COLONIST && id !== EL.PROTAGONIST && id !== EL.CELL) ? 1 : 0;
 }
 
 // "Фаза" жидкости для computeLiquidEscape/displaceLiquidThroughBody: всё

@@ -90,6 +90,12 @@ const EL = {
   // стальной пиксель, который дробит то, во что его упирают. Те же 6 бит, что у
   // шароида: id за 63, в состав клетки не попадает — состав стальной (pureCompFor).
   DRILL: 65,
+  // Живая клетка (sim/life.js, просьба пользователя: «живые клетки, которые едят
+  // всё вокруг, при сохранении материи»): сыпучий пиксель, тело которого — доли
+  // дерева (органика C, H, O); растёт, поедая соседнее вещество, делится, от голода
+  // умирает деревом. Id за 63, как у шароида: в состав доли не попадает, состав
+  // клетки — дерево (pureCompFor).
+  CELL: 66,
 };
 
 // Размер таблиц по id элемента (idTable, DENSITY, HEAT_WEIGHT, uElem в
@@ -312,6 +318,8 @@ const ELEMENTS = {
   // Цвет — средний серый корпуса (палитра); на поле — по кольцам (extra).
   [EL.SHAROID]: { id: EL.SHAROID, name: 'Шароид', cat: CAT.SOLID, color: [140, 140, 146], density: 40, flammable: false },
   [EL.DRILL]: { id: EL.DRILL, name: 'Бур', cat: CAT.SOLID, color: [201, 161, 74], density: 40, flammable: false },
+  // Плотность земли: тонет в воде и ложится на дно, колония растёт там, где есть чем питаться.
+  [EL.CELL]: { id: EL.CELL, name: 'Живая клетка', cat: CAT.POWDER, color: [104, 204, 96], density: 15, flammable: false },
   // Техника (sim/charges.js): камера, монитор и солнечная панель по
   // физике — металл (плавление, ржавчина, кислота — ниже копируется у
   // металла, линейки окисла в data/oxides.js). Панель рисуется шахматкой
@@ -429,7 +437,7 @@ for (const key of ['density', 'maxStability', 'toughness', 'meltPoint', 'meltCha
 // логика (реакции и т.д.) не удалены, только убраны отсюда — чтобы вернуть
 // элемент в палитру, достаточно снова добавить его в этот список.
 const ELEMENT_ORDER = [
-  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.DRILL, EL.DRILL,
+  EL.WATER, EL.BLOOD, EL.STONE, EL.WOOD, EL.OIL, EL.ACID, EL.REAGENT, EL.DISSOLVER, EL.METAL, EL.STEEL, EL.GLASS, EL.WALL, EL.STEAM, EL.LAVA, EL.EARTH, EL.MUD, EL.BLACK_SALT, EL.BEAM, EL.HUMAN, EL.PROTAGONIST, EL.SHAROID, EL.DRILL, EL.DRILL, EL.CELL,
   EL.CAMERA, EL.MONITOR, EL.SOLAR, EL.COPPER, EL.INSULATOR, EL.GENERATOR, EL.AMPLIFIER, EL.LAMP,
   // Окислы и остальные газы — их место во вкладке "Все" (по своей
   // категории они разошлись бы по "Телам", "Сыпучему" и бывшей вкладке

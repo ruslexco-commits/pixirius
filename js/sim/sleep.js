@@ -45,6 +45,7 @@ const RESTLESS_TYPE = idTable([
   EL.STEAM, EL.ACID_GAS, EL.VAPOR, EL.REAGENT_GAS, EL.OIL_GAS,
   EL.HUMAN, EL.COLONIST, EL.CLONE, EL.VOID, EL.WET_EARTH, EL.PROTAGONIST, EL.MOLTEN_COPPER,
   EL.MOLTEN_METAL, EL.MOLTEN_STEEL, EL.MOLTEN_ALLOY,
+  EL.CELL,   // живая клетка ест, делится и голодает по броску (sim/life.js)
 ]);
 
 // Безопасный диапазон температур по типу клетки: SAFE_LO < T < SAFE_HI —

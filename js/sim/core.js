@@ -447,6 +447,8 @@ class Sim {
     }
     // Солнечные панели при спавне складываются шахматкой (просьба
     // пользователя): оттенок светлее или темнее по чётности клетки.
+    // Живая клетка рождается с запасом сил на сотню своих ходов (sim/life.js).
+    if (id === EL.CELL) this.life[i] = CELL_ENERGY_START;
     if (id === EL.SOLAR) this.shade[i] = (((i % this.w) + ((i / this.w) | 0)) & 1) ? 10 : -10;
     // Кислотный остаток появляется первого уровня (см. reactAcidResidue).
     if (id === EL.ACID_RESIDUE) this.extra[i] = 1;
@@ -791,6 +793,7 @@ class Sim {
       case EL.COLONIST: this.reactColonist(x, y, i); break;
       case EL.HUMAN: this.reactHuman(x, y, i); break;
       case EL.PROTAGONIST: this.reactProtagonist(x, y, i); break;
+      case EL.CELL: this.reactCell(x, y, i); break;
     }
   }
 }

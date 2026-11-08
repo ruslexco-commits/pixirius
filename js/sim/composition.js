@@ -139,6 +139,9 @@ class SimComposition {
     if (cur === EL.SHAROID && liquid + solid > 0 && solid >= liquid) id = EL.SHAROID;
     // Пиксель бура — так же: разъеденный, он всё ещё бур, пока твёрдый.
     if (cur === EL.DRILL && liquid + solid > 0 && solid >= liquid) id = EL.DRILL;
+    // Живая клетка остаётся клеткой, пока тело твёрдое: её доли — дерево, и без
+    // этого setComposition тут же превратил бы её в дерево (sim/life.js).
+    if (cur === EL.CELL && liquid + solid > 0 && solid >= liquid) id = EL.CELL;
     if (this.type[i] !== id) { this.type[i] = id; this.markDirty(i); }
     this.setComp(i, comp);
   }

@@ -62,7 +62,7 @@ const CHEM_EXT_LIFE = 4;
 const CHEM_EXT_N = 5;
 const CHEM_EXT_NAMES = ['Клонер', 'Пустота', 'Добыча игроков', 'Механизмы', 'Живое'];
 // У живых поле dirt — урон, а не грязь на пикселе (sim/human.js).
-const CHEM_LIVING = idTable([EL.HUMAN, EL.PROTAGONIST, EL.COLONIST]);
+const CHEM_LIVING = idTable([EL.HUMAN, EL.PROTAGONIST, EL.COLONIST, EL.CELL]);
 // Влага земли (moisture): единица — одна впитанная клетка воды.
 const CHEM_MOIST = idTable([EL.EARTH, EL.WET_EARTH]);
 // Стадия окисла по типу клетки: рыхлый (не "весь рыхлый") — всегда
