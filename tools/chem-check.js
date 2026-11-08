@@ -146,13 +146,13 @@ function total(sim) {
   return t;
 }
 
-function run(name, sim, pokeFn) {
+function run(name, sim, pokeFn, frames = FRAMES) {
   console.log(name);
   sites.clear();
   sim.step();   // первый кадр заводит кэш кусков
   const t0 = total(sim);
   let worstAir = Infinity, worstAirAtom = -1, badFrames = 0;
-  for (let f = 0; f < FRAMES; f++) {
+  for (let f = 0; f < frames; f++) {
     if (pokeFn) pokeFn(sim, f);
     sim.step();
     const t = total(sim);
@@ -166,7 +166,7 @@ function run(name, sim, pokeFn) {
   if (worstAir < 0) fail(`воздух ушёл в минус: ${sym(worstAirAtom)} ${worstAir}`);
   const ext = new Float64Array(CHEM_N), air0 = new Float64Array(CHEM_N);
   for (let c = 0; c < CHEM_EXT_N; c++) for (let a = 0; a < CHEM_N; a++) ext[a] += sim.chemExt[c * CHEM_N + a];
-  console.log(`  кадров ${FRAMES}; внешний обмен ${vecText(ext)}; правки ${vecText(sim.chemUser)}`);
+  console.log(`  кадров ${frames}; внешний обмен ${vecText(ext)}; правки ${vecText(sim.chemUser)}`);
   console.log(`  воздух: ${[...sim.chemAir].map((n, a) => sym(a) + ' ' + n).join(', ')}`);
   if (sites.size) {
     console.log('  места, где за единицу работы не сошлось строгое (вызов <- кто звал: сумма, раз):');
@@ -228,6 +228,30 @@ function chemScene() {
     if (f === 30) s.stampBrush(176, s.h - 36, 'circle', 2, 2, EL.FIRE, false);
     if (f === 60) s.stampBrush(64, s.h - 52, 'circle', 2, 2, EL.WATER, false);
   });
+}
+
+// Колония живых клеток (EL.CELL, sim/life.js): растёт на воде, дереве и земле,
+// делится, голодает и умирает деревом. Вещество сохраняется на каждом кадре
+// (run проверяет сумму и утечку строгого), строгое никуда не девается, колония
+// действительно растёт (иначе проверка ничего не доказывает) и не съедает всё
+// вещество: углерод ограничен воздухом, вода остаётся.
+{
+  const w = 100, h = 60, sim = new Sim(w, h);
+  const box = (x0, y0, x1, y1, id) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) sim.setCell(x, y, id, false); };
+  box(0, h - 3, w - 1, h - 1, EL.WALL); box(0, 20, 0, h - 4, EL.WALL); box(w - 1, 20, w - 1, h - 4, EL.WALL);
+  box(1, h - 20, 60, h - 4, EL.WATER);
+  box(62, h - 14, 80, h - 4, EL.WOOD);
+  box(82, h - 10, 98, h - 4, EL.EARTH);
+  box(30, h - 8, 34, h - 6, EL.STONE);   // камень клетки не едят
+  for (let k = 0; k < 6; k++) sim.setCell(10 + k * 9, h - 5, EL.CELL, false);
+  const cnt = (id) => { let n = 0; for (let i = 0; i < sim.type.length; i++) if (sim.type[i] === id) n++; return n; };
+  const stone0 = cnt(EL.STONE), water0 = cnt(EL.WATER);
+  let peak = 0;
+  run('Колония живых клеток', sim, () => { peak = Math.max(peak, cnt(EL.CELL)); }, 3000);
+  if (peak < 20) fail(`колония не выросла: пик ${peak} клеток из 6 — проверка ничего не доказывает`);
+  if (cnt(EL.STONE) !== stone0) fail(`камень съеден: было ${stone0}, стало ${cnt(EL.STONE)}`);
+  if (cnt(EL.WATER) < water0 / 4) fail(`колония съела почти всю воду: было ${water0}, стало ${cnt(EL.WATER)}`);
+  console.log(`  клеток: было 6, пик ${peak}, в конце ${cnt(EL.CELL)}; воды ${water0} → ${cnt(EL.WATER)}; дерева ${cnt(EL.WOOD)}`);
 }
 
 // Живые едят и отдают (Sim.chemBite / chemRelease / chemExhale): стая безымянных

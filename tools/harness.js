@@ -191,6 +191,11 @@ function buildScene(env, w = 240, h = 160) {
     sim.setCell(30, h - 25, EL.HUMAN, false);
     sim.setCell(70, h - 70, EL.SHAROID, false);
   }
+  // Живые клетки (sim/life.js): колонка на дне бассейна у воды и у дерева.
+  if (EL.CELL) {
+    sim.setCell(55, h - 9, EL.CELL, false); sim.setCell(57, h - 9, EL.CELL, false); sim.setCell(84, h - 9, EL.CELL, false);
+    sim.setCell(120, h - 27, EL.CELL, false);
+  }
   // Трос (sim/rope.js): каменный блок без опоры висит на крюке в воздухе и
   // раскачивается.
   if (sim.addRope) {

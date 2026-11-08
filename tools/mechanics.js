@@ -3138,5 +3138,36 @@ console.log('59. Химия (data/chem.js): кислота оставляет к
   }
 }
 
+console.log('60. Живая клетка (sim/life.js): ест соседнее, делится, голодает деревом, камень не ест');
+{
+  // Клетка в воде: растёт, делится (место — сдвигом столба воды), вещество не пропадает.
+  const s = new Sim(40, 30);
+  box(s, 0, 28, 39, 29, EL.WALL); box(s, 0, 10, 0, 27, EL.WALL); box(s, 39, 10, 39, 27, EL.WALL);
+  box(s, 1, 16, 38, 27, EL.WATER);
+  s.setCell(20, 27, EL.CELL, false);
+  const sum = () => { const t = s.chemCellsTotal(); return Array.from(t, (v, a) => v + s.chemAir[a]); };
+  s.step();
+  const before = sum();
+  for (let k = 0; k < 2500; k++) s.step();
+  const after = sum();
+  const cells = count(s, EL.CELL);
+  ok(cells >= 4 && after.every((v, a) => v === before[a]), `клетка в воде размножилась до ${cells}, вещество (клетки + воздух) не изменилось`);
+  // Без еды (одна клетка в пустоте на полу) сил хватает на сотню ходов, потом — дерево.
+  const d = new Sim(20, 20);
+  box(d, 0, 18, 19, 19, EL.WALL);
+  d.setCell(10, 17, EL.CELL, false);
+  const parts0 = solGet(d.comp(d.idx(10, 17)), EL.WOOD);
+  for (let k = 0; k < 6000; k++) d.step();
+  ok(count(d, EL.CELL) === 0 && d.type[d.idx(10, 17)] === EL.WOOD && solGet(d.comp(d.idx(10, 17)), EL.WOOD) === parts0,
+    `голодная клетка умерла деревом с теми же долями (${parts0}): клеток ${count(d, EL.CELL)}, тип ${d.type[d.idx(10, 17)]}`);
+  // Камень и металл не едят: клетка на них ничего не берёт.
+  const r = new Sim(20, 20);
+  box(r, 0, 18, 19, 19, EL.STONE); box(r, 5, 14, 15, 17, EL.METAL);
+  r.setCell(10, 13, EL.CELL, false);
+  const stone0 = count(r, EL.STONE), metal0 = count(r, EL.METAL);
+  for (let k = 0; k < 1500; k++) r.step();
+  ok(count(r, EL.STONE) === stone0 && count(r, EL.METAL) === metal0, `камень (${stone0}) и металл (${metal0}) клетка не ест`);
+}
+
 console.log(fails ? `\nПРОВАЛОВ: ${fails}` : '\nВСЁ OK');
 process.exit(fails ? 1 : 0);
